@@ -1,0 +1,152 @@
+# =============================================================================
+# FastAPI Backend Deployment + Service + Ingress
+# =============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lumen-api
+  namespace: lumen
+  labels:
+    app.kubernetes.io/name: lumen
+    app.kubernetes.io/component: api
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: lumen
+      app.kubernetes.io/component: api
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: lumen
+        app.kubernetes.io/component: api
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8000"
+        prometheus.io/path: "/metrics"
+    spec:
+      containers:
+        - name: api
+          image: ghcr.io/your-org/lumen-api:latest  # Replace with your registry
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8000
+              name: http
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: lumen-config
+          env:
+            - name: DATABASE_USER
+              valueFrom:
+                secretKeyRef:
+                  name: lumen-secrets
+                  key: DATABASE_USER
+            - name: DATABASE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: lumen-secrets
+                  key: DATABASE_PASSWORD
+            - name: DATABASE_NAME
+              valueFrom:
+                secretKeyRef:
+                  name: lumen-secrets
+                  key: DATABASE_NAME
+            - name: DATABASE_ASYNC_URL
+              value: "postgresql+asyncpg://$(DATABASE_USER):$(DATABASE_PASSWORD)@postgresql:5432/$(DATABASE_NAME)"
+            - name: SENTENCE_TRANSFORMERS_HOME
+              value: "/models/cache"
+          volumeMounts:
+            - name: media-data
+              mountPath: /data/media
+              readOnly: true
+            - name: model-cache
+              mountPath: /models/cache
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "2Gi"
+            limits:
+              cpu: "2"
+              memory: "4Gi"
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: 8000
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: 8000
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            timeoutSeconds: 5
+      volumes:
+        - name: media-data
+          persistentVolumeClaim:
+            claimName: media-data-pvc
+        - name: model-cache
+          persistentVolumeClaim:
+            claimName: model-cache-pvc
+      restartPolicy: Always
+
+---
+# =============================================================================
+# API Service
+# =============================================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: lumen-api
+  namespace: lumen
+  labels:
+    app.kubernetes.io/name: lumen
+    app.kubernetes.io/component: api
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8000
+      targetPort: 8000
+      protocol: TCP
+      name: http
+  selector:
+    app.kubernetes.io/name: lumen
+    app.kubernetes.io/component: api
+
+---
+# =============================================================================
+# API Ingress
+# =============================================================================
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: lumen-api-ingress
+  namespace: lumen
+  labels:
+    app.kubernetes.io/name: lumen
+    app.kubernetes.io/component: api
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+    nginx.ingress.kubernetes.io/proxy-body-size: "100m"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "600"
+    cert-manager.io/cluster-issuer: letsencrypt-prod  # Use cert-manager for TLS
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - api.lumen.example.com       # Replace with your domain
+      secretName: lumen-api-tls
+  rules:
+    - host: api.lumen.example.com     # Replace with your domain
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: lumen-api
+                port:
+                  number: 8000

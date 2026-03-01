@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: lumen
+  labels:
+    app.kubernetes.io/name: lumen
+    app.kubernetes.io/part-of: semantic-media-pipeline

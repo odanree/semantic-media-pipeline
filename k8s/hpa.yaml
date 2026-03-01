@@ -1,0 +1,85 @@
+# =============================================================================
+# Horizontal Pod Autoscaler for Worker
+# Scales GPU workers based on task queue depth / CPU usage
+# =============================================================================
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: lumen-worker-hpa
+  namespace: lumen
+  labels:
+    app.kubernetes.io/name: lumen
+    app.kubernetes.io/component: worker
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: lumen-worker
+  minReplicas: 1
+  maxReplicas: 10
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 80
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 60
+      policies:
+        - type: Pods
+          value: 2
+          periodSeconds: 120    # Add at most 2 workers every 2 minutes
+    scaleDown:
+      stabilizationWindowSeconds: 300   # Wait 5 minutes before scaling down
+      policies:
+        - type: Pods
+          value: 1
+          periodSeconds: 180   # Remove at most 1 worker every 3 minutes
+
+---
+# =============================================================================
+# Horizontal Pod Autoscaler for API
+# =============================================================================
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: lumen-api-hpa
+  namespace: lumen
+  labels:
+    app.kubernetes.io/name: lumen
+    app.kubernetes.io/component: api
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: lumen-api
+  minReplicas: 2
+  maxReplicas: 6
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 30
+      policies:
+        - type: Pods
+          value: 2
+          periodSeconds: 60
+    scaleDown:
+      stabilizationWindowSeconds: 120
+      policies:
+        - type: Pods
+          value: 1
+          periodSeconds: 60

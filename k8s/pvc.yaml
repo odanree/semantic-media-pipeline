@@ -1,0 +1,56 @@
+# =============================================================================
+# PersistentVolumeClaims for Lumen
+# =============================================================================
+
+# Media Library PVC - mount your NFS share, EBS volume, etc.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: media-data-pvc
+  namespace: lumen
+  labels:
+    app.kubernetes.io/name: lumen
+    app.kubernetes.io/component: storage
+spec:
+  accessModes:
+    - ReadOnlyMany        # Media is read-only to the pipeline
+  resources:
+    requests:
+      storage: 500Gi      # Adjust to your media library size
+  storageClassName: ""     # Empty = use default StorageClass, or set to nfs-client, gp3, etc.
+
+---
+# Worker temp storage for frame extraction
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: worker-tmp-pvc
+  namespace: lumen
+  labels:
+    app.kubernetes.io/name: lumen
+    app.kubernetes.io/component: worker
+spec:
+  accessModes:
+    - ReadWriteMany
+  resources:
+    requests:
+      storage: 50Gi
+  storageClassName: ""
+
+---
+# CLIP model cache - shared across workers for fast startup
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: model-cache-pvc
+  namespace: lumen
+  labels:
+    app.kubernetes.io/name: lumen
+    app.kubernetes.io/component: worker
+spec:
+  accessModes:
+    - ReadWriteMany
+  resources:
+    requests:
+      storage: 10Gi
+  storageClassName: ""
