@@ -54,7 +54,15 @@ export default function SearchBar({ onSearch, isLoading = false }: SearchBarProp
   const handleHistoryClick = (item: typeof history[0]) => {
     setQuery(item.query)
     if (item.filters) {
-      setFilters(item.filters)
+      // Validate fileType - ensure it's one of the allowed values
+      const validFileTypes = ['all', 'images', 'videos']
+      const fileType = validFileTypes.includes(item.filters.fileType || '')
+        ? (item.filters.fileType as 'all' | 'images' | 'videos' | undefined)
+        : undefined
+      setFilters({
+        ...item.filters,
+        fileType,
+      })
     }
     setShowHistory(false)
   }
