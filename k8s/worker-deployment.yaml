@@ -1,0 +1,201 @@
+# =============================================================================
+# Celery Worker Deployment - GPU-enabled ML Pipeline
+# =============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lumen-worker
+  namespace: lumen
+  labels:
+    app.kubernetes.io/name: lumen
+    app.kubernetes.io/component: worker
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: lumen
+      app.kubernetes.io/component: worker
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: lumen
+        app.kubernetes.io/component: worker
+    spec:
+      # Schedule only on nodes with GPU
+      nodeSelector:
+        nvidia.com/gpu.present: "true"
+      tolerations:
+        - key: nvidia.com/gpu
+          operator: Exists
+          effect: NoSchedule
+      containers:
+        - name: worker
+          image: ghcr.io/your-org/lumen-worker:latest  # Replace with your registry
+          imagePullPolicy: Always
+          command: ["celery", "-A", "celery_app", "worker", "--loglevel=info", "--concurrency=1"]
+          envFrom:
+            - configMapRef:
+                name: lumen-config
+          env:
+            - name: DATABASE_USER
+              valueFrom:
+                secretKeyRef:
+                  name: lumen-secrets
+                  key: DATABASE_USER
+            - name: DATABASE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: lumen-secrets
+                  key: DATABASE_PASSWORD
+            - name: DATABASE_NAME
+              valueFrom:
+                secretKeyRef:
+                  name: lumen-secrets
+                  key: DATABASE_NAME
+            - name: DATABASE_URL
+              value: "postgresql://$(DATABASE_USER):$(DATABASE_PASSWORD)@postgresql:5432/$(DATABASE_NAME)"
+            - name: DATABASE_ASYNC_URL
+              value: "postgresql+asyncpg://$(DATABASE_USER):$(DATABASE_PASSWORD)@postgresql:5432/$(DATABASE_NAME)"
+            - name: NVIDIA_VISIBLE_DEVICES
+              value: "all"
+            - name: NVIDIA_DRIVER_CAPABILITIES
+              value: "compute,utility"
+            # HuggingFace model cache directory
+            - name: SENTENCE_TRANSFORMERS_HOME
+              value: "/models/cache"
+          volumeMounts:
+            - name: media-data
+              mountPath: /data/media
+              readOnly: true
+            - name: worker-tmp
+              mountPath: /tmp/lumen_frames
+            - name: model-cache
+              mountPath: /models/cache
+          resources:
+            requests:
+              cpu: "1"
+              memory: "4Gi"
+              nvidia.com/gpu: "1"
+            limits:
+              cpu: "4"
+              memory: "8Gi"
+              nvidia.com/gpu: "1"
+          livenessProbe:
+            exec:
+              command:
+                - celery
+                - -A
+                - celery_app
+                - inspect
+                - ping
+                - --timeout=10
+            initialDelaySeconds: 60
+            periodSeconds: 30
+            timeoutSeconds: 15
+            failureThreshold: 3
+          readinessProbe:
+            exec:
+              command:
+                - celery
+                - -A
+                - celery_app
+                - inspect
+                - ping
+                - --timeout=10
+            initialDelaySeconds: 45
+            periodSeconds: 20
+            timeoutSeconds: 15
+      volumes:
+        - name: media-data
+          persistentVolumeClaim:
+            claimName: media-data-pvc
+        - name: worker-tmp
+          persistentVolumeClaim:
+            claimName: worker-tmp-pvc
+        - name: model-cache
+          persistentVolumeClaim:
+            claimName: model-cache-pvc
+      restartPolicy: Always
+
+---
+# =============================================================================
+# Worker CPU Fallback Deployment (no GPU required)
+# =============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lumen-worker-cpu
+  namespace: lumen
+  labels:
+    app.kubernetes.io/name: lumen
+    app.kubernetes.io/component: worker-cpu
+spec:
+  replicas: 0  # Scale to 0 by default; enable when GPU nodes are unavailable
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: lumen
+      app.kubernetes.io/component: worker-cpu
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: lumen
+        app.kubernetes.io/component: worker-cpu
+    spec:
+      containers:
+        - name: worker
+          image: ghcr.io/your-org/lumen-worker:latest-cpu  # CPU-only image
+          imagePullPolicy: Always
+          command: ["celery", "-A", "celery_app", "worker", "--loglevel=info", "--concurrency=2"]
+          envFrom:
+            - configMapRef:
+                name: lumen-config
+          env:
+            - name: DATABASE_USER
+              valueFrom:
+                secretKeyRef:
+                  name: lumen-secrets
+                  key: DATABASE_USER
+            - name: DATABASE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: lumen-secrets
+                  key: DATABASE_PASSWORD
+            - name: DATABASE_NAME
+              valueFrom:
+                secretKeyRef:
+                  name: lumen-secrets
+                  key: DATABASE_NAME
+            - name: DATABASE_URL
+              value: "postgresql://$(DATABASE_USER):$(DATABASE_PASSWORD)@postgresql:5432/$(DATABASE_NAME)"
+            - name: DATABASE_ASYNC_URL
+              value: "postgresql+asyncpg://$(DATABASE_USER):$(DATABASE_PASSWORD)@postgresql:5432/$(DATABASE_NAME)"
+            - name: EMBEDDING_DEVICE
+              value: "cpu"
+            - name: SENTENCE_TRANSFORMERS_HOME
+              value: "/models/cache"
+          volumeMounts:
+            - name: media-data
+              mountPath: /data/media
+              readOnly: true
+            - name: worker-tmp
+              mountPath: /tmp/lumen_frames
+            - name: model-cache
+              mountPath: /models/cache
+          resources:
+            requests:
+              cpu: "2"
+              memory: "4Gi"
+            limits:
+              cpu: "4"
+              memory: "8Gi"
+      volumes:
+        - name: media-data
+          persistentVolumeClaim:
+            claimName: media-data-pvc
+        - name: worker-tmp
+          persistentVolumeClaim:
+            claimName: worker-tmp-pvc
+        - name: model-cache
+          persistentVolumeClaim:
+            claimName: model-cache-pvc
+      restartPolicy: Always

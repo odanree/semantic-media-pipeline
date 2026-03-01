@@ -1,0 +1,261 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Celery
+celerybeat-schedule
+dump.rdb
+
+# Flask
+instance/
+.webassets-cache
+
+# Scrapy
+.scrapy
+
+# Sphinx
+docs/_build/
+
+# PyBuilder
+target/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# pyenv
+.python-version
+
+# dotenv
+.env
+.env.local
+.env.*.local
+
+# VS Code
+.vscode/
+*.code-workspace
+
+# IDEs
+.idea/
+*.swp
+*.swo
+*~
+
+# Node
+node_modules/
+npm-debug.log
+yarn-error.log
+.next/
+out/
+.cache/
+dist/
+
+# Docker
+.dockerignore
+
+# Logs
+logs/
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local development
+*.sqlite
+*.db
+data/
+media/
+# IDEs & Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+*.sublime-project
+*.sublime-workspace
+.DS_Store
+Thumbs.db
+.project
+.classpath
+.c9/
+*.launch
+.settings/
+*.sublime-workspace
+Session.vim
+
+# Testing & Coverage
+.coverage
+.pytest_cache/
+htmlcov/
+.tox/
+.hypothesis/
+coverage.xml
+*.cover
+.coverage.*
+
+# Build & Distribution
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual environments
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+.venv
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.pytype/
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Node.js & npm
+node_modules/
+package-lock.json
+npm-debug.log
+npm-error.log
+yarn-error.log
+.npm
+.eslintcache
+.next/
+out/
+
+# Docker & Containers
+.dockerignore
+docker-compose.override.yml
+.docker/
+*.log
+
+# IDE Plugins & Extensions
+.prettier-ignore
+.eslintignore
+.editorconfig.swp
+.vscode-test/
+*.swp
+*.swo
+
+# OS Files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+*.tmp
+*.temp
+.AppleDesktop
+Network Trash Folder
+$RECYCLE.BIN/
+
+# Environment
+.env
+.env.local
+.env.*.local
+.env.*.example
+.env.production.local
+
+# Database
+*.sqlite
+*.sqlite3
+*.db
+*.dbf
+*.dump
+dump.rdb
+
+# Logs & Temporary
+logs/
+log/
+*.log
+*.logs
+tmp/
+temp/
+*.tmp
+*.bak
+*.swp
+*~
+
+# Backup files
+*.backup
+*.bkp
+*~
+
+# Compiled files
+*.o
+*.a
+*.so.*
+*.dylib
+*.dll
+*.exe
+
+# Caches
+.cache/
+.vagrant/
+.rake_tasks~
+.powenv
+
+# Dependency files
+.lock
+Gemfile.lock
+poetry.lock
+pipenv-requirements.txt
+
+# IDE specific
+.sublime-project
+.sublime-workspace
+.project
+.pydevproject
+.settings
+bin/
+include/
+lib/
+
+# Build outputs
+out/
+build/
+dist/
+*.orig

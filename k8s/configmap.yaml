@@ -1,0 +1,51 @@
+# =============================================================================
+# Lumen ConfigMap - Non-sensitive configuration
+# =============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: lumen-config
+  namespace: lumen
+  labels:
+    app.kubernetes.io/name: lumen
+data:
+  # Redis
+  REDIS_HOST: "redis-master"
+  REDIS_PORT: "6379"
+  CELERY_BROKER_URL: "redis://redis-master:6379/0"
+  CELERY_RESULT_BACKEND: "redis://redis-master:6379/0"
+
+  # Qdrant
+  QDRANT_HOST: "qdrant"
+  QDRANT_PORT: "6333"
+  QDRANT_GRPC_PORT: "6334"
+  QDRANT_PREFER_GRPC: "true"
+  QDRANT_COLLECTION_NAME: "media_vectors"
+
+  # PostgreSQL
+  DATABASE_HOST: "postgresql"
+  DATABASE_PORT: "5432"
+
+  # Media Ingestion
+  MEDIA_ROOT: "/data/media"
+  STORAGE_BACKEND: "local"
+  KEYFRAME_FPS: "0.5"
+  KEYFRAME_RESOLUTION: "224"
+
+  # CLIP Model
+  CLIP_MODEL_NAME: "clip-ViT-B-32"
+  EMBEDDING_BATCH_SIZE: "32"
+  EMBEDDING_DEVICE: "cuda"
+
+  # API
+  API_HOST: "0.0.0.0"
+  API_PORT: "8000"
+  LOG_LEVEL: "info"
+
+  # Frontend
+  NEXT_PUBLIC_API_URL: "http://lumen-api:8000"
+  NEXT_PUBLIC_QDRANT_HOST: "qdrant"
+  NEXT_PUBLIC_QDRANT_PORT: "6333"
+
+  # Observability
+  PROMETHEUS_ENABLED: "true"

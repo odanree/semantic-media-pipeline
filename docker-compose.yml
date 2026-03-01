@@ -1,0 +1,251 @@
+version: '3.9'
+
+services:
+  # =========================================================================
+  # Data & Message Queue Layer
+  # =========================================================================
+  redis:
+    image: redis:7.4.8-alpine
+    container_name: lumen-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - lumen-net
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:17.9-alpine
+    container_name: lumen-postgres
+    environment:
+      POSTGRES_USER: ${DATABASE_USER:-lumen_user}
+      POSTGRES_PASSWORD: ${DATABASE_PASSWORD:-secure_password_here}
+      POSTGRES_DB: ${DATABASE_NAME:-lumen}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./scripts/init-db.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DATABASE_USER:-lumen_user}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - lumen-net
+    restart: unless-stopped
+
+  # =========================================================================
+  # Vector Database Layer
+  # =========================================================================
+  qdrant:
+    image: qdrant/qdrant:v1.17.0
+    container_name: lumen-qdrant
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    environment:
+      QDRANT_API_KEY: ""
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:6333/ || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - lumen-net
+    restart: unless-stopped
+
+  # =========================================================================
+  # ML Worker (Celery + CLIP + FFmpeg)
+  # =========================================================================
+  worker:
+    build:
+      context: ./worker
+      dockerfile: Dockerfile
+      args:
+        - PYTHON_VERSION=3.10
+        - USE_GPU=false
+    container_name: lumen-worker
+    env_file:
+      - .env
+    environment:
+      - CELERY_BROKER_URL=${CELERY_BROKER_URL:-redis://lumen-redis:6379/0}
+      - CELERY_RESULT_BACKEND=${CELERY_RESULT_BACKEND:-redis://lumen-redis:6379/0}
+      - DATABASE_URL=${DATABASE_URL}
+      - DATABASE_ASYNC_URL=${DATABASE_ASYNC_URL}
+      - QDRANT_HOST=${QDRANT_HOST:-lumen-qdrant}
+      - QDRANT_PORT=${QDRANT_PORT:-6333}
+      - QDRANT_GRPC_PORT=${QDRANT_GRPC_PORT:-6334}
+      - MEDIA_ROOT=${MEDIA_ROOT:-/data/media}
+      - STORAGE_BACKEND=${STORAGE_BACKEND:-local}
+    user: root
+    volumes:
+      - media_data:/data/media
+      - worker_tmp:/tmp/lumen_frames
+      - /usr/lib/wsl/lib:/usr/lib/wsl/lib  # WSL2 DirectX driver mapping
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+    networks:
+      - lumen-net
+    restart: unless-stopped
+    # -----------------------------------------------------------------------
+    # GPU passthrough (currently blocked by Docker Desktop + AMD limitation)
+    # DirectML detects AMD GPUs in native WSL2 but Docker Desktop's VM
+    # does not expose them via DXCore. The worker will fall back to CPU.
+    # Uncomment when Docker Desktop adds AMD GPU support:
+    # -----------------------------------------------------------------------
+    # devices:
+    #   - /dev/dxg:/dev/dxg
+
+  # =========================================================================
+  # FastAPI Backend
+  # =========================================================================
+  api:
+    build:
+      context: ./api
+      dockerfile: Dockerfile
+    container_name: lumen-api
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      - CELERY_BROKER_URL=${CELERY_BROKER_URL:-redis://lumen-redis:6379/0}
+      - DATABASE_ASYNC_URL=${DATABASE_ASYNC_URL}
+      - QDRANT_HOST=${QDRANT_HOST:-lumen-qdrant}
+      - QDRANT_PORT=${QDRANT_PORT:-6333}
+      - MEDIA_ROOT=${MEDIA_ROOT:-/data/media}
+    volumes:
+      - media_data:/data/media
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+    networks:
+      - lumen-net
+    restart: unless-stopped
+
+  # =========================================================================
+  # Next.js Frontend
+  # =========================================================================
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: lumen-frontend
+    ports:
+      - "3000:3000"
+    env_file:
+      - .env
+    environment:
+      - NEXT_PUBLIC_API_URL=http://api:8000
+      - NEXT_PUBLIC_QDRANT_HOST=qdrant
+      - NEXT_PUBLIC_QDRANT_PORT=6333
+    depends_on:
+      - api
+    networks:
+      - lumen-net
+    restart: unless-stopped
+
+  # =========================================================================
+  # Celery Monitoring (Flower)
+  # =========================================================================
+  flower:
+    image: mher/flower:2.0.1
+    container_name: lumen-flower
+    ports:
+      - "5555:5555"
+    environment:
+      - CELERY_BROKER_URL=${CELERY_BROKER_URL:-redis://redis:6379/0}
+      - CELERY_RESULT_BACKEND=${CELERY_RESULT_BACKEND:-redis://redis:6379/0}
+    depends_on:
+      - redis
+      - worker
+    networks:
+      - lumen-net
+    restart: unless-stopped
+
+  # =========================================================================
+  # Prometheus Metrics (Optional)
+  # =========================================================================
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: lumen-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+    networks:
+      - lumen-net
+    restart: unless-stopped
+    profiles:
+      - monitoring
+
+  # =========================================================================
+  # Grafana Dashboard (Optional)
+  # =========================================================================
+  grafana:
+    image: grafana/grafana:latest
+    container_name: lumen-grafana
+    ports:
+      - "3001:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    volumes:
+      - grafana_data:/var/lib/grafana
+    depends_on:
+      - prometheus
+    networks:
+      - lumen-net
+    restart: unless-stopped
+    profiles:
+      - monitoring
+
+# ============================================================================
+# Named Volumes
+# ============================================================================
+volumes:
+  redis_data:
+    driver: local
+  postgres_data:
+    driver: local
+  qdrant_data:
+    driver: local
+  media_data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${MEDIA_ROOT:-/data/media}
+  worker_tmp:
+    driver: local
+  prometheus_data:
+    driver: local
+  grafana_data:
+    driver: local
+
+# ============================================================================
+# Networks
+# ============================================================================
+networks:
+  lumen-net:
+    driver: bridge

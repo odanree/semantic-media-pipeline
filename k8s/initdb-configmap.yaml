@@ -1,0 +1,48 @@
+# =============================================================================
+# PostgreSQL Init Script ConfigMap
+# Contains the init-db.sql schema - mounted into PostgreSQL on first boot
+# =============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: lumen-initdb
+  namespace: lumen
+  labels:
+    app.kubernetes.io/name: lumen
+    app.kubernetes.io/component: database
+data:
+  init.sql: |
+    -- Lumen - Database Schema Initialization
+    CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+
+    CREATE TABLE IF NOT EXISTS media_files (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        file_hash VARCHAR(64) UNIQUE NOT NULL,
+        file_path TEXT NOT NULL,
+        file_type VARCHAR(10) NOT NULL,
+        file_size_bytes VARCHAR(20),
+        width VARCHAR(10),
+        height VARCHAR(10),
+        duration_secs VARCHAR(20),
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+        exif_data JSONB,
+        qdrant_point_id UUID,
+        processing_status VARCHAR(20) DEFAULT 'pending',
+        error_message TEXT,
+        processed_at TIMESTAMP WITH TIME ZONE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_media_files_file_hash
+        ON media_files(file_hash);
+
+    CREATE INDEX IF NOT EXISTS idx_media_files_processing_status
+        ON media_files(processing_status);
+
+    CREATE INDEX IF NOT EXISTS idx_media_files_file_type
+        ON media_files(file_type);
+
+    CREATE INDEX IF NOT EXISTS idx_media_files_created_at
+        ON media_files(created_at DESC);
+
+    CREATE INDEX IF NOT EXISTS idx_media_files_qdrant_point_id
+        ON media_files(qdrant_point_id);

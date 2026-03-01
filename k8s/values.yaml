@@ -1,0 +1,153 @@
+# =============================================================================
+# Helm Values - Third-party chart configuration for Lumen dependencies
+# =============================================================================
+# These values are used with `helmfile` or `helm install` for the external
+# dependencies (Redis, PostgreSQL, Qdrant). Lumen's own services are deployed
+# via the manifests in k8s/.
+#
+# Usage:
+#   helm install redis bitnami/redis -n lumen -f values.yaml
+#   helm install postgresql bitnami/postgresql -n lumen -f values.yaml
+#   helm install qdrant qdrant/qdrant -n lumen -f values.yaml
+# =============================================================================
+
+# =============================================================================
+# Redis (Bitnami Helm Chart)
+# Chart: bitnami/redis
+# =============================================================================
+redis:
+  architecture: standalone    # Use 'replication' for HA in production
+  auth:
+    enabled: false            # Celery default; enable in production with password
+  master:
+    persistence:
+      enabled: true
+      size: 5Gi
+      storageClass: ""
+    resources:
+      requests:
+        cpu: "250m"
+        memory: "256Mi"
+      limits:
+        cpu: "1"
+        memory: "1Gi"
+    service:
+      ports:
+        redis: 6379
+
+# =============================================================================
+# PostgreSQL (Bitnami Helm Chart)
+# Chart: bitnami/postgresql
+# =============================================================================
+postgresql:
+  auth:
+    username: lumen_user
+    password: ""               # Set via --set or secrets; DO NOT commit real passwords
+    database: lumen
+  primary:
+    persistence:
+      enabled: true
+      size: 20Gi
+      storageClass: ""
+    initdb:
+      scriptsConfigMap: lumen-initdb   # Or mount init-db.sql as a ConfigMap
+    resources:
+      requests:
+        cpu: "500m"
+        memory: "512Mi"
+      limits:
+        cpu: "2"
+        memory: "2Gi"
+  metrics:
+    enabled: true              # Prometheus PostgreSQL exporter
+
+# =============================================================================
+# Qdrant (Official Helm Chart)
+# Chart: qdrant/qdrant
+# Repo: https://github.com/qdrant/qdrant-helm
+# =============================================================================
+qdrant:
+  replicaCount: 1              # Increase for distributed mode
+  image:
+    repository: qdrant/qdrant
+    tag: v1.17.0
+  service:
+    type: ClusterIP
+    ports:
+      http: 6333
+      grpc: 6334
+  persistence:
+    enabled: true
+    size: 50Gi
+    storageClass: ""
+  resources:
+    requests:
+      cpu: "500m"
+      memory: "2Gi"
+    limits:
+      cpu: "2"
+      memory: "8Gi"
+  config:
+    log_level: INFO
+
+# =============================================================================
+# NVIDIA GPU Operator (Optional - auto-installs GPU drivers on nodes)
+# Chart: nvidia/gpu-operator
+# Install: helm install gpu-operator nvidia/gpu-operator -n gpu-operator --create-namespace
+# =============================================================================
+gpu-operator:
+  enabled: true
+  driver:
+    enabled: true
+  toolkit:
+    enabled: true
+  devicePlugin:
+    enabled: true
+
+# =============================================================================
+# Ingress NGINX Controller
+# Chart: ingress-nginx/ingress-nginx
+# =============================================================================
+ingress-nginx:
+  controller:
+    replicaCount: 2
+    service:
+      type: LoadBalancer
+    config:
+      proxy-body-size: "100m"
+      proxy-read-timeout: "600"
+      proxy-connect-timeout: "60"
+
+# =============================================================================
+# cert-manager (for TLS certificates)
+# Chart: jetstack/cert-manager
+# =============================================================================
+cert-manager:
+  installCRDs: true
+  replicaCount: 1
+
+# =============================================================================
+# Prometheus Stack (Optional - kube-prometheus-stack)
+# Chart: prometheus-community/kube-prometheus-stack
+# =============================================================================
+prometheus:
+  enabled: true
+  server:
+    retention: "15d"
+    persistence:
+      enabled: true
+      size: 50Gi
+  alertmanager:
+    enabled: true
+  grafana:
+    enabled: true
+    adminPassword: admin      # Change in production
+    dashboardProviders:
+      dashboardproviders.yaml:
+        apiVersion: 1
+        providers:
+          - name: lumen
+            folder: Lumen
+            type: file
+            options:
+              path: /var/lib/grafana/dashboards/lumen
