@@ -23,7 +23,7 @@ from routers import health, ingest, updates
 app = FastAPI(
     title="Lumen API",
     description="Semantic media indexing and search API",
-    version="1.0.0",
+    version="1.1.0",
 )
 
 # Add CORS middleware
