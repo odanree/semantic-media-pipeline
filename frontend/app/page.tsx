@@ -1,7 +1,7 @@
 'use client'
 
 import { useState } from 'react'
-import SearchBar from '@/components/SearchBar'
+import SearchBar, { SearchFilters } from '@/components/SearchBar'
 import ResultGrid from '@/components/ResultGrid'
 import StatusPanel from '@/components/StatusPanel'
 
@@ -10,20 +10,38 @@ export default function SearchPage() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [query, setQuery] = useState('')
+  const [appliedFilters, setAppliedFilters] = useState<SearchFilters>({})
 
-  const handleSearch = async (searchQuery: string) => {
+  const handleSearch = async (searchQuery: string, filters: SearchFilters) => {
     setQuery(searchQuery)
+    setAppliedFilters(filters)
     setLoading(true)
     setError(null)
 
     try {
+      const payload: any = {
+        query: searchQuery,
+        limit: 20,
+      }
+
+      // Add filters to request if they differ from defaults
+      if (filters.fileType && filters.fileType !== 'all') {
+        payload.file_type = filters.fileType
+      }
+      if (filters.fromDate) {
+        payload.from_date = filters.fromDate
+      }
+      if (filters.toDate) {
+        payload.to_date = filters.toDate
+      }
+      if (filters.minSimilarity !== undefined && filters.minSimilarity !== 0.3) {
+        payload.min_similarity = filters.minSimilarity
+      }
+
       const response = await fetch('/api/search', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          query: searchQuery,
-          limit: 20,
-        }),
+        body: JSON.stringify(payload),
       })
 
       if (!response.ok) {
@@ -53,11 +71,17 @@ export default function SearchPage() {
         </p>
       </div>
 
-      <SearchBar onSearch={handleSearch} />
+      <SearchBar onSearch={handleSearch} isLoading={loading} />
 
       {error && (
-        <div className="mt-6 p-4 bg-red-900 border border-red-700 rounded-lg text-red-100">
-          {error}
+        <div className="mt-6 p-4 bg-red-900 border border-red-700 rounded-lg text-red-100 flex justify-between items-center" role="alert">
+          <span>{error}</span>
+          <button
+            onClick={() => setError(null)}
+            className="text-red-200 hover:text-white text-sm font-semibold"
+          >
+            ✕ Dismiss
+          </button>
         </div>
       )}
 
@@ -72,9 +96,32 @@ export default function SearchPage() {
 
       {!loading && results.length > 0 && (
         <div className="mt-8">
-          <h3 className="text-xl font-semibold mb-4">
-            Found {results.length} results for &quot;{query}&quot;
-          </h3>
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-4">
+            <h3 className="text-xl font-semibold">
+              Found {results.length} results for &quot;{query}&quot;
+            </h3>
+            {(appliedFilters.fileType !== 'all' ||
+              appliedFilters.fromDate ||
+              appliedFilters.toDate) && (
+              <div className="flex flex-wrap gap-2">
+                {appliedFilters.fileType && appliedFilters.fileType !== 'all' && (
+                  <span className="text-xs bg-blue-900 text-blue-200 px-2 py-1 rounded">
+                    {appliedFilters.fileType}
+                  </span>
+                )}
+                {appliedFilters.fromDate && (
+                  <span className="text-xs bg-green-900 text-green-200 px-2 py-1 rounded">
+                    from {appliedFilters.fromDate}
+                  </span>
+                )}
+                {appliedFilters.toDate && (
+                  <span className="text-xs bg-purple-900 text-purple-200 px-2 py-1 rounded">
+                    to {appliedFilters.toDate}
+                  </span>
+                )}
+              </div>
+            )}
+          </div>
           <ResultGrid results={results} />
         </div>
       )}
