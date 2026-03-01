@@ -1,53 +1,87 @@
 """
-WebSocket endpoints for real-time media processing updates
-Streams PostgreSQL notifications to connected dashboard clients
+Real-time updates endpoints (WebSocket)
+
+Note: PostgreSQL notification listener not yet implemented.
+This is a placeholder for future real-time update functionality.
 """
 
 import os
-import json
 import logging
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
-from api.utils.notifications import MediaNotificationListener
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["realtime"])
 
-DATABASE_ASYNC_URL = os.getenv(
-    "DATABASE_ASYNC_URL",
-    "postgresql+asyncpg://lumen_user:lumen_secure_password_2026@lumen-postgres:5432/lumen"
-)
-
 
 @router.websocket("/ws/media-updates")
 async def websocket_media_updates(websocket: WebSocket):
     """
-    WebSocket endpoint for real-time media processing updates
+    WebSocket endpoint for real-time media processing updates.
     
-    Broadcast channels:
-    - media_processing: Status changes (pending -> processing -> completed/failed)
-    - vector_indexed: Vector embeddings completed and indexed in Qdrant
+    Currently a placeholder. Will be enhanced to stream updates from
+    PostgreSQL notifications (LISTEN/NOTIFY channels):
+    - media_processing: Status changes
+    - vector_indexed: Embedding completion
     
-    Client side (JavaScript):
+    Usage:
         const ws = new WebSocket('ws://localhost:8000/api/ws/media-updates');
         ws.onmessage = (event) => {
             const update = JSON.parse(event.data);
-            console.log(`${update.channel}: ${update.status || 'indexed'}`);
+            console.log(update);
         };
     """
-    await websocket.accept()
-    listener = MediaNotificationListener(DATABASE_ASYNC_URL.replace("+asyncpg", ""))
-    
     try:
-        await listener.connect()
-        logger.info(f"WebSocket client connected - listening to media updates")
+        await websocket.accept()
+        logger.info("WebSocket client connected")
         
-        async for notification in listener.stream():
-            try:
-                await websocket.send_json(notification)
-            except Exception as e:
-                logger.error(f"Failed to send notification to client: {e}")
-                break
+        # Send a test message to confirm connection
+        await websocket.send_json({
+            "type": "connection",
+            "status": "connected",
+            "message": "Real-time updates not yet implemented"
+        })
+        
+        # Keep connection open
+        try:
+            while True:
+                # Wait for client messages (but don't do anything with them yet)
+                data = await websocket.receive_text()
+        except WebSocketDisconnect:
+            logger.info("WebSocket client disconnected")
+    except Exception as e:
+        logger.error(f"WebSocket error: {e}")
+
+
+@router.websocket("/ws/processing-status")
+async def websocket_processing_status(websocket: WebSocket):
+    """
+    WebSocket endpoint for real-time processing status updates.
+    
+    Will stream status changes for media processing tasks:
+    - Task started
+    - Processing in progress  
+    - Completed/Failed
+    """
+    try:
+        await websocket.accept()
+        logger.info("Processing status client connected")
+        
+        # Send a test message
+        await websocket.send_json({
+            "type": "status",
+            "status": "ready",
+            "message": "Processing status monitoring ready"
+        })
+        
+        # Keep connection open
+        try:
+            while True:
+                data = await websocket.receive_text()
+        except WebSocketDisconnect:
+            logger.info("Processing status client disconnected")
+    except Exception as e:
+        logger.error(f"Processing status WebSocket error: {e}")
     
     except WebSocketDisconnect:
         logger.info("WebSocket client disconnected")
