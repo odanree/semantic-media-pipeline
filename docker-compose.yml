@@ -154,6 +154,9 @@ services:
     env_file:
       - .env
     environment:
+      # Server-side API endpoint (for Next.js API routes to proxy requests)
+      - API_URL=http://api:8000
+      # Client-side API endpoint (for WebSocket and browser-based requests)
       - NEXT_PUBLIC_API_URL=http://api:8000
       - NEXT_PUBLIC_QDRANT_HOST=qdrant
       - NEXT_PUBLIC_QDRANT_PORT=6333
