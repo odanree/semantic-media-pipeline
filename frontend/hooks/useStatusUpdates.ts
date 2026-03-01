@@ -30,6 +30,9 @@ export function useStatusUpdates(options: UseStatusUpdatesOptions = {}) {
   useEffect(() => {
     let ws: WebSocket | null = null
     let reconnectTimer: NodeJS.Timeout | null = null
+    let retryCount = 0
+    const MAX_RETRIES = 5
+    const BASE_RETRY_DELAY = 3000 // 3 seconds
     const protocol = typeof window !== 'undefined' && window.location.protocol === 'https:' ? 'wss' : 'ws'
     const host = typeof window !== 'undefined' ? window.location.host : 'localhost:3000'
 
@@ -42,6 +45,7 @@ export function useStatusUpdates(options: UseStatusUpdatesOptions = {}) {
           console.log('📡 Connected to status updates')
           setIsConnected(true)
           setError(null)
+          retryCount = 0 // Reset retry count on successful connection
         }
 
         ws.onmessage = (event) => {
@@ -66,7 +70,17 @@ export function useStatusUpdates(options: UseStatusUpdatesOptions = {}) {
         ws.onclose = () => {
           console.log('Status WebSocket closed - attempting reconnect...')
           setIsConnected(false)
-          reconnectTimer = setTimeout(connect, 3000)
+
+          // Only reconnect if we haven't exceeded max retries
+          if (retryCount < MAX_RETRIES) {
+            retryCount++
+            const delay = BASE_RETRY_DELAY * Math.pow(2, retryCount - 1) // Exponential backoff
+            console.log(`Status WS Retry ${retryCount}/${MAX_RETRIES} in ${delay}ms`)
+            reconnectTimer = setTimeout(connect, Math.min(delay, 30000)) // Cap at 30 seconds
+          } else {
+            console.log('Status WS: Max retries reached - stopping reconnection attempts')
+            setError(new Error('WebSocket connection failed - max retries exceeded'))
+          }
         }
       } catch (e) {
         const err = e instanceof Error ? e : new Error(String(e))

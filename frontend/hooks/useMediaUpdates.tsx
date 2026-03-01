@@ -13,8 +13,10 @@ import { useMediaUpdates, type MediaUpdate } from './useMediaUpdates';
  * Component: Real-time processing status feed
  */
 export function MediaUpdatesFeed() {
+  const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+  const wsUrl = apiUrl.replace(/^http:/, 'ws:').replace(/^https:/, 'wss:');
   const { updates, isConnected } = useMediaUpdates(
-    `${process.env.NEXT_PUBLIC_API_URL}/ws/media-updates`,
+    `${wsUrl}/ws/media-updates`,
     {
       onUpdate: (update) => {
         // Could trigger notifications, analytics, etc.
@@ -74,8 +76,10 @@ export function MediaProcessingDashboard() {
     failed: 0,
   });
 
+  const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+  const wsUrl = apiUrl.replace(/^http:/, 'ws:').replace(/^https:/, 'wss:');
   const { updates, isConnected } = useMediaUpdates(
-    `${process.env.NEXT_PUBLIC_API_URL}/ws/processing-status`,
+    `${wsUrl}/ws/processing-status`,
     {
       onUpdate: (update) => {
         setStats((prev) => {
