@@ -118,7 +118,10 @@ export function useStatusUpdates(options: UseStatusUpdatesOptions = {}) {
 
     return () => {
       if (reconnectTimer) clearTimeout(reconnectTimer)
-      if (ws) ws.close()
+      if (ws) {
+        ws.onclose = null  // Prevent onclose from firing state updates on an unmounted component
+        ws.close()
+      }
     }
   }, []) // Empty deps: connect once, never restart due to callback identity changes
 

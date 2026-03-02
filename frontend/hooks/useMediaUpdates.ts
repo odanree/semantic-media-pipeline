@@ -112,7 +112,10 @@ export function useMediaUpdates(
 
     return () => {
       if (reconnectTimer) clearTimeout(reconnectTimer);
-      if (ws) ws.close();
+      if (ws) {
+        ws.onclose = null; // Prevent onclose from firing state updates on an unmounted component
+        ws.close();
+      }
     };
   }, [wsUrl, maxHistorySize]); // onUpdate/onError accessed via refs - stable identity
 
