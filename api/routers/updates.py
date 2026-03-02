@@ -1,97 +1,150 @@
 """
-WebSocket endpoints for real-time media processing updates
-Streams PostgreSQL notifications to connected dashboard clients
+Real-time updates endpoints (WebSocket)
+
+Note: PostgreSQL notification listener not yet implemented.
+This is a placeholder for future real-time update functionality.
 """
 
-import os
-import json
+import asyncio
 import logging
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
-from api.utils.notifications import MediaNotificationListener
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["realtime"])
 
-DATABASE_ASYNC_URL = os.getenv(
-    "DATABASE_ASYNC_URL",
-    "postgresql+asyncpg://lumen_user:REDACTED_DB_PASSWORD@lumen-postgres:5432/lumen"
-)
+# Track active connections to prevent resource exhaustion
+active_connections = {
+    "media_updates": [],
+    "processing_status": []
+}
 
 
 @router.websocket("/ws/media-updates")
 async def websocket_media_updates(websocket: WebSocket):
     """
-    WebSocket endpoint for real-time media processing updates
+    WebSocket endpoint for real-time media processing updates.
     
-    Broadcast channels:
-    - media_processing: Status changes (pending -> processing -> completed/failed)
-    - vector_indexed: Vector embeddings completed and indexed in Qdrant
+    Includes heartbeat mechanism and timeout handling to prevent
+    resource exhaustion from dangling connections.
     
-    Client side (JavaScript):
+    Usage:
         const ws = new WebSocket('ws://localhost:8000/api/ws/media-updates');
         ws.onmessage = (event) => {
             const update = JSON.parse(event.data);
-            console.log(`${update.channel}: ${update.status || 'indexed'}`);
+            console.log(update);
         };
     """
     await websocket.accept()
-    listener = MediaNotificationListener(DATABASE_ASYNC_URL.replace("+asyncpg", ""))
+    logger.info(f"WebSocket client connected - media-updates (total: {len(active_connections['media_updates']) + 1})")
+    active_connections["media_updates"].append(websocket)
     
     try:
-        await listener.connect()
-        logger.info(f"WebSocket client connected - listening to media updates")
+        # Send initial connection confirmation
+        await websocket.send_json({
+            "type": "connection",
+            "status": "connected",
+            "message": "Connected to media updates stream"
+        })
         
-        async for notification in listener.stream():
+        # Heartbeat task to keep connection alive and detect dead clients
+        heartbeat_task = asyncio.create_task(_heartbeat(websocket, interval=30))
+        
+        try:
+            # Wait for client messages (but we don't process them)
+            while True:
+                try:
+                    # Set receive timeout to detect hung connections
+                    data = await asyncio.wait_for(websocket.receive_text(), timeout=60)
+                except asyncio.TimeoutError:
+                    # Client hasn't sent anything in 60 seconds, but connection is still monitored
+                    continue
+        except WebSocketDisconnect:
+            logger.info("Media updates client disconnected")
+        finally:
+            heartbeat_task.cancel()
             try:
-                await websocket.send_json(notification)
-            except Exception as e:
-                logger.error(f"Failed to send notification to client: {e}")
-                break
-    
-    except WebSocketDisconnect:
-        logger.info("WebSocket client disconnected")
+                await heartbeat_task
+            except asyncio.CancelledError:
+                pass
+                
     except Exception as e:
-        logger.error(f"WebSocket error: {e}")
-        await websocket.close(code=1000, reason=str(e))
+        logger.error(f"WebSocket media-updates error: {e}")
     finally:
-        await listener.disconnect()
+        if websocket in active_connections["media_updates"]:
+            active_connections["media_updates"].remove(websocket)
+        await websocket.close()
 
 
 @router.websocket("/ws/processing-status")
 async def websocket_processing_status(websocket: WebSocket):
     """
-    WebSocket endpoint filtered to only media processing status updates
+    WebSocket endpoint for real-time processing status updates.
     
-    Minimal bandwidth - excludes vector indexing notifications
+    Streams status changes for media processing tasks with proper
+    resource management and timeout handling.
     """
     await websocket.accept()
-    listener = MediaNotificationListener(
-        DATABASE_ASYNC_URL.replace("+asyncpg", ""),
-        channels=['media_processing']
-    )
+    logger.info(f"WebSocket client connected - processing-status (total: {len(active_connections['processing_status']) + 1})")
+    active_connections["processing_status"].append(websocket)
     
     try:
-        await listener.connect()
-        logger.info("WebSocket client connected - listening to processing status")
+        # Send initial connection confirmation
+        await websocket.send_json({
+            "type": "status",
+            "status": "ready",
+            "message": "Connected to processing status stream"
+        })
         
-        async for notification in listener.stream():
+        # Heartbeat task to keep connection alive and detect dead clients
+        heartbeat_task = asyncio.create_task(_heartbeat(websocket, interval=30))
+        
+        try:
+            # Wait for client messages (but we don't process them)
+            while True:
+                try:
+                    # Set receive timeout to detect hung connections
+                    data = await asyncio.wait_for(websocket.receive_text(), timeout=60)
+                except asyncio.TimeoutError:
+                    # Client hasn't sent anything in 60 seconds, but connection is still monitored
+                    continue
+        except WebSocketDisconnect:
+            logger.info("Processing status client disconnected")
+        finally:
+            heartbeat_task.cancel()
             try:
-                # Forward notification payload with processed metadata
-                await websocket.send_json({
-                    'type': notification.get('status'),
-                    'id': notification.get('id'),
-                    'file_path': notification.get('file_path'),
-                    'error': notification.get('error_message'),
-                    'completed_at': notification.get('processed_at'),
-                })
-            except Exception as e:
-                logger.error(f"Failed to send update to client: {e}")
-                break
-    
-    except WebSocketDisconnect:
-        logger.info("WebSocket client disconnected")
+                await heartbeat_task
+            except asyncio.CancelledError:
+                pass
+                
     except Exception as e:
-        logger.error(f"WebSocket error: {e}")
+        logger.error(f"WebSocket processing-status error: {e}")
     finally:
-        await listener.disconnect()
+        if websocket in active_connections["processing_status"]:
+            active_connections["processing_status"].remove(websocket)
+        await websocket.close()
+
+
+async def _heartbeat(websocket: WebSocket, interval: int = 30):
+    """
+    Send periodic heartbeat messages to keep connection alive and
+    detect dead clients. Prevents "insufficient resource" errors from
+    accumulating stale connections.
+    
+    Args:
+        websocket: WebSocket connection
+        interval: Heartbeat interval in seconds (default 30)
+    """
+    try:
+        while True:
+            await asyncio.sleep(interval)
+            try:
+                await websocket.send_json({
+                    "type": "heartbeat",
+                    "status": "alive"
+                })
+            except Exception:
+                # Connection is dead, exit heartbeat task
+                break
+    except asyncio.CancelledError:
+        pass

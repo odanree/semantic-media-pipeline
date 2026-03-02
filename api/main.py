@@ -17,13 +17,13 @@ from pydantic import BaseModel
 from qdrant_client import QdrantClient
 
 # Import routers
-from routers import health, ingest, updates
+from routers import health, ingest, search, updates
 
 # Initialize FastAPI app
 app = FastAPI(
     title="Lumen API",
     description="Semantic media indexing and search API",
-    version="1.1.0",
+    version="1.2.0",
 )
 
 # Add CORS middleware
@@ -38,6 +38,7 @@ app.add_middleware(
 # Include routers
 app.include_router(health.router, prefix="/api", tags=["health"])
 app.include_router(ingest.router, prefix="/api", tags=["ingest"])
+app.include_router(search.router, prefix="/api", tags=["search"])
 app.include_router(updates.router, prefix="/api", tags=["realtime"])
 
 
