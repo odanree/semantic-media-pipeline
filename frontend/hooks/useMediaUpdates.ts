@@ -7,7 +7,7 @@
 
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 export interface MediaUpdate {
   channel: 'media_processing' | 'vector_indexed';
@@ -37,6 +37,14 @@ export function useMediaUpdates(
   const [isConnected, setIsConnected] = useState(false);
   const [error, setError] = useState<Error | null>(null);
 
+  // Store latest callbacks in refs so the WebSocket effect never restarts due to callback identity changes
+  const onUpdateRef = useRef(onUpdate);
+  const onErrorRef = useRef(onError);
+  useEffect(() => {
+    onUpdateRef.current = onUpdate;
+    onErrorRef.current = onError;
+  });
+
   useEffect(() => {
     let ws: WebSocket | null = null;
     let reconnectTimer: NodeJS.Timeout | null = null;
@@ -65,7 +73,7 @@ export function useMediaUpdates(
               return newUpdates.slice(0, maxHistorySize);
             });
 
-            onUpdate?.(update);
+            onUpdateRef.current?.(update);
           } catch (e) {
             console.error('Failed to parse update:', e);
           }
@@ -74,7 +82,7 @@ export function useMediaUpdates(
         ws.onerror = (event) => {
           const err = new Error('WebSocket error occurred');
           setError(err);
-          onError?.(err);
+          onErrorRef.current?.(err);
           console.error('WebSocket error:', event);
         };
 
@@ -96,7 +104,7 @@ export function useMediaUpdates(
       } catch (e) {
         const err = e instanceof Error ? e : new Error(String(e));
         setError(err);
-        onError?.(err);
+        onErrorRef.current?.(err);
       }
     };
 
@@ -104,9 +112,12 @@ export function useMediaUpdates(
 
     return () => {
       if (reconnectTimer) clearTimeout(reconnectTimer);
-      if (ws) ws.close();
+      if (ws) {
+        ws.onclose = null; // Prevent onclose from firing state updates on an unmounted component
+        ws.close();
+      }
     };
-  }, [wsUrl, maxHistorySize, onUpdate, onError]);
+  }, [wsUrl, maxHistorySize]); // onUpdate/onError accessed via refs - stable identity
 
   return { updates, isConnected, error };
 }

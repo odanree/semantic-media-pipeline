@@ -35,19 +35,17 @@ async def websocket_media_updates(websocket: WebSocket):
             console.log(update);
         };
     """
-    await websocket.accept()
-    logger.info(f"WebSocket client connected - media-updates (total: {len(active_connections['media_updates']) + 1})")
-    active_connections["media_updates"].append(websocket)
-    
     try:
-        # Send initial connection confirmation
+        await websocket.accept()
+        active_connections["media_updates"].append(websocket)
+        logger.info(f"WebSocket connected - media-updates (total: {len(active_connections['media_updates'])})")
+        
         await websocket.send_json({
             "type": "connection",
             "status": "connected",
             "message": "Connected to media updates stream"
         })
         
-        # Heartbeat task to keep connection alive and detect dead clients
         heartbeat_task = asyncio.create_task(_heartbeat(websocket, interval=30))
         
         try:
@@ -73,7 +71,12 @@ async def websocket_media_updates(websocket: WebSocket):
     finally:
         if websocket in active_connections["media_updates"]:
             active_connections["media_updates"].remove(websocket)
-        await websocket.close()
+        # Try to close the connection, but don't fail if it's already closed
+        try:
+            await websocket.close()
+        except RuntimeError:
+            # Connection already closed, this is expected
+            pass
 
 
 @router.websocket("/ws/processing-status")
@@ -84,19 +87,17 @@ async def websocket_processing_status(websocket: WebSocket):
     Streams status changes for media processing tasks with proper
     resource management and timeout handling.
     """
-    await websocket.accept()
-    logger.info(f"WebSocket client connected - processing-status (total: {len(active_connections['processing_status']) + 1})")
-    active_connections["processing_status"].append(websocket)
-    
     try:
-        # Send initial connection confirmation
+        await websocket.accept()
+        active_connections["processing_status"].append(websocket)
+        logger.info(f"WebSocket connected - processing-status (total: {len(active_connections['processing_status'])})")
+        
         await websocket.send_json({
             "type": "status",
             "status": "ready",
             "message": "Connected to processing status stream"
         })
         
-        # Heartbeat task to keep connection alive and detect dead clients
         heartbeat_task = asyncio.create_task(_heartbeat(websocket, interval=30))
         
         try:
@@ -122,7 +123,12 @@ async def websocket_processing_status(websocket: WebSocket):
     finally:
         if websocket in active_connections["processing_status"]:
             active_connections["processing_status"].remove(websocket)
-        await websocket.close()
+        # Try to close the connection, but don't fail if it's already closed
+        try:
+            await websocket.close()
+        except RuntimeError:
+            # Connection already closed, this is expected
+            pass
 
 
 async def _heartbeat(websocket: WebSocket, interval: int = 30):
