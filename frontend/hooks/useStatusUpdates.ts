@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 export interface StatusUpdate {
   total: number
@@ -26,6 +26,14 @@ export function useStatusUpdates(options: UseStatusUpdatesOptions = {}) {
   const [status, setStatus] = useState<StatusUpdate | null>(null)
   const [isConnected, setIsConnected] = useState(false)
   const [error, setError] = useState<Error | null>(null)
+
+  // Store latest callbacks in refs so the WebSocket effect never restarts due to callback identity changes
+  const onUpdateRef = useRef(onUpdate)
+  const onErrorRef = useRef(onError)
+  useEffect(() => {
+    onUpdateRef.current = onUpdate
+    onErrorRef.current = onError
+  })
 
   useEffect(() => {
     let ws: WebSocket | null = null
@@ -70,7 +78,7 @@ export function useStatusUpdates(options: UseStatusUpdatesOptions = {}) {
             const data = JSON.parse(event.data)
             if (data.files) {
               setStatus(data.files)
-              onUpdate?.(data.files)
+              onUpdateRef.current?.(data.files)
             }
           } catch (e) {
             console.error('Failed to parse status update:', e)
@@ -80,7 +88,7 @@ export function useStatusUpdates(options: UseStatusUpdatesOptions = {}) {
         ws.onerror = () => {
           const err = new Error('WebSocket connection failed')
           setError(err)
-          onError?.(err)
+          onErrorRef.current?.(err)
           console.error('WebSocket error')
         }
 
@@ -102,7 +110,7 @@ export function useStatusUpdates(options: UseStatusUpdatesOptions = {}) {
       } catch (e) {
         const err = e instanceof Error ? e : new Error(String(e))
         setError(err)
-        onError?.(err)
+        onErrorRef.current?.(err)
       }
     }
 
@@ -112,7 +120,7 @@ export function useStatusUpdates(options: UseStatusUpdatesOptions = {}) {
       if (reconnectTimer) clearTimeout(reconnectTimer)
       if (ws) ws.close()
     }
-  }, [onUpdate, onError])
+  }, []) // Empty deps: connect once, never restart due to callback identity changes
 
   return { status, isConnected, error }
 }
