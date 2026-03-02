@@ -73,7 +73,12 @@ async def websocket_media_updates(websocket: WebSocket):
     finally:
         if websocket in active_connections["media_updates"]:
             active_connections["media_updates"].remove(websocket)
-        await websocket.close()
+        # Try to close the connection, but don't fail if it's already closed
+        try:
+            await websocket.close()
+        except RuntimeError:
+            # Connection already closed, this is expected
+            pass
 
 
 @router.websocket("/ws/processing-status")
@@ -122,7 +127,12 @@ async def websocket_processing_status(websocket: WebSocket):
     finally:
         if websocket in active_connections["processing_status"]:
             active_connections["processing_status"].remove(websocket)
-        await websocket.close()
+        # Try to close the connection, but don't fail if it's already closed
+        try:
+            await websocket.close()
+        except RuntimeError:
+            # Connection already closed, this is expected
+            pass
 
 
 async def _heartbeat(websocket: WebSocket, interval: int = 30):
