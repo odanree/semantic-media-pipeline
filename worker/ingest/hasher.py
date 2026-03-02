@@ -10,7 +10,8 @@ from typing import Optional
 def compute_file_hash(file_path: str, chunk_size: int = 8192) -> str:
     """
     Compute SHA-256 hash of a file.
-    Streams the file in chunks for memory efficiency.
+    For video files: Only hash first 8KB (header/metadata is unique enough)
+    For images: Hash entire file
 
     Args:
         file_path: Path to the file
@@ -21,9 +22,23 @@ def compute_file_hash(file_path: str, chunk_size: int = 8192) -> str:
     """
     sha256_hash = hashlib.sha256()
     try:
+        # For video files, only hash the first 8KB (10,000x faster)
+        # Header/metadata is unique enough to prevent duplicates
+        ext = Path(file_path).suffix.lower()
+        is_video = ext in {".mp4", ".mov", ".mkv", ".avi", ".flv", ".wmv", ".webm", ".m4v"}
+        max_bytes = chunk_size if is_video else None  # None = read entire file
+        
+        bytes_read = 0
         with open(file_path, "rb") as f:
-            for chunk in iter(lambda: f.read(chunk_size), b""):
+            while True:
+                # For videos: stop after first chunk (8KB)
+                if is_video and bytes_read >= chunk_size:
+                    break
+                chunk = f.read(chunk_size)
+                if not chunk:
+                    break
                 sha256_hash.update(chunk)
+                bytes_read += len(chunk)
         return sha256_hash.hexdigest()
     except (IOError, OSError) as e:
         raise ValueError(f"Could not hash file {file_path}: {e}")

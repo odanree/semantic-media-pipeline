@@ -59,6 +59,9 @@ def crawl_media(media_root: str) -> List[Tuple[str, str]]:
             with os.scandir(directory) as entries:
                 for entry in entries:
                     if entry.is_file(follow_symlinks=False):
+                        # Skip Mac OS artifact files and other junk
+                        if entry.name.startswith("._") or entry.name in {".DS_Store", "Thumbs.db"}:
+                            continue
                         file_ext = Path(entry.name).suffix.lower()
                         if file_ext in SUPPORTED_EXTENSIONS:
                             file_type = get_file_type(entry.path)
