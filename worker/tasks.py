@@ -214,12 +214,11 @@ def process_image(self, file_path: str, media_record_id: str):
             # Extract metadata from image
             with Image.open(file_path) as img:
                 width, height = img.size
-                exif_data = img._getexif() if hasattr(img, "_getexif") else None
+                # Skip EXIF extraction - causes JSON serialization issues with bytes
 
             media_record.width = str(width)
             media_record.height = str(height)
-            if exif_data:
-                media_record.exif_data = dict(exif_data)
+            # EXIF data not stored due to bytes serialization issues
 
             # Embed image
             print(f"Embedding image: {file_path}")
