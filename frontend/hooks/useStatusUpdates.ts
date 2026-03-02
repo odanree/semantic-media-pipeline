@@ -33,12 +33,20 @@ export function useStatusUpdates(options: UseStatusUpdatesOptions = {}) {
     let retryCount = 0
     const MAX_RETRIES = 5
     const BASE_RETRY_DELAY = 3000 // 3 seconds
-    const protocol = typeof window !== 'undefined' && window.location.protocol === 'https:' ? 'wss' : 'ws'
-    const host = typeof window !== 'undefined' ? window.location.host : 'localhost:3000'
 
     const connect = () => {
       try {
-        const wsUrl = `${protocol}://${host}/api/ws/processing-status`
+        // Use environment variable API URL, fallback to window location if in browser
+        let apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://api:8000'
+        if (typeof window !== 'undefined' && !apiUrl.startsWith('http')) {
+          // If API_URL is empty or not set to absolute URL, use window location
+          apiUrl = `${window.location.protocol}//${window.location.host}`
+        }
+        
+        // Convert HTTP(S) to WS(S) for WebSocket
+        const wsProtocol = apiUrl.startsWith('https') ? 'wss' : 'ws'
+        const apiHost = apiUrl.replace(/^https?:\/\//, '').replace(/\/$/, '')
+        const wsUrl = `${wsProtocol}://${apiHost}/api/ws/processing-status`
         ws = new WebSocket(wsUrl)
 
         ws.onopen = () => {
