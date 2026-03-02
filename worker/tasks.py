@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import List
 
 import numpy as np
+from PIL import Image
 from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, PointStruct, VectorParams
 from sqlalchemy import select
@@ -101,7 +102,8 @@ def crawl_and_dispatch(self, media_root: str):
 )
 def ingest_media(self, file_path: str, file_type: str):
     """
-    Main ingestion task - routes to image or video processing.
+    Lightweight ingestion task - creates DB record and dispatches to processor.
+    File hash computation moved to child task to free up worker pool faster.
 
     Args:
         file_path: Full path to media file
@@ -109,22 +111,21 @@ def ingest_media(self, file_path: str, file_type: str):
     """
     db = SyncSessionLocal()
     try:
-        # Compute file hash for idempotency
-        print(f"Computing hash for {file_path}")
-        file_hash = compute_file_hash(file_path)
+        # Fast path: check if file exists and is readable
+        if not os.path.isfile(file_path):
+            print(f"File not found: {file_path}")
+            return {"status": "skipped", "reason": "file_not_found"}
 
-        # Check if already processed
-        existing = db.query(MediaFile).filter_by(file_hash=file_hash).first()
-        if existing:
-            print(f"File already processed: {file_path}")
-            return {"status": "skipped", "reason": "duplicate_hash"}
+        # Get file size (fast)
+        try:
+            file_size = os.path.getsize(file_path)
+        except Exception as e:
+            print(f"Could not get file size for {file_path}: {e}")
+            return {"status": "skipped", "reason": "cannot_stat_file"}
 
-        # Get file size
-        file_size = os.path.getsize(file_path)
-
-        # Create initial database record
+        # Create initial database record WITHOUT hash (hash computed later)
         media_record = MediaFile(
-            file_hash=file_hash,
+            file_hash=None,  # Will be computed in child task
             file_path=file_path,
             file_type=file_type,
             file_size_bytes=str(file_size),
@@ -134,7 +135,7 @@ def ingest_media(self, file_path: str, file_type: str):
         db.commit()
         db.refresh(media_record)
 
-        # Route to appropriate processor
+        # Immediately dispatch to processor - hash check happens there
         if file_type == "image":
             result = process_image.delay(file_path, str(media_record.id))
         else:
@@ -163,7 +164,7 @@ def ingest_media(self, file_path: str, file_type: str):
 )
 def process_image(self, file_path: str, media_record_id: str):
     """
-    Process a single image file.
+    Process a single image file - compute hash, embed, and index.
 
     Args:
         file_path: Full path to image file
@@ -176,10 +177,30 @@ def process_image(self, file_path: str, media_record_id: str):
     try:
         ensure_qdrant_collection()
 
-        # Update status
+        # Get media record
         media_record = db.query(MediaFile).filter_by(id=media_record_id).first()
         if not media_record:
             raise ValueError(f"Media record not found: {media_record_id}")
+
+        # Compute file hash (now that we have a dedicated worker for this)
+        print(f"Computing hash for {file_path}")
+        file_hash = compute_file_hash(file_path)
+        
+        # Check for duplicates - if another record with same hash exists, skip
+        existing = db.query(MediaFile).filter(
+            MediaFile.file_hash == file_hash,
+            MediaFile.id != media_record_id  # Exclude current record
+        ).first()
+        if existing:
+            print(f"Duplicate file (same hash): {file_path}")
+            media_record.processing_status = "skipped"
+            media_record.error_message = "Duplicate hash"
+            db.commit()
+            return {"status": "skipped", "reason": "duplicate_hash"}
+
+        # Update hash in record
+        media_record.file_hash = file_hash
+        db.commit()
 
         # Normalize image
         temp_dir = tempfile.mkdtemp(prefix="lumen_images_")
@@ -253,7 +274,7 @@ def process_image(self, file_path: str, media_record_id: str):
 )
 def process_video(self, file_path: str, media_record_id: str):
     """
-    Process a single video file.
+    Process a single video file - compute hash, extract frames, embed, and index.
 
     Args:
         file_path: Full path to video file
@@ -265,10 +286,30 @@ def process_video(self, file_path: str, media_record_id: str):
     try:
         ensure_qdrant_collection()
 
-        # Update status
+        # Get media record
         media_record = db.query(MediaFile).filter_by(id=media_record_id).first()
         if not media_record:
             raise ValueError(f"Media record not found: {media_record_id}")
+
+        # Compute file hash (now that we have a dedicated worker for this)
+        print(f"Computing hash for {file_path}")
+        file_hash = compute_file_hash(file_path)
+        
+        # Check for duplicates - if another record with same hash exists, skip
+        existing = db.query(MediaFile).filter(
+            MediaFile.file_hash == file_hash,
+            MediaFile.id != media_record_id  # Exclude current record
+        ).first()
+        if existing:
+            print(f"Duplicate file (same hash): {file_path}")
+            media_record.processing_status = "skipped"
+            media_record.error_message = "Duplicate hash"
+            db.commit()
+            return {"status": "skipped", "reason": "duplicate_hash"}
+
+        # Update hash in record
+        media_record.file_hash = file_hash
+        db.commit()
 
         # Get video metadata
         print(f"Probing video: {file_path}")
