@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 export interface StatusUpdate {
   total: number
@@ -27,18 +27,43 @@ export function useStatusUpdates(options: UseStatusUpdatesOptions = {}) {
   const [isConnected, setIsConnected] = useState(false)
   const [error, setError] = useState<Error | null>(null)
 
+  // Store latest callbacks in refs so the WebSocket effect never restarts due to callback identity changes
+  const onUpdateRef = useRef(onUpdate)
+  const onErrorRef = useRef(onError)
+  useEffect(() => {
+    onUpdateRef.current = onUpdate
+    onErrorRef.current = onError
+  })
+
   useEffect(() => {
     let ws: WebSocket | null = null
     let reconnectTimer: NodeJS.Timeout | null = null
     let retryCount = 0
     const MAX_RETRIES = 5
     const BASE_RETRY_DELAY = 3000 // 3 seconds
-    const protocol = typeof window !== 'undefined' && window.location.protocol === 'https:' ? 'wss' : 'ws'
-    const host = typeof window !== 'undefined' ? window.location.host : 'localhost:3000'
 
     const connect = () => {
       try {
-        const wsUrl = `${protocol}://${host}/api/ws/processing-status`
+        // Determine API URL based on environment
+        let apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
+        
+        // In browser context: convert Docker internal hostname to localhost
+        if (typeof window !== 'undefined') {
+          if (apiUrl.includes('api:8000')) {
+            // Docker internal: convert to localhost for browser access
+            apiUrl = 'http://localhost:8000'
+          } else if (!apiUrl.startsWith('http')) {
+            // Fallback to current location if no valid URL provided
+            apiUrl = `${window.location.protocol}//${window.location.hostname}:8000`
+          }
+        }
+        
+        // Convert HTTP(S) to WS(S) for WebSocket
+        const wsProtocol = apiUrl.startsWith('https') ? 'wss' : 'ws'
+        const apiHost = apiUrl.replace(/^https?:\/\//, '').replace(/\/$/, '')
+        const wsUrl = `${wsProtocol}://${apiHost}/api/ws/processing-status`
+        
+        console.log(`📡 Connecting to WebSocket: ${wsUrl}`)
         ws = new WebSocket(wsUrl)
 
         ws.onopen = () => {
@@ -53,7 +78,7 @@ export function useStatusUpdates(options: UseStatusUpdatesOptions = {}) {
             const data = JSON.parse(event.data)
             if (data.files) {
               setStatus(data.files)
-              onUpdate?.(data.files)
+              onUpdateRef.current?.(data.files)
             }
           } catch (e) {
             console.error('Failed to parse status update:', e)
@@ -63,7 +88,7 @@ export function useStatusUpdates(options: UseStatusUpdatesOptions = {}) {
         ws.onerror = () => {
           const err = new Error('WebSocket connection failed')
           setError(err)
-          onError?.(err)
+          onErrorRef.current?.(err)
           console.error('WebSocket error')
         }
 
@@ -85,7 +110,7 @@ export function useStatusUpdates(options: UseStatusUpdatesOptions = {}) {
       } catch (e) {
         const err = e instanceof Error ? e : new Error(String(e))
         setError(err)
-        onError?.(err)
+        onErrorRef.current?.(err)
       }
     }
 
@@ -93,9 +118,12 @@ export function useStatusUpdates(options: UseStatusUpdatesOptions = {}) {
 
     return () => {
       if (reconnectTimer) clearTimeout(reconnectTimer)
-      if (ws) ws.close()
+      if (ws) {
+        ws.onclose = null  // Prevent onclose from firing state updates on an unmounted component
+        ws.close()
+      }
     }
-  }, [onUpdate, onError])
+  }, []) // Empty deps: connect once, never restart due to callback identity changes
 
   return { status, isConnected, error }
 }
