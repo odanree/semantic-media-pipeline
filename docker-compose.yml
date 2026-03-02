@@ -91,6 +91,7 @@ services:
       - media_data:/data/media
       - worker_tmp:/tmp/lumen_frames
       - /usr/lib/wsl/lib:/usr/lib/wsl/lib  # WSL2 DirectX driver mapping
+      - ${MEDIA_SOURCE_PATH}:/mnt/source:ro # Host media library (path set in .env)
     depends_on:
       redis:
         condition: service_healthy
@@ -130,6 +131,7 @@ services:
       - MEDIA_ROOT=${MEDIA_ROOT:-/data/media}
     volumes:
       - media_data:/data/media
+      - ${MEDIA_SOURCE_PATH}:/mnt/source:ro # Host media library (path set in .env)
     depends_on:
       redis:
         condition: service_healthy

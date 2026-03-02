@@ -123,9 +123,24 @@ def ingest_media(self, file_path: str, file_type: str):
             print(f"Could not get file size for {file_path}: {e}")
             return {"status": "skipped", "reason": "cannot_stat_file"}
 
-        # Create initial database record WITHOUT hash (hash computed later)
+        # Compute hash here — fast (8KB read for video, full read for images)
+        # Must be done before INSERT because file_hash is NOT NULL in the schema
+        try:
+            file_hash = compute_file_hash(file_path)
+        except ValueError as e:
+            print(f"Cannot hash file {file_path}: {e}")
+            return {"status": "skipped", "reason": "cannot_hash_file"}
+
+        # Check for duplicates before creating a record
+        existing = db.query(MediaFile).filter(
+            MediaFile.file_hash == file_hash
+        ).first()
+        if existing:
+            print(f"Duplicate file (same hash), skipping: {file_path}")
+            return {"status": "skipped", "reason": "duplicate_hash"}
+
         media_record = MediaFile(
-            file_hash=None,  # Will be computed in child task
+            file_hash=file_hash,
             file_path=file_path,
             file_type=file_type,
             file_size_bytes=str(file_size),
@@ -135,7 +150,7 @@ def ingest_media(self, file_path: str, file_type: str):
         db.commit()
         db.refresh(media_record)
 
-        # Immediately dispatch to processor - hash check happens there
+        # Dispatch to processor — hash already set, no duplicate check needed there
         if file_type == "image":
             result = process_image.delay(file_path, str(media_record.id))
         else:
@@ -181,26 +196,6 @@ def process_image(self, file_path: str, media_record_id: str):
         media_record = db.query(MediaFile).filter_by(id=media_record_id).first()
         if not media_record:
             raise ValueError(f"Media record not found: {media_record_id}")
-
-        # Compute file hash (now that we have a dedicated worker for this)
-        print(f"Computing hash for {file_path}")
-        file_hash = compute_file_hash(file_path)
-        
-        # Check for duplicates - if another record with same hash exists, skip
-        existing = db.query(MediaFile).filter(
-            MediaFile.file_hash == file_hash,
-            MediaFile.id != media_record_id  # Exclude current record
-        ).first()
-        if existing:
-            print(f"Duplicate file (same hash): {file_path}")
-            media_record.processing_status = "skipped"
-            media_record.error_message = "Duplicate hash"
-            db.commit()
-            return {"status": "skipped", "reason": "duplicate_hash"}
-
-        # Update hash in record
-        media_record.file_hash = file_hash
-        db.commit()
 
         # Normalize image
         temp_dir = tempfile.mkdtemp(prefix="lumen_images_")
@@ -289,26 +284,6 @@ def process_video(self, file_path: str, media_record_id: str):
         media_record = db.query(MediaFile).filter_by(id=media_record_id).first()
         if not media_record:
             raise ValueError(f"Media record not found: {media_record_id}")
-
-        # Compute file hash (now that we have a dedicated worker for this)
-        print(f"Computing hash for {file_path}")
-        file_hash = compute_file_hash(file_path)
-        
-        # Check for duplicates - if another record with same hash exists, skip
-        existing = db.query(MediaFile).filter(
-            MediaFile.file_hash == file_hash,
-            MediaFile.id != media_record_id  # Exclude current record
-        ).first()
-        if existing:
-            print(f"Duplicate file (same hash): {file_path}")
-            media_record.processing_status = "skipped"
-            media_record.error_message = "Duplicate hash"
-            db.commit()
-            return {"status": "skipped", "reason": "duplicate_hash"}
-
-        # Update hash in record
-        media_record.file_hash = file_hash
-        db.commit()
 
         # Get video metadata
         print(f"Probing video: {file_path}")
