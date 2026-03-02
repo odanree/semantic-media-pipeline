@@ -35,20 +35,24 @@ async def websocket_media_updates(websocket: WebSocket):
             console.log(update);
         };
     """
-    await websocket.accept()
-    logger.info(f"WebSocket client connected - media-updates (total: {len(active_connections['media_updates']) + 1})")
-    active_connections["media_updates"].append(websocket)
-    
     try:
+        await websocket.accept()
+        logger.info(f"WebSocket client connected - media-updates (total: {len(active_connections['media_updates']) + 1})")
+        active_connections["media_updates"].append(websocket)
+        
         # Send initial connection confirmation
+        logger.info("Sending initial JSON message (media-updates)...")
         await websocket.send_json({
             "type": "connection",
             "status": "connected",
             "message": "Connected to media updates stream"
         })
+        logger.info("Initial message sent successfully (media-updates)")
         
         # Heartbeat task to keep connection alive and detect dead clients
+        logger.info("Creating heartbeat task (media-updates)...")
         heartbeat_task = asyncio.create_task(_heartbeat(websocket, interval=30))
+        logger.info("Heartbeat task created successfully (media-updates)")
         
         try:
             # Wait for client messages (but we don't process them)
@@ -89,20 +93,26 @@ async def websocket_processing_status(websocket: WebSocket):
     Streams status changes for media processing tasks with proper
     resource management and timeout handling.
     """
-    await websocket.accept()
-    logger.info(f"WebSocket client connected - processing-status (total: {len(active_connections['processing_status']) + 1})")
-    active_connections["processing_status"].append(websocket)
-    
+    print(f"[WS-STATUS] Handler invoked - headers: {dict(websocket.headers)}", flush=True)
     try:
+        print("[WS-STATUS] Calling accept()...", flush=True)
+        await websocket.accept()
+        print(f"[WS-STATUS] Accept successful - processing-status (total: {len(active_connections['processing_status']) + 1})", flush=True)
+        active_connections["processing_status"].append(websocket)
+        
         # Send initial connection confirmation
+        logger.info("Sending initial JSON message...")
         await websocket.send_json({
             "type": "status",
             "status": "ready",
             "message": "Connected to processing status stream"
         })
+        logger.info("Initial message sent successfully")
         
         # Heartbeat task to keep connection alive and detect dead clients
+        logger.info("Creating heartbeat task...")
         heartbeat_task = asyncio.create_task(_heartbeat(websocket, interval=30))
+        logger.info("Heartbeat task created successfully")
         
         try:
             # Wait for client messages (but we don't process them)
@@ -123,7 +133,9 @@ async def websocket_processing_status(websocket: WebSocket):
                 pass
                 
     except Exception as e:
-        logger.error(f"WebSocket processing-status error: {e}")
+        print(f"[WS-STATUS] EXCEPTION: {type(e).__name__}: {e}", flush=True)
+        import traceback
+        traceback.print_exc()
     finally:
         if websocket in active_connections["processing_status"]:
             active_connections["processing_status"].remove(websocket)
