@@ -36,17 +36,26 @@ export function useStatusUpdates(options: UseStatusUpdatesOptions = {}) {
 
     const connect = () => {
       try {
-        // Use environment variable API URL, fallback to window location if in browser
-        let apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://api:8000'
-        if (typeof window !== 'undefined' && !apiUrl.startsWith('http')) {
-          // If API_URL is empty or not set to absolute URL, use window location
-          apiUrl = `${window.location.protocol}//${window.location.host}`
+        // Determine API URL based on environment
+        let apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
+        
+        // In browser context: convert Docker internal hostname to localhost
+        if (typeof window !== 'undefined') {
+          if (apiUrl.includes('api:8000')) {
+            // Docker internal: convert to localhost for browser access
+            apiUrl = 'http://localhost:8000'
+          } else if (!apiUrl.startsWith('http')) {
+            // Fallback to current location if no valid URL provided
+            apiUrl = `${window.location.protocol}//${window.location.hostname}:8000`
+          }
         }
         
         // Convert HTTP(S) to WS(S) for WebSocket
         const wsProtocol = apiUrl.startsWith('https') ? 'wss' : 'ws'
         const apiHost = apiUrl.replace(/^https?:\/\//, '').replace(/\/$/, '')
         const wsUrl = `${wsProtocol}://${apiHost}/api/ws/processing-status`
+        
+        console.log(`📡 Connecting to WebSocket: ${wsUrl}`)
         ws = new WebSocket(wsUrl)
 
         ws.onopen = () => {
