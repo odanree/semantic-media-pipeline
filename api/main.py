@@ -2,6 +2,13 @@
 FastAPI Backend - Lumen Media Pipeline API
 """
 
+# CRITICAL: Patch MUST happen before ANY other imports
+# Fix transformers.integrations.accelerate NameError for 'nn'
+import sys
+import builtins
+import torch.nn as nn
+builtins.nn = nn  # Inject nn into builtins so it's globally accessible
+
 import os
 from datetime import datetime
 
@@ -16,7 +23,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from qdrant_client import QdrantClient
 
-# Import routers
+# Import routers (these may use sentence_transformers internally)
 from routers import health, ingest, search, updates
 
 # Initialize FastAPI app
