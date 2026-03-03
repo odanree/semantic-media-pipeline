@@ -262,12 +262,24 @@ function ResultItem({
 
           {isVisible ? (
             result.file_type === 'video' ? (
-              <div className="w-full h-full flex items-center justify-center">
-                <div className="text-center">
-                  <div className="text-4xl mb-2">🎥</div>
-                  <p className="text-xs text-gray-300">Click to play</p>
+              // Show the exact CLIP-matched frame as thumbnail (semantic thumbnail).
+              // `result.timestamp` is the frame timestamp stored in the Qdrant
+              // payload — the moment visually closest to the search query.
+              <>
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  src={`${STREAM_BASE}/api/thumbnail?path=${encodeURIComponent(result.file_path)}&t=${result.timestamp ?? 0}`}
+                  alt={result.file_path.split('/').pop()}
+                  className="w-full h-full object-cover"
+                  loading="lazy"
+                />
+                {/* Play overlay */}
+                <div className="absolute inset-0 z-20 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
+                  <div className="w-12 h-12 rounded-full bg-black bg-opacity-60 flex items-center justify-center">
+                    <span className="text-white text-xl pl-0.5">▶</span>
+                  </div>
                 </div>
-              </div>
+              </>
             ) : (
               // eslint-disable-next-line @next/next/no-img-element
               <img
@@ -316,7 +328,20 @@ function ResultItem({
           <div className="absolute inset-0 bg-gradient-to-b from-transparent to-gray-900 opacity-60"></div>
           {isVisible ? (
             result.file_type === 'video' ? (
-              <div className="w-full h-full flex items-center justify-center text-2xl">🎥</div>
+              <>
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  src={`${STREAM_BASE}/api/thumbnail?path=${encodeURIComponent(result.file_path)}&t=${result.timestamp ?? 0}`}
+                  alt={result.file_path.split('/').pop()}
+                  className="w-full h-full object-cover"
+                  loading="lazy"
+                />
+                <div className="absolute inset-0 flex items-center justify-center">
+                  <div className="w-8 h-8 rounded-full bg-black bg-opacity-50 flex items-center justify-center">
+                    <span className="text-white text-sm pl-0.5">▶</span>
+                  </div>
+                </div>
+              </>
             ) : (
               // eslint-disable-next-line @next/next/no-img-element
               <img
