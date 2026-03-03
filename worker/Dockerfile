@@ -26,13 +26,16 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 WORKDIR /app
 
 # Deps layer (cached until requirements.txt changes)
-COPY requirements.txt .
+COPY worker/requirements.txt .
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install -U pip setuptools wheel && \
     pip install -r requirements.txt
 
 # Code layer (rebuilds only when source changes)
-COPY . .
+COPY worker/ .
+
+# Copy test scripts from repo root
+COPY scripts ./scripts
 
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1

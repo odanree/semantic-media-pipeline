@@ -306,6 +306,7 @@ def process_video(self, file_path: str, media_record_id: str):
                 temp_dir,
                 fps=float(os.getenv("KEYFRAME_FPS", "0.5")),
                 resolution=int(os.getenv("KEYFRAME_RESOLUTION", "224")),
+                video_duration=metadata["duration"],
             )
             print(f"Extracted {len(frame_paths)} frames")
 

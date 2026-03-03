@@ -15,6 +15,30 @@ Instead of searching by filename, you search by **intent**:
 
 ---
 
+## 📋 About
+
+A distributed, multimodal ingestion engine that transforms massive personal media archives (500GB+) into a searchable semantic knowledge base.
+
+### Key Features
+- **Cross-Modal Search**: Query 4K photos and videos with natural language — images and videos share the same vector space using CLIP embeddings
+- **Idempotent Processing**: File hashing ensures the 500GB library has zero processing cost on re-runs
+- **Horizontally Scalable**: Add more Celery workers to decrease total indexing time linearly
+- **Real-Time Monitoring**: WebSocket-based dashboard with live ingest progress and processing statistics
+- **Production-Ready**: Kubernetes deployment manifests and Docker Compose orchestration included
+
+### Tech Stack
+| Layer | Technology |
+|-------|-----------|
+| **ML & Vision** | Sentence-Transformers CLIP (ViT-B-32), FFmpeg, Pillow |
+| **Async Queue** | Celery + Redis with exponential backoff retry |
+| **Vector Storage** | Qdrant (512-dim HNSW indexing) |
+| **Relational DB** | PostgreSQL (metadata, file tracking) |
+| **Frontend** | Next.js 15 (App Router), React 18, Tailwind CSS |
+| **WebSocket Real-Time** | Starlette ASGI, Next.js API routes |
+| **Containerization** | Docker Compose, multi-stage builds, Kubernetes |
+
+---
+
 ## 🏗️ System Architecture
 
 The system is built on a "Producer-Consumer" architecture to ensure that processing 1,000s of high-resolution files doesn't overwhelm the host system.
@@ -37,23 +61,19 @@ The system is built on a "Producer-Consumer" architecture to ensure that process
 
 ---
 
-## 🛠️ Tech Stack
-| Component | Technology | Internal Reference |
-| :--- | :--- | :--- |
-| **Frontend** | Next.js 15 (App Router), Tailwind CSS | `lumen-frontend` |
-| **Backend Logic** | Python 3.10, FastAPI | `lumen-api` |
-| **Worker Queue** | Celery, Redis | `lumen-worker` / `lumen-redis` |
-| **ML Models** | Sentence-Transformers (CLIP), FFmpeg | `lumen_core` |
-| **Database** | Qdrant (Vector), PostgreSQL (Metadata) | `lumen-qdrant` / `lumen-postgres` |
-| **DevOps** | Docker Compose, NVIDIA Container Toolkit | `lumen-net` (Docker network) |
+## ⚙️ Design Rationale
 
----
+### Why a Distributed Architecture?
+**Scaling personal media to 500GB+ requires isolation:** Processing a single corrupted 1GB video should not block indexing the rest of the library. Celery + Redis separates the ingestion dispatcher (API) from compute-heavy workers, allowing graceful degradation and horizontal scaling. Each worker can fail independently while others continue.
 
-## 🚀 Key Engineering Highlights
-* **Cross-Modal Retrieval:** Because images and videos share a vector space, a single search query returns both file types seamlessly.
-* **Idempotent Processing:** Uses file hashing to ensure that re-running the pipeline on the same 500GB library costs 0 in compute.
-* **Scalability:** The architecture is "horizontally scalable"—add more Docker workers to decrease total indexing time.
-* **Streaming UI:** The Next.js dashboard uses HLS/Range requests to preview 4K videos directly from the local filesystem without full-file downloads.
+### Why CLIP + Qdrant?
+**Unified semantic space:** By embedding both images and video frames into the same 512-dimensional CLIP space, a single semantic query ("my family vacation") returns both photos and video scenes. This cross-modal retrieval is impossible with traditional image tagging or keyword search.
+
+### Why File Hashing?
+**Zero re-processing cost:** The 500GB library is stable — files don't change. A SHA-256 hash of video headers (8KB, ~1ms) acts as a unique fingerprint. Re-running the ingest pipeline on the same library is idempotent: it walks the filesystem, computes hashes, finds exact matches in PostgreSQL, and skips already-indexed files. Full erasure and re-index takes hours; incremental updates take seconds.
+
+### Why WebSocket + Real-Time Dashboard?
+**Transparency during long-running jobs:** Ingesting 500GB takes hours. A WebSocket connection from the frontend to the API streams live ingest progress, frame counts, and vector counts. No polling, no stale UI — the dashboard updates as workers process files in real-time.
 
 ---
 
@@ -91,7 +111,7 @@ To maintain senior-level code organization, this project uses **Lumen** as the i
 
 1.  **Clone & Build:**
     ```bash
-    git clone [https://github.com/your-username/Semantic-Media-Pipeline.git](https://github.com/your-username/Semantic-Media-Pipeline.git)
+    git clone [https://github.com/odanree/Semantic-Media-Pipeline.git](https://github.com/odanree/Semantic-Media-Pipeline.git)
     docker-compose up -d --build
     ```
 2.  **Mount Data:** Map your local Pixel backup folder to `/app/back
