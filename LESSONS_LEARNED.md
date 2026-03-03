@@ -259,6 +259,106 @@ Base is configurable via `FFMPEG_TIMEOUT` env var. Duration is read from
 
 ---
 
+## 7. Chrome ORB Blocks `<img>` Responses with Non-Image MIME Type
+
+**Commits:** `bc6e4b3`
+
+**Symptom**
+All video thumbnails showed as broken images in the browser. Chrome DevTools
+network tab showed `ERR_BLOCKED_BY_ORB` on every `/api/thumbnail` request.
+Response times were 700ms–2.5s (not instant 4xx), meaning ffmpeg *was* being
+called. CORS headers (`allow_origins=["*"]`) were already present and had
+no effect on the error.
+
+**What happened**
+When ffmpeg failed (because the binary was missing — see Lesson 8), the
+thumbnail endpoint called `raise HTTPException(status_code=500, ...)`. FastAPI
+serialises `HTTPException` as `Content-Type: application/json`. Chrome's
+**Opaque Response Blocking (ORB)** policy inspects the MIME type of responses
+loaded into `<img>` tags and blocks any response that is not an image type,
+regardless of the HTTP status code or CORS headers.
+
+**Root cause**
+ORB operates at the fetch layer, below CORS. A JSON body with status 200 would
+also be blocked. The fix is not a header — it is ensuring the response body is
+always a valid image, even in error cases.
+
+**The fix**
+Replace every `raise HTTPException` in the thumbnail endpoint with a PIL-
+generated dark-gray placeholder JPEG:
+```python
+def _placeholder_jpeg() -> bytes:
+    buf = io.BytesIO()
+    PILImage.new("RGB", (320, 180), (30, 30, 30)).save(buf, format="JPEG", quality=40)
+    return buf.getvalue()
+
+# On any error path:
+return Response(_placeholder_jpeg(), media_type="image/jpeg",
+                headers={"Cache-Control": "no-store"})
+```
+The `<img>` tag always receives `image/jpeg`; ORB never fires. Error
+observability is preserved via `log.warning()` instead of HTTP error codes.
+
+**Interview talking point**
+> "ORB is a browser security policy that CORS headers cannot override — it
+> operates one layer below CORS on the fetch primitives. The invariant for
+> any endpoint loaded into an `<img>` tag is: always return an image MIME
+> type, even on failure. I now treat `raise HTTPException` in image-serving
+> endpoints as a bug, not a pattern. Log the error server-side; return a
+> placeholder client-side."
+
+---
+
+## 8. BuildKit Apt Cache Poisoning — Package in Dockerfile, Not in Container
+
+**Commits:** `bc6e4b3` (force `--no-cache` rebuild)
+
+**Symptom**
+`ffmpeg` was present in the Dockerfile's `apt-get install` line (added in
+PR #9). The image rebuilt. The container restarted. But
+`docker exec lumen-api sh -c "which ffmpeg"` returned exit code 1 — the binary
+was not in the running container.
+
+**What happened**
+Docker's BuildKit caches each `RUN` layer keyed on the layer's inputs (the
+command string + parent layer hash). The `apt-get install` command string was
+present in the Dockerfile before PR #9 (it installed `build-essential` and
+`curl`). Adding `ffmpeg` to the same `RUN` command *changed the command
+string*, which should have invalidated the cache — but the
+`--mount=type=cache,target=/var/cache/apt` BuildKit cache mount caused the
+old apt package state to persist on the host, so BuildKit served the stale
+layer (without `ffmpeg`) from cache even though the command string changed.
+
+**Root cause**
+BuildKit's `--mount=type=cache` for apt persists the package cache between
+builds. When the package list changes inside an existing `RUN` block, the
+mount can satisfy `apt-get install` from the stale cache without downloading
+or unpacking the new package — producing a layer that looks fresh but is not.
+
+**The fix**
+```powershell
+docker compose build --no-cache api
+```
+Forces all layers to rebuild from scratch, bypassing both the BuildKit layer
+cache and the apt cache mount. After the rebuild, `which ffmpeg` confirmed
+`/usr/bin/ffmpeg`.
+
+**When to use `--no-cache`:**
+- After adding a new package to an existing `RUN apt-get install` block
+- After upgrading a base image that packages depend on
+- Whenever "it's in the Dockerfile but not in the container" describes your situation
+
+**Interview talking point**
+> "BuildKit's caching is aggressive by design — it's what makes incremental
+> builds fast. But it's a two-edged sword: when the cache is stale, Docker
+> tells you the build succeeded while silently serving an image that doesn't
+> match your Dockerfile. The operational rule I now follow: after any change
+> to a `RUN apt-get install` block, always rebuild with `--no-cache` and
+> verify the binary is present with `docker exec` before restarting dependent
+> services."
+
+---
+
 ## Cross-Cutting Themes
 
 | Theme | Issues |
@@ -268,6 +368,8 @@ Base is configurable via `FFMPEG_TIMEOUT` env var. Duration is read from
 | **Layer-by-layer debugging** | #2 (URL → proxy → build), #1 (API method names) |
 | **Fixed constants that should scale with data** | #6 (FFmpeg timeout), #5 (chunk size) |
 | **Read-only vs. read-write contract violations** | #3 (`:ro` mount + write attempt) |
+| **Browser security policies below CORS** | #7 (ORB blocks non-image `<img>` responses) |
+| **Build tooling caches can lie** | #8 (BuildKit serves stale apt layer) |
 
 ---
 
@@ -293,3 +395,11 @@ Base is configurable via `FFMPEG_TIMEOUT` env var. Duration is read from
 
 6. **Timeouts that don't scale with input size will fail on real data.**
    Always derive timeout from a measurable property of the work unit.
+
+7. **`<img>` endpoints must always return an image MIME type — ORB operates
+   below CORS and cannot be overridden with headers.**
+   Return a placeholder image on error; log server-side.
+
+8. **After changing `apt-get install` in an existing `RUN` block, rebuild
+   with `--no-cache` and verify with `docker exec`.**
+   BuildKit's layer cache can serve the pre-change image silently.

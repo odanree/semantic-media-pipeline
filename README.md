@@ -21,6 +21,8 @@ A distributed, multimodal ingestion engine that transforms massive personal medi
 
 ### Key Features
 - **Cross-Modal Search**: Query 4K photos and videos with natural language — images and videos share the same vector space using CLIP embeddings
+- **Semantic Thumbnails**: Video grid shows the exact frame that matched your CLIP query, not a static keyframe — timestamp comes from Qdrant payloads
+- **Proxy Sidecar**: Worker auto-generates 720p H.264/AAC faststart proxy files on ingest; browser streams the proxy by default for instant playback, with a one-click **[View Original]** toggle to stream the 4K source
 - **Idempotent Processing**: File hashing ensures the 500GB library has zero processing cost on re-runs
 - **Horizontally Scalable**: Add more Celery workers to decrease total indexing time linearly
 - **Real-Time Monitoring**: WebSocket-based dashboard with live ingest progress and processing statistics
@@ -30,12 +32,13 @@ A distributed, multimodal ingestion engine that transforms massive personal medi
 | Layer | Technology |
 |-------|-----------|
 | **ML & Vision** | Sentence-Transformers CLIP (ViT-B-32), FFmpeg, Pillow |
-| **Async Queue** | Celery + Redis with exponential backoff retry |
+| **Async Queue** | Celery + Redis — concurrency=6, prefetch-multiplier=1, max_tasks_per_child=50 |
 | **Vector Storage** | Qdrant (512-dim HNSW indexing) |
 | **Relational DB** | PostgreSQL (metadata, file tracking) |
 | **Frontend** | Next.js 15 (App Router), React 18, Tailwind CSS |
 | **WebSocket Real-Time** | Starlette ASGI, Next.js API routes |
 | **Containerization** | Docker Compose, multi-stage builds, Kubernetes |
+| **Video Delivery** | 720p H.264 proxy sidecar (`:rw` volume), 4MB streaming chunks, Range/206 support |
 
 ---
 
