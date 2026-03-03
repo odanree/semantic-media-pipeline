@@ -54,12 +54,20 @@ def ensure_qdrant_collection():
     try:
         qdrant_client.get_collection(QDRANT_COLLECTION_NAME)
     except Exception:
-        # Collection doesn't exist, create it
-        qdrant_client.create_collection(
-            collection_name=QDRANT_COLLECTION_NAME,
-            vectors_config=VectorParams(size=512, distance=Distance.COSINE),
-        )
-        print(f"Created Qdrant collection: {QDRANT_COLLECTION_NAME}")
+        # Collection doesn't exist — try to create it.
+        # Guard against race condition: another worker may have created it
+        # between our get and create calls (ALREADY_EXISTS is safe to ignore).
+        try:
+            qdrant_client.create_collection(
+                collection_name=QDRANT_COLLECTION_NAME,
+                vectors_config=VectorParams(size=512, distance=Distance.COSINE),
+            )
+            print(f"Created Qdrant collection: {QDRANT_COLLECTION_NAME}")
+        except Exception as create_err:
+            if "already exists" in str(create_err).lower():
+                pass  # Another worker won the race — collection exists, continue
+            else:
+                raise
 
 
 @app.task(
@@ -251,9 +259,13 @@ def process_image(self, file_path: str, media_record_id: str):
 
     except Exception as e:
         print(f"Image processing failed: {str(e)}")
-        media_record.processing_status = "error"
-        media_record.error_message = str(e)
-        db.commit()
+        if 'media_record' in dir() and media_record is not None:
+            try:
+                media_record.processing_status = "error"
+                media_record.error_message = str(e)[:500]
+                db.commit()
+            except Exception:
+                pass
         raise
     finally:
         db.close()
@@ -298,19 +310,18 @@ def process_video(self, file_path: str, media_record_id: str):
         }
         db.commit()
 
-        # Faststart proxy: remux with moov-first into /mnt/proxies so the
-        # source volume stays :ro (Zero-Mutation Architecture).
-        # The API stream endpoint transparently serves the proxy if present.
+        # Faststart proxy: dispatched async to the 'proxies' queue so this
+        # task finishes in minutes regardless of source file size.
+        # generate_proxy applies Option 2 (duration threshold) and Option 3
+        # (stream-copy for H264) — see generate_proxy task below.
         proxy_root = os.getenv("PROXY_ROOT", "").strip()
-        proxy_path: Optional[str] = None
         if proxy_root and file_path.startswith("/mnt/source/"):
             rel = file_path[len("/mnt/source/"):]  # preserve subdirectory tree
             proxy_path = os.path.join(proxy_root, rel)
-        try:
-            apply_faststart(file_path, proxy_path, metadata["duration"])
-        except FFmpegError as e:
-            # Non-fatal: log and continue — video still searchable/playable
-            print(f"[Faststart] Warning (non-fatal): {e}")
+            generate_proxy.apply_async(
+                args=[file_path, proxy_path, metadata["duration"], metadata["codec_name"]],
+                queue="proxies",
+            )
 
         # Extract frames
         temp_dir = tempfile.mkdtemp(prefix="lumen_frames_")
@@ -378,12 +389,56 @@ def process_video(self, file_path: str, media_record_id: str):
 
     except Exception as e:
         print(f"Video processing failed: {str(e)}")
-        media_record.processing_status = "error"
-        media_record.error_message = str(e)
-        db.commit()
+        # media_record may not be assigned if failure occurred before the DB
+        # query (e.g. ensure_qdrant_collection raised before we fetched it)
+        if 'media_record' in dir() and media_record is not None:
+            try:
+                media_record.processing_status = "error"
+                media_record.error_message = str(e)[:500]
+                db.commit()
+            except Exception:
+                pass
         raise
     finally:
         db.close()
+
+
+@app.task(
+    bind=True,
+    autoretry_for=(FFmpegError,),
+    retry_backoff=True,
+    retry_backoff_max=600,
+    retry_jitter=True,
+    max_retries=3,
+)
+def generate_proxy(self, file_path: str, proxy_path: str, duration: float, codec: str) -> dict:
+    """
+    Async proxy generation — runs on the 'proxies' queue so it never blocks
+    the main ingest pipeline.
+
+    Decision matrix (Options 2 + 3):
+      H264 source                     → stream-copy (seconds, full resolution)
+      Non-H264, duration ≤ threshold  → transcode to 720p H264
+      Non-H264, duration >  threshold → skip (too expensive, not worth it)
+
+    Set PROXY_MAX_DURATION_SECS env var to control the skip threshold
+    (default: 3600 = 1 hour).
+    """
+    max_dur = float(os.getenv("PROXY_MAX_DURATION_SECS", "3600"))
+
+    if codec != "h264" and duration > max_dur:
+        print(
+            f"[Proxy] Skipping — non-H264 ({codec}) and duration "
+            f"{duration:.0f}s > threshold {max_dur:.0f}s: {file_path}"
+        )
+        return {"status": "skipped", "reason": "duration_threshold", "file_path": file_path}
+
+    try:
+        apply_faststart(file_path, proxy_path, duration, source_codec=codec)
+        return {"status": "success", "file_path": file_path, "proxy_path": proxy_path}
+    except FFmpegError as e:
+        print(f"[Proxy] Warning (non-fatal): {e}")
+        return {"status": "error", "reason": str(e), "file_path": file_path}
 
 
 @app.task(

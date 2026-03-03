@@ -41,6 +41,13 @@ app.conf.update(
 app.conf.task_autoretry_for = {}
 app.conf.task_max_retries = 5
 
+# Route proxy generation to a separate queue so it can be consumed by
+# dedicated low-priority workers if desired, or by the main workers when
+# running both queues (--queues=celery,proxies).
+app.conf.task_routes = {
+    "tasks.generate_proxy": {"queue": "proxies"},
+}
+
 # Import tasks module to register @app.task decorated functions
 # Database initialization is now deferred to first use (lazy loading in db.session)
 # so this import won't cause issues

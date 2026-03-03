@@ -80,7 +80,8 @@ services:
       --loglevel=info
       --concurrency=$${CELERY_CONCURRENCY:-6}
       --prefetch-multiplier=$${CELERY_WORKER_PREFETCH_MULTIPLIER:-1}
-      --max-tasks-per-child=$${CELERY_MAX_TASKS_PER_CHILD:-50}"
+      --max-tasks-per-child=$${CELERY_MAX_TASKS_PER_CHILD:-50}
+      --queues=celery,proxies"
     env_file:
       - .env
     environment:
@@ -102,6 +103,9 @@ services:
       - CELERY_MAX_MEMORY_PER_CHILD=${CELERY_MAX_MEMORY_PER_CHILD:-1500000}
       # Proxy sidecar: faststart copies land here (source stays :ro)
       - PROXY_ROOT=${PROXY_ROOT:-/mnt/proxies}
+      # Proxy skip threshold: non-H264 files longer than this (seconds) are
+      # not transcoded. H264 files always get a fast stream-copy proxy.
+      - PROXY_MAX_DURATION_SECS=${PROXY_MAX_DURATION_SECS:-3600}
     user: root
     volumes:
       - media_data:/data/media

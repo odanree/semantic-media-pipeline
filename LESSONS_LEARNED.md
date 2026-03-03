@@ -359,6 +359,66 @@ cache and the apt cache mount. After the rebuild, `which ffmpeg` confirmed
 
 ---
 
+## 9. Blocking Proxy Encode in the Critical Pipeline Path (1 commit)
+
+**Commit:** `41a3594`
+
+**Symptom**
+563 video records stuck in `processing` status. Zero vectors in Qdrant after
+hours of the worker running. No errors in logs — workers were busy, tasks were
+being consumed, but the pipeline produced no searchable output.
+
+**What happened**
+`process_video` called `apply_faststart()` synchronously before frame
+extraction. For 4K source files (5–20 GB), this transcode operation took
+**hours per file** (timeout ceiling up to 9.8 hours for a 20 GB movie).
+With 6 Celery workers and 6 large files, all worker slots were occupied 100%
+of the time encoding proxies. Frame extraction and Qdrant upserts — the
+operations that actually produce search results — never ran. The pipeline was
+doing real work but none of it contributed to the stated goal.
+
+The proxy encode was also undifferentiated: a 20 GB H264 file was re-encoded
+at the same cost as a non-H264 file, despite H264 → H264 needing only a
+container remux (stream copy), not a transcode.
+
+**Root cause**
+Three compounding design decisions:
+1. **Variable-cost blocking step placed before fast invariant steps** — proxy
+   encoding cost scales with file size/duration (0s to 9h); frame extraction
+   and embedding are comparatively fast. The ordering guaranteed starvation.
+2. **No distinction by codec** — H264 sources don't benefit from re-encoding
+   to H264; only the moov atom needs moving. Stream copy takes ~30s; transcode
+   of the same file takes hours.
+3. **No escape hatch for large files** — a 2-hour non-H264 movie queued
+   indefinitely ahead of faster, higher-value work.
+
+**The fix**
+Three changes applied together:
+```
+Option 1: Decouple — generate_proxy dispatched async to 'proxies' queue
+          process_video finishes in minutes regardless of source size
+
+Option 2: Duration threshold — non-H264 files > PROXY_MAX_DURATION_SECS
+          (default 3600s) are skipped; full movies don't block the pipeline
+
+Option 3: Codec-aware routing — H264 sources use -c copy (stream copy, ~30s)
+          only non-H264 sources pay the full transcode cost
+```
+
+**Interview talking point**
+> "The lesson is about pipeline ordering: place cheap invariant operations
+> before expensive variable-cost ones. The proxy encode was optional
+> (non-fatal, best-effort) but was sequenced before the mandatory work that
+> produced actual value. When you have a step whose cost can range from seconds
+> to hours depending on input, that step belongs at the end of the chain or in
+> a separate async lane — never before steps that must complete for the
+> pipeline to make progress. I also learned to look at what workers are
+> *actually doing* vs. what they *should* be doing: `docker exec` + `/proc`
+> inspection showed 6 FFmpeg processes in a full-encode loop with no frame
+> extraction ever starting."
+
+---
+
 ## Cross-Cutting Themes
 
 | Theme | Issues |
@@ -370,6 +430,7 @@ cache and the apt cache mount. After the rebuild, `which ffmpeg` confirmed
 | **Read-only vs. read-write contract violations** | #3 (`:ro` mount + write attempt) |
 | **Browser security policies below CORS** | #7 (ORB blocks non-image `<img>` responses) |
 | **Build tooling caches can lie** | #8 (BuildKit serves stale apt layer) |
+| **Variable-cost blocking steps before invariant fast steps** | #9 (proxy encode starvation) |
 
 ---
 
@@ -403,3 +464,9 @@ cache and the apt cache mount. After the rebuild, `which ffmpeg` confirmed
 8. **After changing `apt-get install` in an existing `RUN` block, rebuild
    with `--no-cache` and verify with `docker exec`.**
    BuildKit's layer cache can serve the pre-change image silently.
+
+9. **Order pipeline steps by cost: cheap invariants first, variable-cost
+   optionals last (or async).** A best-effort step with unbounded cost placed
+   before mandatory fast steps will starve the pipeline under real-world data.
+   Use `/proc` inspection to verify workers are doing the right work, not just
+   any work.
