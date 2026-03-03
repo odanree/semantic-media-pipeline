@@ -115,10 +115,12 @@ def extract_keyframes(
             # 2x video duration as safety margin for slow I/O
             computed_timeout = int(base_timeout + (video_duration * 1.5))
             timeout = max(base_timeout, computed_timeout)
-            print(f"FFmpeg timeout for {video_duration:.1f}s video: {timeout}s")
+            print(f"[FFmpeg] Video: {video_path}")
+            print(f"[FFmpeg] Duration: {video_duration:.1f}s | Base timeout: {base_timeout}s | Computed: {computed_timeout}s | Final: {timeout}s")
         else:
             timeout = base_timeout
-            print(f"FFmpeg timeout (default): {timeout}s")
+            print(f"[FFmpeg] Video: {video_path}")
+            print(f"[FFmpeg] Duration: unknown | Base timeout (default): {timeout}s")
 
     frame_pattern = os.path.join(output_dir, "frame_%04d.jpg")
 
@@ -152,10 +154,10 @@ def extract_keyframes(
         return [str(f) for f in frame_files]
 
     except subprocess.TimeoutExpired:
-        msg = f"FFmpeg timeout ({timeout}s) extracting frames from {video_path}"
+        msg = f"[FFmpeg] TIMEOUT: {timeout}s limit exceeded"
         if video_duration and video_duration > 0:
-            msg += f" (video duration: {video_duration:.1f}s)"
-        msg += f" — Set FFMPEG_TIMEOUT env var to increase limit"
+            msg += f" (video: {video_duration:.1f}s)"
+        msg += f"\nSet FFMPEG_TIMEOUT={timeout * 2} in .env to allow more time"
         raise FFmpegError(msg)
     except Exception as e:
         raise FFmpegError(f"Frame extraction failed: {str(e)}")
