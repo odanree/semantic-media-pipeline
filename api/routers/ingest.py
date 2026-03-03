@@ -2,6 +2,7 @@
 Ingest, processing, and media serving endpoints
 """
 
+import asyncio
 import mimetypes
 import os
 import re
@@ -10,7 +11,7 @@ from datetime import datetime
 import aiofiles
 from celery import Celery
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel
 
 router = APIRouter()
@@ -166,6 +167,7 @@ async def stream_media(path: str, request: Request, quality: str = "proxy"):
 
     file_size = os.path.getsize(resolved)
     media_type, _ = mimetypes.guess_type(resolved)
+
     media_type = media_type or "application/octet-stream"
 
     range_header = request.headers.get("range")
@@ -216,5 +218,74 @@ async def stream_media(path: str, request: Request, quality: str = "proxy"):
             "Accept-Ranges": "bytes",
             "Content-Length": str(file_size),
             "Cache-Control": "public, max-age=3600",
+        },
+    )
+
+
+@router.get("/thumbnail")
+async def get_thumbnail(path: str, t: float = 0.0):
+    """
+    Extract a single JPEG frame from a video at timestamp `t` (seconds).
+
+    This is the "semantic thumbnail" endpoint — the timestamp comes directly
+    from the Qdrant payload (the exact frame that matched the CLIP query),
+    so the thumbnail shows the moment that is semantically closest to what
+    the user searched for.
+
+    Uses ffmpeg with -ss before -i (fast seek) + -vframes 1 to extract a
+    single frame without decoding the entire video.  Output is piped to
+    stdout to avoid any disk writes.  Browsers cache for 24 hours.
+    """
+    resolved = os.path.realpath(path)
+
+    if not any(resolved.startswith(root) for root in ALLOWED_ROOTS):
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    if not os.path.isfile(resolved):
+        raise HTTPException(status_code=404, detail="File not found")
+
+    # Clamp timestamp to >= 0
+    seek = max(0.0, t)
+
+    # Fast seek: -ss BEFORE -i jumps to keyframe near the target,
+    # then -vframes 1 grabs the first decoded frame.
+    # scale=-2:320 preserves aspect ratio (portrait + landscape).
+    # -q:v 4 gives ~85% JPEG quality — crisp enough for a thumbnail.
+    cmd = [
+        "ffmpeg",
+        "-ss", str(seek),
+        "-i", resolved,
+        "-vframes", "1",
+        "-vf", "scale=-2:320",
+        "-q:v", "4",
+        "-f", "image2pipe",
+        "-vcodec", "mjpeg",
+        "pipe:1",
+    ]
+
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=15)
+    except asyncio.TimeoutError:
+        raise HTTPException(status_code=504, detail="Thumbnail extraction timed out")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"ffmpeg error: {e}")
+
+    if proc.returncode != 0 or not stdout:
+        raise HTTPException(
+            status_code=500,
+            detail=f"ffmpeg returned no data: {stderr[-200:].decode(errors='replace')}",
+        )
+
+    return Response(
+        content=stdout,
+        media_type="image/jpeg",
+        headers={
+            # Cache in browser for 24 h — thumbnails are deterministic
+            "Cache-Control": "public, max-age=86400",
         },
     )
