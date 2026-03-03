@@ -359,9 +359,9 @@ cache and the apt cache mount. After the rebuild, `which ffmpeg` confirmed
 
 ---
 
-## 9. Blocking Proxy Encode in the Critical Pipeline Path (1 commit)
+## 9. Blocking Proxy Encode in the Critical Pipeline Path (2 commits)
 
-**Commit:** `41a3594`
+**Commits:** `41a3594`, `f5e4b6e` (see also Lesson #10 — cross-device failure discovered on first deploy)
 
 **Symptom**
 563 video records stuck in `processing` status. Zero vectors in Qdrant after
@@ -419,6 +419,67 @@ Option 3: Codec-aware routing — H264 sources use -c copy (stream copy, ~30s)
 
 ---
 
+## 10. `os.replace()` Fails Across Docker Volume Mount Points
+
+**Commit:** `f5e4b6e`
+
+**Symptom**
+All `generate_proxy` tasks for HEVC source files failed immediately after FFmpeg
+completed successfully. Flower showed `FAILURE` with 0 retries. Traceback:
+```
+OSError: [Errno 18] Invalid cross-device link:
+  '/tmp/tmp5phpffa_.mp4' -> '/mnt/proxies/d/4K/...
+```
+
+**What happened**
+`apply_faststart()` wrote the FFmpeg output to `tempfile.mktemp(dir="/tmp")`,
+then called `os.replace(str(tmp_path), str(dest))` to move it to
+`/mnt/proxies/...`. This always fails when source and destination are on
+different filesystems — `os.replace()` is backed by POSIX `rename(2)`, which
+is an atomic operation only valid within a single filesystem. Docker volume
+mounts (`/tmp` on the container's overlay filesystem, `/mnt/proxies` on a
+bind-mounted host path) are always different filesystems.
+
+**Root cause**
+Two compounding issues:
+1. **`os.replace()` ≠ cross-device copy** — it is not a file copy; it is a
+   filesystem rename. Use `shutil.move()` when source and destination may be
+   on different mounts.
+2. **`OSError` not in `autoretry_for`** — `autoretry_for=(FFmpegError,)` meant
+   that OS-level errors went straight to FAILURE with 0 retries, bypassing the
+   backoff-retry mechanism entirely. The fix was already deployed but the
+   6 failed tasks needed manual re-dispatch.
+
+**The fix**
+```python
+# Before — fails across volume mounts:
+os.replace(str(tmp_path), str(dest))
+
+# After — copy+delete fallback on cross-device move:
+import shutil
+shutil.move(str(tmp_path), str(dest))
+```
+Also updated `autoretry_for=(FFmpegError, OSError)` so future OS-level
+errors retry with exponential backoff.
+
+**Bonus: one-time scripts should not be committed**
+The re-dispatch involved a one-time Python script with real file paths
+hardcoded — a privacy risk. Added `.gitignore` patterns
+(`scripts/retry_*.py`, `scripts/dispatch_*.py`, `scripts/*_local.py`) to
+prevent operational one-offs from accidentally landing in the repo.
+
+**Interview talking point**
+> "`os.replace()` is POSIX `rename()` — atomic and instant within one
+> filesystem, but always `EXDEV` (cross-device) across filesystems.
+> Docker volume mounts are separate filesystems by definition. The rule:
+> whenever source and destination paths could be on different mounts, use
+> `shutil.move()` which falls back to copy+unlink. Also: narrow your
+> `autoretry_for` to the exceptions you expect, but always include `OSError`
+> for I/O-heavy tasks — OS-level I/O failures are transient more often than
+> they are permanent."
+
+---
+
 ## Cross-Cutting Themes
 
 | Theme | Issues |
@@ -431,6 +492,7 @@ Option 3: Codec-aware routing — H264 sources use -c copy (stream copy, ~30s)
 | **Browser security policies below CORS** | #7 (ORB blocks non-image `<img>` responses) |
 | **Build tooling caches can lie** | #8 (BuildKit serves stale apt layer) |
 | **Variable-cost blocking steps before invariant fast steps** | #9 (proxy encode starvation) |
+| **`os.replace()` is a rename, not a copy — fails cross-device** | #10 (cross-device volume mount) |
 
 ---
 
@@ -470,3 +532,8 @@ Option 3: Codec-aware routing — H264 sources use -c copy (stream copy, ~30s)
    before mandatory fast steps will starve the pipeline under real-world data.
    Use `/proc` inspection to verify workers are doing the right work, not just
    any work.
+
+10. **`os.replace()` is `rename(2)` — use `shutil.move()` whenever source and
+    destination may be on different mount points.** Docker volume mounts are
+    always separate filesystems. Also include `OSError` in `autoretry_for` for
+    any task that performs I/O between mounts.
