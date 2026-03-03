@@ -65,7 +65,7 @@ export default function VideoPlayer({ result, onClose }: VideoPlayerProps) {
           ) : (
             <video
               ref={videoRef}
-              src={`/api/stream?path=${encodeURIComponent(result.file_path)}`}
+              src={`${streamBase}/api/stream?path=${encodeURIComponent(result.file_path)}`}
               controls
               autoPlay
               className="w-full h-full"

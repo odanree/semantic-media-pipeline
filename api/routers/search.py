@@ -79,7 +79,7 @@ class SearchRequest(BaseModel):
 
     query: str
     limit: int = 20
-    threshold: float = 0.3
+    threshold: float = 0.2
 
 
 class SearchResult(BaseModel):

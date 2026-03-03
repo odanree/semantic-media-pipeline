@@ -166,6 +166,8 @@ services:
       - API_URL=http://api:8000
       # Client-side API endpoint (for WebSocket and browser-based requests)
       - NEXT_PUBLIC_API_URL=http://api:8000
+      # Browser-direct URL for media streaming (bypasses Next.js proxy, no buffering)
+      - NEXT_PUBLIC_STREAM_URL=${NEXT_PUBLIC_STREAM_URL:-http://localhost:8000}
       - NEXT_PUBLIC_QDRANT_HOST=qdrant
       - NEXT_PUBLIC_QDRANT_PORT=6333
     volumes:

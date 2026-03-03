@@ -63,6 +63,12 @@ async def startup_event():
     print(f"Qdrant host: {os.getenv('QDRANT_HOST', 'qdrant')}")
     print(f"Database URL: {os.getenv('DATABASE_ASYNC_URL', '***')}")
 
+    # Preload CLIP model so first search request is instant
+    import asyncio
+    from routers.search import get_clip_model
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(None, get_clip_model)
+
 
 @app.on_event("shutdown")
 async def shutdown_event():

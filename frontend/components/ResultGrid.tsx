@@ -18,6 +18,9 @@ interface ResultGridProps {
 
 type ViewMode = 'grid' | 'list'
 
+// Stream directly from FastAPI - bypasses Next.js proxy, no Node.js buffering
+const STREAM_BASE = process.env.NEXT_PUBLIC_STREAM_URL || 'http://localhost:8000'
+
 export default function ResultGrid({ results }: ResultGridProps) {
   const [selectedVideo, setSelectedVideo] = useState<SearchResult | null>(null)
   const [selectedImage, setSelectedImage] = useState<SearchResult | null>(null)
@@ -193,7 +196,7 @@ export default function ResultGrid({ results }: ResultGridProps) {
             </button>
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img
-              src={`/api/stream?path=${encodeURIComponent(selectedImage.file_path)}`}
+              src={`${STREAM_BASE}/api/stream?path=${encodeURIComponent(selectedImage.file_path)}`}
               alt={selectedImage.file_path.split('/').pop()}
               className="max-w-full max-h-[80vh] object-contain rounded shadow-2xl"
             />
@@ -268,7 +271,7 @@ function ResultItem({
             ) : (
               // eslint-disable-next-line @next/next/no-img-element
               <img
-                src={`/api/stream?path=${encodeURIComponent(result.file_path)}`}
+                src={`${STREAM_BASE}/api/stream?path=${encodeURIComponent(result.file_path)}`}
                 alt={result.file_path.split('/').pop()}
                 className="w-full h-full object-cover"
                 loading="lazy"
@@ -317,7 +320,7 @@ function ResultItem({
             ) : (
               // eslint-disable-next-line @next/next/no-img-element
               <img
-                src={`/api/stream?path=${encodeURIComponent(result.file_path)}`}
+                src={`${STREAM_BASE}/api/stream?path=${encodeURIComponent(result.file_path)}`}
                 alt={result.file_path.split('/').pop()}
                 className="w-full h-full object-cover"
                 loading="lazy"
