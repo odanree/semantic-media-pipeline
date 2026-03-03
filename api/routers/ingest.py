@@ -8,11 +8,31 @@ import os
 import re
 from datetime import datetime
 
+import io
+import logging
+
 import aiofiles
 from celery import Celery
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import Response, StreamingResponse
+from PIL import Image as PILImage
 from pydantic import BaseModel
+
+log = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Thumbnail helpers
+# ---------------------------------------------------------------------------
+
+def _placeholder_jpeg(width: int = 320, height: int = 180) -> bytes:
+    """
+    Return a minimal dark-gray JPEG.  Used whenever the thumbnail endpoint
+    cannot extract a real frame so that <img> tags always receive
+    Content-Type: image/jpeg and Chrome ERR_BLOCKED_BY_ORB never fires.
+    """
+    buf = io.BytesIO()
+    PILImage.new("RGB", (width, height), (30, 30, 30)).save(buf, format="JPEG", quality=40)
+    return buf.getvalue()
 
 router = APIRouter()
 
@@ -235,14 +255,30 @@ async def get_thumbnail(path: str, t: float = 0.0):
     Uses ffmpeg with -ss before -i (fast seek) + -vframes 1 to extract a
     single frame without decoding the entire video.  Output is piped to
     stdout to avoid any disk writes.  Browsers cache for 24 hours.
+
+    IMPORTANT: this endpoint NEVER raises HTTPException.  All error paths
+    return a dark-gray placeholder JPEG so that browser <img> tags always
+    receive Content-Type: image/jpeg and Chrome ERR_BLOCKED_BY_ORB never
+    fires (ORB triggers when a no-cors image request gets a non-image MIME
+    type such as the application/json that HTTPException would produce).
     """
     resolved = os.path.realpath(path)
 
     if not any(resolved.startswith(root) for root in ALLOWED_ROOTS):
-        raise HTTPException(status_code=403, detail="Access denied")
+        log.warning("thumbnail: access denied for path %s", path)
+        return Response(
+            content=_placeholder_jpeg(),
+            media_type="image/jpeg",
+            headers={"Cache-Control": "no-store"},
+        )
 
     if not os.path.isfile(resolved):
-        raise HTTPException(status_code=404, detail="File not found")
+        log.warning("thumbnail: file not found %s", resolved)
+        return Response(
+            content=_placeholder_jpeg(),
+            media_type="image/jpeg",
+            headers={"Cache-Control": "no-store"},
+        )
 
     # Clamp timestamp to >= 0
     seek = max(0.0, t)
@@ -263,6 +299,7 @@ async def get_thumbnail(path: str, t: float = 0.0):
         "pipe:1",
     ]
 
+    stdout = b""
     try:
         proc = await asyncio.create_subprocess_exec(
             *cmd,
@@ -270,15 +307,23 @@ async def get_thumbnail(path: str, t: float = 0.0):
             stderr=asyncio.subprocess.PIPE,
         )
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=15)
+        if proc.returncode != 0 or not stdout:
+            log.warning(
+                "thumbnail: ffmpeg non-zero exit %s for %s: %s",
+                proc.returncode, resolved,
+                stderr[-300:].decode(errors="replace"),
+            )
     except asyncio.TimeoutError:
-        raise HTTPException(status_code=504, detail="Thumbnail extraction timed out")
+        log.warning("thumbnail: ffmpeg timed out for %s at t=%.1f", resolved, seek)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"ffmpeg error: {e}")
+        log.warning("thumbnail: ffmpeg exec error for %s: %s", resolved, e)
 
-    if proc.returncode != 0 or not stdout:
-        raise HTTPException(
-            status_code=500,
-            detail=f"ffmpeg returned no data: {stderr[-200:].decode(errors='replace')}",
+    if not stdout:
+        return Response(
+            content=_placeholder_jpeg(),
+            media_type="image/jpeg",
+            # Short cache so a retry after fixing ffmpeg picks up real frames
+            headers={"Cache-Control": "public, max-age=60"},
         )
 
     return Response(
