@@ -162,13 +162,13 @@ async def search_media(request: SearchRequest):
             query_vector = query_embedding
         
         # Search Qdrant
-        search_result = qdrant_client.search_points(
+        search_result = qdrant_client.search(
             collection_name=QDRANT_COLLECTION_NAME,
             query_vector=query_vector,
             limit=request.limit,
             with_payload=True,
             score_threshold=request.threshold,
-        ).points
+        )
         
         # Process results
         results = []
@@ -229,13 +229,13 @@ async def search_by_vector(
             raise ValueError("Vector cannot be empty")
         
         # Search Qdrant
-        search_result = qdrant_client.search_points(
+        search_result = qdrant_client.search(
             collection_name=QDRANT_COLLECTION_NAME,
             query_vector=vector,
             limit=limit,
             with_payload=True,
             score_threshold=threshold,
-        ).points
+        )
         
         # Process results
         results = []
