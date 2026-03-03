@@ -4,11 +4,13 @@ Ingest, processing, and media serving endpoints
 
 import mimetypes
 import os
+import re
 from datetime import datetime
 
+import aiofiles
 from celery import Celery
-from fastapi import APIRouter, HTTPException
-from fastapi.responses import FileResponse
+from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 router = APIRouter()
@@ -122,12 +124,17 @@ ALLOWED_ROOTS = [
 ]
 
 
+# 4MB chunks = 64x fewer filesystem calls than Starlette's 64KB default.
+# Critical on Docker Desktop/Windows: each 9P volume-mount read has ~200ms
+# latency, so 64KB chunks = 25s to load 8MB.  4MB chunks = <1s.
+STREAM_CHUNK_SIZE = 4 * 1024 * 1024  # 4 MB
+
+
 @router.get("/stream")
-async def stream_media(path: str):
+async def stream_media(path: str, request: Request):
     """
-    Stream a media file with HTTP Range support.
-    Uses Starlette FileResponse which handles byte-range requests natively,
-    enabling efficient video seeking and low-buffer playback in browsers.
+    Stream a media file with full HTTP Range support.
+    Uses 4MB read chunks to minimise 9P round-trips on Docker/Windows.
     """
     resolved = os.path.realpath(path)
 
@@ -137,9 +144,57 @@ async def stream_media(path: str):
     if not os.path.isfile(resolved):
         raise HTTPException(status_code=404, detail="File not found")
 
+    file_size = os.path.getsize(resolved)
     media_type, _ = mimetypes.guess_type(resolved)
-    return FileResponse(
-        resolved,
-        media_type=media_type or "application/octet-stream",
-        headers={"Cache-Control": "public, max-age=3600"},
+    media_type = media_type or "application/octet-stream"
+
+    range_header = request.headers.get("range")
+    range_match = re.match(r"bytes=(\d+)-(\d*)", range_header or "")
+
+    if range_match:
+        start = int(range_match.group(1))
+        end = int(range_match.group(2)) if range_match.group(2) else file_size - 1
+        end = min(end, file_size - 1)
+        content_length = end - start + 1
+
+        async def ranged_sender():
+            async with aiofiles.open(resolved, "rb") as f:
+                await f.seek(start)
+                remaining = content_length
+                while remaining > 0:
+                    chunk = await f.read(min(STREAM_CHUNK_SIZE, remaining))
+                    if not chunk:
+                        break
+                    remaining -= len(chunk)
+                    yield chunk
+
+        return StreamingResponse(
+            ranged_sender(),
+            status_code=206,
+            media_type=media_type,
+            headers={
+                "Content-Range": f"bytes {start}-{end}/{file_size}",
+                "Accept-Ranges": "bytes",
+                "Content-Length": str(content_length),
+                "Cache-Control": "public, max-age=3600",
+            },
+        )
+
+    # No Range header — stream the full file
+    async def full_sender():
+        async with aiofiles.open(resolved, "rb") as f:
+            while True:
+                chunk = await f.read(STREAM_CHUNK_SIZE)
+                if not chunk:
+                    break
+                yield chunk
+
+    return StreamingResponse(
+        full_sender(),
+        media_type=media_type,
+        headers={
+            "Accept-Ranges": "bytes",
+            "Content-Length": str(file_size),
+            "Cache-Control": "public, max-age=3600",
+        },
     )

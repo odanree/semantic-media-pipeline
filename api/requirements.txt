@@ -1,5 +1,6 @@
 fastapi==0.112.1
 uvicorn[standard]==0.30.1
+aiofiles==23.2.1
 pydantic==2.10.6
 sqlalchemy==2.0.47
 asyncpg==0.30.0
