@@ -21,6 +21,8 @@ A distributed, multimodal ingestion engine that transforms massive personal medi
 
 ### Key Features
 - **Cross-Modal Search**: Query 4K photos and videos with natural language — images and videos share the same vector space using CLIP embeddings
+- **Semantic Thumbnails**: Video grid shows the exact frame that matched your CLIP query, not a static keyframe — timestamp comes from Qdrant payloads
+- **Proxy Sidecar**: Worker auto-generates 720p H.264/AAC faststart proxy files on ingest; browser streams the proxy by default for instant playback, with a one-click **[View Original]** toggle to stream the 4K source
 - **Idempotent Processing**: File hashing ensures the 500GB library has zero processing cost on re-runs
 - **Horizontally Scalable**: Add more Celery workers to decrease total indexing time linearly
 - **Real-Time Monitoring**: WebSocket-based dashboard with live ingest progress and processing statistics
@@ -30,12 +32,13 @@ A distributed, multimodal ingestion engine that transforms massive personal medi
 | Layer | Technology |
 |-------|-----------|
 | **ML & Vision** | Sentence-Transformers CLIP (ViT-B-32), FFmpeg, Pillow |
-| **Async Queue** | Celery + Redis with exponential backoff retry |
+| **Async Queue** | Celery + Redis — concurrency=6, prefetch-multiplier=1, max_tasks_per_child=50 |
 | **Vector Storage** | Qdrant (512-dim HNSW indexing) |
 | **Relational DB** | PostgreSQL (metadata, file tracking) |
 | **Frontend** | Next.js 15 (App Router), React 18, Tailwind CSS |
 | **WebSocket Real-Time** | Starlette ASGI, Next.js API routes |
 | **Containerization** | Docker Compose, multi-stage builds, Kubernetes |
+| **Video Delivery** | 720p H.264 proxy sidecar (`:rw` volume), 4MB streaming chunks, Range/206 support |
 
 ---
 
@@ -107,11 +110,73 @@ To maintain senior-level code organization, this project uses **Lumen** as the i
 
 ---
 
-## �🚦 Getting Started
+##  Getting Started
 
-1.  **Clone & Build:**
-    ```bash
-    git clone [https://github.com/odanree/Semantic-Media-Pipeline.git](https://github.com/odanree/Semantic-Media-Pipeline.git)
-    docker-compose up -d --build
-    ```
-2.  **Mount Data:** Map your local Pixel backup folder to `/app/back
+### Prerequisites
+- Docker Desktop with WSL2 backend (Windows) or Docker Engine (Linux/macOS)
+- 16 GB+ RAM recommended (CLIP model ~600 MB  worker concurrency)
+- A local media library of photos/videos to index
+
+### 1. Clone
+```bash
+git clone https://github.com/odanree/semantic-media-pipeline.git
+cd semantic-media-pipeline
+```
+
+### 2. Configure environment
+Copy the example and fill in the required values:
+```bash
+cp .env.example .env
+```
+
+Key variables to set in `.env`:
+```env
+# Absolute path to your local media library (photos + videos)
+MEDIA_SOURCE_PATH=/path/to/your/media
+
+# PostgreSQL credentials
+DATABASE_USER=lumen_user
+DATABASE_PASSWORD=your_secure_password
+DATABASE_NAME=lumen
+DATABASE_URL=postgresql://lumen_user:your_secure_password@lumen-postgres:5432/lumen
+DATABASE_ASYNC_URL=postgresql+asyncpg://lumen_user:your_secure_password@lumen-postgres:5432/lumen
+
+# Worker tuning  start conservative, increase if RAM allows
+# Rule of thumb: floor(free_RAM_GB / 2), max tested: 6
+CELERY_CONCURRENCY=4
+```
+
+### 3. Build and start
+```bash
+docker compose up -d --build
+```
+
+First startup takes a few minutes  the worker downloads the CLIP ViT-B-32
+model (~350 MB) on first run. Watch progress with:
+```bash
+docker logs lumen-worker -f
+# Ready when you see: " CLIP embedder loaded successfully"
+```
+
+### 4. Verify services are healthy
+```bash
+docker compose ps
+# All services should show "Up" or "Up (healthy)"
+```
+
+### 5. Trigger ingest
+Open [http://localhost:3000](http://localhost:3000) and click **Start Ingest**,
+or call the API directly:
+```bash
+curl -X POST http://localhost:8000/api/ingest/crawl \
+  -H "Content-Type: application/json" \
+  -d '{"path": "/mnt/source"}'
+```
+
+Monitor task progress at [http://localhost:5555](http://localhost:5555) (Flower).
+
+### 6. Search your media
+Once ingest completes, open [http://localhost:3000](http://localhost:3000) and
+type a natural-language query  e.g. *"sunset at the beach"* or *"kids playing
+in the backyard"*. Results show the semantically closest video frame or photo,
+with thumbnails pinned to the exact matched timestamp.

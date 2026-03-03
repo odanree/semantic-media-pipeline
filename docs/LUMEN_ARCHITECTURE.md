@@ -106,6 +106,8 @@ lumen-initdb       ← PostgreSQL initialization schema
 ```text
 lumen-media-data   ← Media library (500Gi)
 lumen-worker-tmp   ← Temporary frame storage (50Gi)
+lumen-proxies      ← 720p H.264/AAC faststart proxy files written by worker (:rw)
+                      read by API (:ro) for low-latency playback
 lumen-model-cache  ← CLIP model cache (10Gi)
 ```
 

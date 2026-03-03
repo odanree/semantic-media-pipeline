@@ -161,10 +161,37 @@ curl -X POST http://localhost:8000/api/ingest \
 
 ## Performance Tuning
 
-### Scale Horizontally
+### Worker Concurrency (Primary Knob)
+
+Do **not** use `--scale worker=N` to add concurrency — each container loads its
+own CLIP model (~600 MB) and the overhead multiplies. Instead, tune the
+`CELERY_CONCURRENCY` env var in `.env` (or `docker-compose.yml`):
+
+```env
+# Rule of thumb: floor(free_RAM_GB / 2)
+# Each worker uses ~600 MB CLIP + ~400 MB FFmpeg buffers per 4K video
+CELERY_CONCURRENCY=6
+
+# Workers pull one task at a time — prevents hoarding during 4K transcodes
+CELERY_WORKER_PREFETCH_MULTIPLIER=1
+
+# Recycle child after N tasks to clear PyTorch / FFmpeg memory leaks
+CELERY_MAX_TASKS_PER_CHILD=50
+
+# Hard per-child RAM ceiling (KB) — child is killed and replaced if exceeded
+CELERY_MAX_MEMORY_PER_CHILD=1500000
+```
+
+Apply by restarting the worker container (no rebuild needed):
 ```bash
-# Run 4 worker instances
-docker-compose up -d --scale worker=4
+echo N | docker compose up -d --no-deps worker
+```
+
+Watch RAM to confirm a safe cruising speed:
+```bash
+docker stats lumen-worker --no-stream
+# TARGET: MEM usage 3.5–4.5 GB at concurrency=6
+# If it climbs toward 12 GB, drop CELERY_CONCURRENCY to 4
 ```
 
 ### Adjust Batch Size
