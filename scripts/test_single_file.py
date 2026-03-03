@@ -12,10 +12,12 @@ import sys
 import time
 from pathlib import Path
 
-# Add worker module to path
+# For testing: Import celery app the same way the worker does
+os.chdir(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from worker.celery_app import celery_app
+# Import celery_app from worker directory
+from worker.celery_app import app as celery_app
 from worker.tasks import ingest_media
 
 
@@ -55,9 +57,9 @@ def test_single_file(file_path: str) -> None:
     print(f"File Size: {os.path.getsize(file_path) / 1024 / 1024:.2f} MB")
     print()
     
-    # Enqueue ingest task
+    # Enqueue ingest task via Celery app (using task name, like the API does)
     print("Enqueueing ingest_media task...")
-    task = ingest_media.delay(file_path, file_type)
+    task = celery_app.send_task('tasks.ingest_media', args=(file_path, file_type))
     print(f"Ingest Task ID: {task.id}")
     print()
     

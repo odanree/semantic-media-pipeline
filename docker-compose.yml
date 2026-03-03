@@ -68,8 +68,8 @@ services:
   # =========================================================================
   worker:
     build:
-      context: ./worker
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: worker/Dockerfile
       args:
         - PYTHON_VERSION=3.10
         - USE_GPU=false
@@ -92,6 +92,9 @@ services:
       - worker_tmp:/tmp/lumen_frames
       - /usr/lib/wsl/lib:/usr/lib/wsl/lib  # WSL2 DirectX driver mapping
       - ${MEDIA_SOURCE_PATH}:/mnt/source:ro # Host media library (path set in .env)
+      # Development: Mount worker code for hot-reload (comment out for production)
+      - ./worker:/app/worker
+      - ./scripts:/app/scripts
     depends_on:
       redis:
         condition: service_healthy
