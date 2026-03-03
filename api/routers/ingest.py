@@ -120,8 +120,13 @@ async def get_task_status(task_id: str):
 
 ALLOWED_ROOTS = [
     os.path.realpath("/mnt/source"),
+    os.path.realpath("/mnt/proxies"),
     os.path.realpath("/data/media"),
 ]
+
+# Source root for proxy lookup (must match the worker's PROXY_ROOT)
+_SOURCE_ROOT = os.path.realpath("/mnt/source")
+_PROXY_ROOT_DEFAULT = "/mnt/proxies"
 
 
 # 4MB chunks = 64x fewer filesystem calls than Starlette's 64KB default.
@@ -140,6 +145,17 @@ async def stream_media(path: str, request: Request):
 
     if not any(resolved.startswith(root) for root in ALLOWED_ROOTS):
         raise HTTPException(status_code=403, detail="Access denied")
+
+    # Transparently serve proxy when available.
+    # The worker writes a faststart copy to PROXY_ROOT mirroring the source
+    # tree; that copy has moov-first so the browser can seek instantly.
+    # Falls back to the original source if no proxy exists yet.
+    proxy_root = os.getenv("PROXY_ROOT", _PROXY_ROOT_DEFAULT).strip()
+    if proxy_root and resolved.startswith(_SOURCE_ROOT + os.sep):
+        rel = resolved[len(_SOURCE_ROOT) + 1:]
+        proxy_candidate = os.path.join(proxy_root, rel)
+        if os.path.isfile(proxy_candidate):
+            resolved = proxy_candidate
 
     if not os.path.isfile(resolved):
         raise HTTPException(status_code=404, detail="File not found")

@@ -98,10 +98,13 @@ services:
       - CELERY_CONCURRENCY=${CELERY_CONCURRENCY:-4}
       - CELERY_MAX_TASKS_PER_CHILD=${CELERY_MAX_TASKS_PER_CHILD:-50}
       - CELERY_MAX_MEMORY_PER_CHILD=${CELERY_MAX_MEMORY_PER_CHILD:-1500000}
+      # Proxy sidecar: faststart copies land here (source stays :ro)
+      - PROXY_ROOT=${PROXY_ROOT:-/mnt/proxies}
     user: root
     volumes:
       - media_data:/data/media
       - worker_tmp:/tmp/lumen_frames
+      - proxies_data:/mnt/proxies        # Faststart proxy cache (:rw — worker writes here)
       - /usr/lib/wsl/lib:/usr/lib/wsl/lib  # WSL2 DirectX driver mapping
       - ${MEDIA_SOURCE_PATH}:/mnt/source:ro # Host media library (path set in .env)
       # Development: Mount worker code for hot-reload (comment out for production)
@@ -144,10 +147,13 @@ services:
       - QDRANT_HOST=${QDRANT_HOST:-lumen-qdrant}
       - QDRANT_PORT=${QDRANT_PORT:-6333}
       - MEDIA_ROOT=${MEDIA_ROOT:-/data/media}
+      # Proxy sidecar: read proxies volume to serve faststart copies
+      - PROXY_ROOT=${PROXY_ROOT:-/mnt/proxies}
     # Development: mount source for hot-reload (comment out for production)
     command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
     volumes:
       - media_data:/data/media
+      - proxies_data:/mnt/proxies:ro      # Faststart proxy cache (:ro for API)
       - ${MEDIA_SOURCE_PATH}:/mnt/source:ro # Host media library (path set in .env)
       - ./api:/app                          # Development: hot-reload (comment out for production)
     depends_on:
@@ -265,6 +271,8 @@ volumes:
       o: bind
       device: ${MEDIA_ROOT:-/data/media}
   worker_tmp:
+    driver: local
+  proxies_data:
     driver: local
   prometheus_data:
     driver: local

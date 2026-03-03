@@ -212,21 +212,34 @@ def extract_thumbnail(
         raise FFmpegError(f"FFmpeg timeout extracting thumbnail from {video_path}")
 
 
-def apply_faststart(video_path: str) -> bool:
+def apply_faststart(video_path: str, output_path: Optional[str] = None) -> bool:
     """
     Move the MOOV atom to the front of an MP4 file so browsers can start
     playback immediately without buffering the entire file first.
 
     Uses -c copy so no re-encoding occurs — typically completes in <5s
-    regardless of file size. Writes to a sibling temp file then atomically
-    replaces the original so existing DB/Qdrant paths stay valid.
+    regardless of file size.
 
-    Returns True if the file was remuxed, False if it was already faststart
-    or is not an MP4 container.
+    Args:
+        video_path:   Source MP4/MOV to remux.
+        output_path:  Where to write the faststart copy.
+                      • Provided (proxy mode):  writes to this path, parent dirs
+                        are created automatically.  Source is untouched.
+                      • None (in-place mode):    tries to atomically replace the
+                        source file.  Requires a writable mount; logs a clear
+                        message and returns False on PermissionError.
+
+    Returns True if a faststart file was written, False if the source was
+    already optimised, not an MP4 container, or skipped due to :ro mount.
     """
     path = Path(video_path)
     suffix = path.suffix.lower()
     if suffix not in (".mp4", ".m4v", ".mov"):
+        return False
+
+    # Proxy mode: skip if the proxy already exists (idempotent re-ingest)
+    if output_path and Path(output_path).is_file():
+        print(f"[Faststart] Proxy already exists, skipping: {output_path}")
         return False
 
     # Check whether moov is already at the front (skip needless work)
@@ -265,20 +278,26 @@ def apply_faststart(video_path: str) -> bool:
         if result.returncode != 0:
             raise FFmpegError(f"faststart failed: {result.stderr[-500:]}")
 
-        # Atomic replace: rename over the original
-        # This will raise PermissionError if the source mount is read-only (:ro).
-        # In that case log a clear message — the video is still playable,
-        # it just won't have the moov-first optimisation.
-        try:
-            os.replace(str(tmp_path), str(path))
-        except PermissionError:
-            print(
-                f"[Faststart] Skipped (source mount is read-only): {video_path}\n"
-                f"  To enable in-place faststart, remove ':ro' from the "
-                f"MEDIA_SOURCE_PATH volume mount in docker-compose.yml"
-            )
-            return False
-        print(f"[Faststart] MOOV atom moved to front: {video_path}")
+        if output_path:
+            # Proxy mode: move the faststart copy to the proxy volume.
+            # The proxy volume is :rw so no PermissionError expected here.
+            dest = Path(output_path)
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            os.replace(str(tmp_path), str(dest))
+            print(f"[Faststart] Proxy written: {output_path}")
+        else:
+            # In-place mode: atomically replace the source file.
+            # Requires a writable mount; :ro → PermissionError.
+            try:
+                os.replace(str(tmp_path), str(path))
+            except PermissionError:
+                print(
+                    f"[Faststart] Skipped (source mount is read-only): {video_path}\n"
+                    f"  To enable in-place faststart, remove ':ro' from the "
+                    f"MEDIA_SOURCE_PATH volume mount in docker-compose.yml"
+                )
+                return False
+            print(f"[Faststart] MOOV atom moved to front: {video_path}")
         return True
 
     except subprocess.TimeoutExpired:

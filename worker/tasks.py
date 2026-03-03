@@ -9,7 +9,7 @@ import tempfile
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 
 import numpy as np
 from PIL import Image
@@ -298,9 +298,16 @@ def process_video(self, file_path: str, media_record_id: str):
         }
         db.commit()
 
-        # Apply faststart: move MOOV atom to front so browsers start instantly
+        # Faststart proxy: remux with moov-first into /mnt/proxies so the
+        # source volume stays :ro (Zero-Mutation Architecture).
+        # The API stream endpoint transparently serves the proxy if present.
+        proxy_root = os.getenv("PROXY_ROOT", "").strip()
+        proxy_path: Optional[str] = None
+        if proxy_root and file_path.startswith("/mnt/source/"):
+            rel = file_path[len("/mnt/source/"):]  # preserve subdirectory tree
+            proxy_path = os.path.join(proxy_root, rel)
         try:
-            apply_faststart(file_path)
+            apply_faststart(file_path, proxy_path)
         except FFmpegError as e:
             # Non-fatal: log and continue — video still searchable/playable
             print(f"[Faststart] Warning (non-fatal): {e}")
