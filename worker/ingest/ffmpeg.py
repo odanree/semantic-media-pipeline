@@ -4,6 +4,7 @@ FFmpeg Integration - Video processing and frame extraction
 
 import json
 import os
+import shutil
 import subprocess
 import tempfile
 from pathlib import Path
@@ -338,11 +339,11 @@ def apply_faststart(
         if output_path:
             dest = Path(output_path)
             dest.parent.mkdir(parents=True, exist_ok=True)
-            os.replace(str(tmp_path), str(dest))
+            shutil.move(str(tmp_path), str(dest))
             print(f"[Faststart] Proxy written: {output_path}")
         else:
             try:
-                os.replace(str(tmp_path), str(path))
+                shutil.move(str(tmp_path), str(path))
             except PermissionError:
                 print(
                     f"[Faststart] Skipped (source mount is read-only): {video_path}\n"
