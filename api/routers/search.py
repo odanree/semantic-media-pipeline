@@ -161,14 +161,14 @@ async def search_media(request: SearchRequest):
         else:
             query_vector = query_embedding
         
-        # Search Qdrant - using search_vectors for similarity search
-        search_result = qdrant_client.search_vectors(
+        # Search Qdrant using query_points (qdrant-client v1.7+ API)
+        search_result = qdrant_client.query_points(
             collection_name=QDRANT_COLLECTION_NAME,
-            query_vector=query_vector,
+            query=query_vector,
             limit=request.limit,
             with_payload=True,
             score_threshold=request.threshold,
-        )
+        ).points
         
         # Process results
         results = []
@@ -228,14 +228,14 @@ async def search_by_vector(
         if not vector:
             raise ValueError("Vector cannot be empty")
         
-        # Search Qdrant - using search_vectors for similarity search
-        search_result = qdrant_client.search_vectors(
+        # Search Qdrant using query_points (qdrant-client v1.7+ API)
+        search_result = qdrant_client.query_points(
             collection_name=QDRANT_COLLECTION_NAME,
-            query_vector=vector,
+            query=vector,
             limit=limit,
             with_payload=True,
             score_threshold=threshold,
-        )
+        ).points
         
         # Process results
         results = []
