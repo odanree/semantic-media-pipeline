@@ -136,26 +136,30 @@ STREAM_CHUNK_SIZE = 4 * 1024 * 1024  # 4 MB
 
 
 @router.get("/stream")
-async def stream_media(path: str, request: Request):
+async def stream_media(path: str, request: Request, quality: str = "proxy"):
     """
     Stream a media file with full HTTP Range support.
     Uses 4MB read chunks to minimise 9P round-trips on Docker/Windows.
+
+    quality=proxy    (default) transparently serves the 720p faststart proxy
+                     if one exists, falling back to the original source.
+    quality=original bypasses the proxy lookup and always serves the raw file.
     """
     resolved = os.path.realpath(path)
 
     if not any(resolved.startswith(root) for root in ALLOWED_ROOTS):
         raise HTTPException(status_code=403, detail="Access denied")
 
-    # Transparently serve proxy when available.
+    # Transparently serve proxy when available (skipped for quality=original).
     # The worker writes a faststart copy to PROXY_ROOT mirroring the source
     # tree; that copy has moov-first so the browser can seek instantly.
-    # Falls back to the original source if no proxy exists yet.
-    proxy_root = os.getenv("PROXY_ROOT", _PROXY_ROOT_DEFAULT).strip()
-    if proxy_root and resolved.startswith(_SOURCE_ROOT + os.sep):
-        rel = resolved[len(_SOURCE_ROOT) + 1:]
-        proxy_candidate = os.path.join(proxy_root, rel)
-        if os.path.isfile(proxy_candidate):
-            resolved = proxy_candidate
+    if quality != "original":
+        proxy_root = os.getenv("PROXY_ROOT", _PROXY_ROOT_DEFAULT).strip()
+        if proxy_root and resolved.startswith(_SOURCE_ROOT + os.sep):
+            rel = resolved[len(_SOURCE_ROOT) + 1:]
+            proxy_candidate = os.path.join(proxy_root, rel)
+            if os.path.isfile(proxy_candidate):
+                resolved = proxy_candidate
 
     if not os.path.isfile(resolved):
         raise HTTPException(status_code=404, detail="File not found")
