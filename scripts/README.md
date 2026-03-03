@@ -8,12 +8,12 @@ Manually inject a single file into the ingest pipeline for debugging and validat
 
 **PowerShell (Windows)**:
 ```powershell
-.\scripts\test-single-file.ps1 "J:\Pixel 9 Aug to Sept 2025\PXL_20250910_020850495.mp4"
+.\scripts\test-single-file.ps1 "J:\Videos\sample_clip.mp4"
 ```
 
 **Bash**:
 ```bash
-docker exec lumen-worker python scripts/test_single_file.py /mnt/source/Pixel\ 9\ Aug\ to\ Sept\ 2025/PXL_20250910_020850495.mp4
+docker exec lumen-worker python scripts/test_single_file.py /mnt/source/Videos/sample_clip.mp4
 ```
 
 ### What It Does
@@ -38,7 +38,7 @@ docker exec lumen-worker python scripts/test_single_file.py /mnt/source/Pixel\ 9
 ================================================================================
 TEST: Single File Ingest
 ================================================================================
-File: /mnt/source/Pixel 9 Aug to Sept 2025/PXL_20250910_020850495.mp4
+File: /mnt/source/Videos/sample_clip.mp4
 Exists: True
 File Type: video
 File Size: 45.23 MB
