@@ -212,6 +212,71 @@ def extract_thumbnail(
         raise FFmpegError(f"FFmpeg timeout extracting thumbnail from {video_path}")
 
 
+def apply_faststart(video_path: str) -> bool:
+    """
+    Move the MOOV atom to the front of an MP4 file so browsers can start
+    playback immediately without buffering the entire file first.
+
+    Uses -c copy so no re-encoding occurs — typically completes in <5s
+    regardless of file size. Writes to a sibling temp file then atomically
+    replaces the original so existing DB/Qdrant paths stay valid.
+
+    Returns True if the file was remuxed, False if it was already faststart
+    or is not an MP4 container.
+    """
+    path = Path(video_path)
+    suffix = path.suffix.lower()
+    if suffix not in (".mp4", ".m4v", ".mov"):
+        return False
+
+    # Check whether moov is already at the front (skip needless work)
+    try:
+        result = subprocess.run(
+            ["ffprobe", "-v", "trace", "-i", video_path],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        combined = result.stdout + result.stderr
+        # moov before mdat = already faststart
+        moov_pos = combined.find("moov")
+        mdat_pos = combined.find("mdat")
+        if 0 < moov_pos < mdat_pos:
+            print(f"[Faststart] Already optimised, skipping: {video_path}")
+            return False
+    except Exception:
+        pass  # If probe fails, attempt remux anyway
+
+    tmp_path = path.with_suffix(".faststart_tmp" + path.suffix)
+    try:
+        result = subprocess.run(
+            [
+                "ffmpeg",
+                "-y",
+                "-i", video_path,
+                "-c", "copy",
+                "-movflags", "+faststart",
+                str(tmp_path),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=300,  # 5 min ceiling — copy of even 4K 1h file is fast
+        )
+        if result.returncode != 0:
+            raise FFmpegError(f"faststart failed: {result.stderr[-500:]}")
+
+        # Atomic replace: rename over the original
+        os.replace(str(tmp_path), str(path))
+        print(f"[Faststart] MOOV atom moved to front: {video_path}")
+        return True
+
+    except subprocess.TimeoutExpired:
+        raise FFmpegError(f"[Faststart] Timed out on {video_path}")
+    finally:
+        if tmp_path.exists():
+            tmp_path.unlink(missing_ok=True)
+
+
 def normalize_image(image_path: str, output_path: str, resolution: int = 224) -> str:
     """
     Normalize an image to a standard format and resolution.

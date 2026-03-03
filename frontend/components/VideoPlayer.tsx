@@ -69,7 +69,7 @@ export default function VideoPlayer({ result, onClose }: VideoPlayerProps) {
               ref={videoRef}
               src={`${streamBase}/api/stream?path=${encodeURIComponent(result.file_path)}`}
               controls
-              autoPlay
+              preload="metadata"
               className="w-full h-full"
               onError={(e) => {
                 const target = e.target as HTMLVideoElement

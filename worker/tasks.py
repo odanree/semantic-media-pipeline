@@ -23,6 +23,7 @@ from db.session import SyncSessionLocal
 from ingest.crawler import crawl_media
 from ingest.ffmpeg import (
     FFmpegError,
+    apply_faststart,
     extract_keyframes,
     extract_thumbnail,
     normalize_image,
@@ -296,6 +297,13 @@ def process_video(self, file_path: str, media_record_id: str):
             "frame_rate": metadata["frame_rate"],
         }
         db.commit()
+
+        # Apply faststart: move MOOV atom to front so browsers start instantly
+        try:
+            apply_faststart(file_path)
+        except FFmpegError as e:
+            # Non-fatal: log and continue — video still searchable/playable
+            print(f"[Faststart] Warning (non-fatal): {e}")
 
         # Extract frames
         temp_dir = tempfile.mkdtemp(prefix="lumen_frames_")
