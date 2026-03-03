@@ -22,4 +22,4 @@ Write-Host "Container Path: $ContainerPath"
 Write-Host ""
 
 # Run test script in worker container
-docker exec lumen-worker python scripts/test_single_file.py $ContainerPath
+& docker exec lumen-worker python scripts/test_single_file.py $ContainerPath

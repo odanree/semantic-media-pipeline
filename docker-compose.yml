@@ -93,8 +93,8 @@ services:
       - /usr/lib/wsl/lib:/usr/lib/wsl/lib  # WSL2 DirectX driver mapping
       - ${MEDIA_SOURCE_PATH}:/mnt/source:ro # Host media library (path set in .env)
       # Development: Mount worker code for hot-reload (comment out for production)
-      - ./worker:/app/worker
-      - ./scripts:/app/scripts
+      # - ./worker:/app/worker
+      # - ./scripts:/app/scripts
     depends_on:
       redis:
         condition: service_healthy
