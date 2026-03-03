@@ -247,7 +247,7 @@ def apply_faststart(video_path: str) -> bool:
     except Exception:
         pass  # If probe fails, attempt remux anyway
 
-    tmp_path = path.with_suffix(".faststart_tmp" + path.suffix)
+    tmp_path = Path(tempfile.mktemp(suffix=path.suffix, dir="/tmp"))
     try:
         result = subprocess.run(
             [
@@ -266,7 +266,18 @@ def apply_faststart(video_path: str) -> bool:
             raise FFmpegError(f"faststart failed: {result.stderr[-500:]}")
 
         # Atomic replace: rename over the original
-        os.replace(str(tmp_path), str(path))
+        # This will raise PermissionError if the source mount is read-only (:ro).
+        # In that case log a clear message — the video is still playable,
+        # it just won't have the moov-first optimisation.
+        try:
+            os.replace(str(tmp_path), str(path))
+        except PermissionError:
+            print(
+                f"[Faststart] Skipped (source mount is read-only): {video_path}\n"
+                f"  To enable in-place faststart, remove ':ro' from the "
+                f"MEDIA_SOURCE_PATH volume mount in docker-compose.yml"
+            )
+            return False
         print(f"[Faststart] MOOV atom moved to front: {video_path}")
         return True
 
