@@ -18,8 +18,12 @@ interface ResultGridProps {
 
 type ViewMode = 'grid' | 'list'
 
+// Stream directly from FastAPI - bypasses Next.js proxy, no Node.js buffering
+const STREAM_BASE = process.env.NEXT_PUBLIC_STREAM_URL || 'http://localhost:8000'
+
 export default function ResultGrid({ results }: ResultGridProps) {
   const [selectedVideo, setSelectedVideo] = useState<SearchResult | null>(null)
+  const [selectedImage, setSelectedImage] = useState<SearchResult | null>(null)
   const [currentPage, setCurrentPage] = useState(1)
   const [viewMode, setViewMode] = useState<ViewMode>('grid')
   const itemsPerPage = 20
@@ -101,7 +105,10 @@ export default function ResultGrid({ results }: ResultGridProps) {
             key={`${result.file_path}-${result.frame_index || 0}`}
             result={result}
             viewMode={viewMode}
-            onSelect={() => result.file_type === 'video' && setSelectedVideo(result)}
+            onSelect={() => {
+              if (result.file_type === 'video') setSelectedVideo(result)
+              else setSelectedImage(result)
+            }}
           />
         ))}
       </div>
@@ -171,6 +178,37 @@ export default function ResultGrid({ results }: ResultGridProps) {
           onClose={() => setSelectedVideo(null)}
         />
       )}
+
+      {selectedImage && (
+        <div
+          className="fixed inset-0 bg-black bg-opacity-90 z-50 flex items-center justify-center p-4"
+          onClick={() => setSelectedImage(null)}
+        >
+          <div
+            className="relative max-w-5xl max-h-full flex flex-col items-center"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <button
+              onClick={() => setSelectedImage(null)}
+              className="absolute -top-8 right-0 text-white text-sm hover:text-gray-300 transition"
+            >
+              ✕ Close
+            </button>
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src={`${STREAM_BASE}/api/stream?path=${encodeURIComponent(selectedImage.file_path)}`}
+              alt={selectedImage.file_path.split('/').pop()}
+              className="max-w-full max-h-[80vh] object-contain rounded shadow-2xl"
+            />
+            <p className="mt-3 text-sm text-gray-400 text-center">
+              {selectedImage.file_path.split('/').pop()}
+              <span className="ml-3 text-blue-400 font-semibold">
+                {(selectedImage.similarity * 100).toFixed(1)}% match
+              </span>
+            </p>
+          </div>
+        </div>
+      )}
     </>
   )
 }
@@ -214,11 +252,9 @@ function ResultItem({
         role="listitem"
         onClick={onSelect}
         onKeyDown={(e) => {
-          if ((e.key === 'Enter' || e.key === ' ') && result.file_type === 'video') {
-            onSelect()
-          }
+          if (e.key === 'Enter' || e.key === ' ') onSelect()
         }}
-        tabIndex={result.file_type === 'video' ? 0 : -1}
+        tabIndex={0}
         aria-label={`${result.file_type} with ${(result.similarity * 100).toFixed(1)}% similarity`}
       >
         <div className="relative aspect-square bg-gray-700 overflow-hidden">
@@ -233,7 +269,13 @@ function ResultItem({
                 </div>
               </div>
             ) : (
-              <div className="text-4xl">🖼️</div>
+              // eslint-disable-next-line @next/next/no-img-element
+              <img
+                src={`${STREAM_BASE}/api/stream?path=${encodeURIComponent(result.file_path)}`}
+                alt={result.file_path.split('/').pop()}
+                className="w-full h-full object-cover"
+                loading="lazy"
+              />
             )
           ) : (
             <div className="w-full h-full bg-gray-900 animate-pulse"></div>
@@ -264,11 +306,9 @@ function ResultItem({
         role="listitem"
         onClick={onSelect}
         onKeyDown={(e) => {
-          if ((e.key === 'Enter' || e.key === ' ') && result.file_type === 'video') {
-            onSelect()
-          }
+          if (e.key === 'Enter' || e.key === ' ') onSelect()
         }}
-        tabIndex={result.file_type === 'video' ? 0 : -1}
+        tabIndex={0}
         aria-label={`${result.file_type} with ${(result.similarity * 100).toFixed(1)}% similarity`}
       >
         {/* Thumbnail */}
@@ -278,7 +318,13 @@ function ResultItem({
             result.file_type === 'video' ? (
               <div className="w-full h-full flex items-center justify-center text-2xl">🎥</div>
             ) : (
-              <div className="w-full h-full flex items-center justify-center text-2xl">🖼️</div>
+              // eslint-disable-next-line @next/next/no-img-element
+              <img
+                src={`${STREAM_BASE}/api/stream?path=${encodeURIComponent(result.file_path)}`}
+                alt={result.file_path.split('/').pop()}
+                className="w-full h-full object-cover"
+                loading="lazy"
+              />
             )
           ) : (
             <div className="w-full h-full animate-pulse"></div>

@@ -4,8 +4,10 @@ Search endpoint - Vector similarity search in Qdrant
 
 import os
 import time
-from typing import List
+from typing import List, Optional
 
+import numpy as np
+import torch
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from qdrant_client import QdrantClient
@@ -27,12 +29,57 @@ qdrant_client = QdrantClient(
 )
 
 
+# Initialize CLIP embedder (lazy-loaded)
+_clip_model: Optional[object] = None
+EMBEDDER_AVAILABLE = False
+
+
+def _get_device() -> str:
+    """Detect best available compute device."""
+    try:
+        import torch_directml
+        torch.zeros(1, device=torch_directml.device())
+        return "cpu"  # DirectML not available in API container, use CPU
+    except Exception:
+        pass
+    
+    if torch.cuda.is_available():
+        return "cuda"
+    
+    return "cpu"
+
+
+def get_clip_model():
+    """Get or create the CLIP model instance (lazy loading)."""
+    global _clip_model, EMBEDDER_AVAILABLE
+    
+    if _clip_model is None:
+        try:
+            # Import SentenceTransformer (should work now that accelerate.py is patched)
+            from sentence_transformers import SentenceTransformer
+            
+            model_name = os.getenv("CLIP_MODEL_NAME", "clip-ViT-B-32")
+            device = _get_device()
+            print(f"Loading {model_name} on device: {device}")
+            _clip_model = SentenceTransformer(model_name, device=device)
+            EMBEDDER_AVAILABLE = True
+            print(f"✓ CLIP embedder loaded successfully")
+        except Exception as e:
+            print(f"✗ Failed to load CLIP embedder: {e}")
+            import traceback
+            traceback.print_exc()
+            EMBEDDER_AVAILABLE = False
+            raise
+    
+    return _clip_model
+
+
 class SearchRequest(BaseModel):
     """Search request model"""
 
     query: str
     limit: int = 20
-    threshold: float = 0.3
+    threshold: float = 0.2
 
 
 class SearchResult(BaseModel):
@@ -82,10 +129,7 @@ async def search_media(request: SearchRequest):
     """
     Search for media using text query.
     
-    NOTE: This endpoint requires text-to-vector embedding.
-    The full implementation will integrate with Celery workers.
-    
-    For now, returns placeholder results.
+    Embeds the text query using CLIP and searches Qdrant for similar embeddings.
     
     Args:
         query: Text search query
@@ -95,24 +139,67 @@ async def search_media(request: SearchRequest):
     Returns:
         List of matching media with similarity scores
     """
+    if not request.query or not request.query.strip():
+        raise HTTPException(status_code=400, detail="Query cannot be empty")
+    
     try:
         start_time = time.time()
         
-        # TODO: Integrate with Celery worker for text embedding
-        # For now, return empty results
+        # Load CLIP model (lazy-loaded on first use)
+        try:
+            model = get_clip_model()
+        except Exception as e:
+            raise HTTPException(
+                status_code=503,
+                detail=f"CLIP embedder failed to load: {str(e)}"
+            )
+        
+        # Embed the text query using CLIP
+        query_embedding = model.encode(request.query, convert_to_tensor=False)
+        if isinstance(query_embedding, np.ndarray):
+            query_vector = query_embedding.tolist()
+        else:
+            query_vector = query_embedding
+        
+        # Search Qdrant using query_points (qdrant-client v1.7+ API)
+        search_result = qdrant_client.query_points(
+            collection_name=QDRANT_COLLECTION_NAME,
+            query=query_vector,
+            limit=request.limit,
+            with_payload=True,
+            score_threshold=request.threshold,
+        ).points
+        
+        # Process results
         results = []
+        for point in search_result:
+            payload = point.payload
+            result = {
+                "id": point.id,
+                "file_path": payload.get("file_path"),
+                "file_type": payload.get("file_type"),
+                "similarity": float(point.score),
+                "frame_index": payload.get("frame_index"),
+                "timestamp": payload.get("timestamp"),
+            }
+            results.append(result)
         
         execution_time_ms = (time.time() - start_time) * 1000
         
         return SearchResponse(
             query=request.query,
             results=results,
-            count=0,
+            count=len(results),
             execution_time_ms=execution_time_ms,
         )
     
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        print(f"Search error: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Search failed: {str(e)}")
 
 
 @router.post("/search-vector")
@@ -141,27 +228,28 @@ async def search_by_vector(
         if not vector:
             raise ValueError("Vector cannot be empty")
         
-        # Search Qdrant
-        search_result = qdrant_client.search(
+        # Search Qdrant using query_points (qdrant-client v1.7+ API)
+        search_result = qdrant_client.query_points(
             collection_name=QDRANT_COLLECTION_NAME,
-            query_vector=vector,
+            query=vector,
             limit=limit,
             with_payload=True,
-        )
+            score_threshold=threshold,
+        ).points
         
         # Process results
         results = []
         for point in search_result:
-            if point.score >= threshold:
-                payload = point.payload
-                result = {
-                    "file_path": payload.get("file_path"),
-                    "file_type": payload.get("file_type"),
-                    "similarity": float(point.score),
-                    "frame_index": payload.get("frame_index"),
-                    "timestamp": payload.get("timestamp"),
-                }
-                results.append(result)
+            payload = point.payload
+            result = {
+                "id": point.id,
+                "file_path": payload.get("file_path"),
+                "file_type": payload.get("file_type"),
+                "similarity": float(point.score),
+                "frame_index": payload.get("frame_index"),
+                "timestamp": payload.get("timestamp"),
+            }
+            results.append(result)
         
         execution_time_ms = (time.time() - start_time) * 1000
         

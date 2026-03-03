@@ -1,12 +1,16 @@
 """
-Ingest and processing endpoints
+Ingest, processing, and media serving endpoints
 """
 
+import mimetypes
 import os
+import re
 from datetime import datetime
 
+import aiofiles
 from celery import Celery
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 router = APIRouter()
@@ -108,3 +112,109 @@ async def get_task_status(task_id: str):
         return response
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ===========================================================================
+# Media streaming
+# ===========================================================================
+
+ALLOWED_ROOTS = [
+    os.path.realpath("/mnt/source"),
+    os.path.realpath("/mnt/proxies"),
+    os.path.realpath("/data/media"),
+]
+
+# Source root for proxy lookup (must match the worker's PROXY_ROOT)
+_SOURCE_ROOT = os.path.realpath("/mnt/source")
+_PROXY_ROOT_DEFAULT = "/mnt/proxies"
+
+
+# 4MB chunks = 64x fewer filesystem calls than Starlette's 64KB default.
+# Critical on Docker Desktop/Windows: each 9P volume-mount read has ~200ms
+# latency, so 64KB chunks = 25s to load 8MB.  4MB chunks = <1s.
+STREAM_CHUNK_SIZE = 4 * 1024 * 1024  # 4 MB
+
+
+@router.get("/stream")
+async def stream_media(path: str, request: Request, quality: str = "proxy"):
+    """
+    Stream a media file with full HTTP Range support.
+    Uses 4MB read chunks to minimise 9P round-trips on Docker/Windows.
+
+    quality=proxy    (default) transparently serves the 720p faststart proxy
+                     if one exists, falling back to the original source.
+    quality=original bypasses the proxy lookup and always serves the raw file.
+    """
+    resolved = os.path.realpath(path)
+
+    if not any(resolved.startswith(root) for root in ALLOWED_ROOTS):
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    # Transparently serve proxy when available (skipped for quality=original).
+    # The worker writes a faststart copy to PROXY_ROOT mirroring the source
+    # tree; that copy has moov-first so the browser can seek instantly.
+    if quality != "original":
+        proxy_root = os.getenv("PROXY_ROOT", _PROXY_ROOT_DEFAULT).strip()
+        if proxy_root and resolved.startswith(_SOURCE_ROOT + os.sep):
+            rel = resolved[len(_SOURCE_ROOT) + 1:]
+            proxy_candidate = os.path.join(proxy_root, rel)
+            if os.path.isfile(proxy_candidate):
+                resolved = proxy_candidate
+
+    if not os.path.isfile(resolved):
+        raise HTTPException(status_code=404, detail="File not found")
+
+    file_size = os.path.getsize(resolved)
+    media_type, _ = mimetypes.guess_type(resolved)
+    media_type = media_type or "application/octet-stream"
+
+    range_header = request.headers.get("range")
+    range_match = re.match(r"bytes=(\d+)-(\d*)", range_header or "")
+
+    if range_match:
+        start = int(range_match.group(1))
+        end = int(range_match.group(2)) if range_match.group(2) else file_size - 1
+        end = min(end, file_size - 1)
+        content_length = end - start + 1
+
+        async def ranged_sender():
+            async with aiofiles.open(resolved, "rb") as f:
+                await f.seek(start)
+                remaining = content_length
+                while remaining > 0:
+                    chunk = await f.read(min(STREAM_CHUNK_SIZE, remaining))
+                    if not chunk:
+                        break
+                    remaining -= len(chunk)
+                    yield chunk
+
+        return StreamingResponse(
+            ranged_sender(),
+            status_code=206,
+            media_type=media_type,
+            headers={
+                "Content-Range": f"bytes {start}-{end}/{file_size}",
+                "Accept-Ranges": "bytes",
+                "Content-Length": str(content_length),
+                "Cache-Control": "public, max-age=3600",
+            },
+        )
+
+    # No Range header — stream the full file
+    async def full_sender():
+        async with aiofiles.open(resolved, "rb") as f:
+            while True:
+                chunk = await f.read(STREAM_CHUNK_SIZE)
+                if not chunk:
+                    break
+                yield chunk
+
+    return StreamingResponse(
+        full_sender(),
+        media_type=media_type,
+        headers={
+            "Accept-Ranges": "bytes",
+            "Content-Length": str(file_size),
+            "Cache-Control": "public, max-age=3600",
+        },
+    )

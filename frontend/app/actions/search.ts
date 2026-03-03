@@ -19,7 +19,7 @@ export async function embedQuery(query: string): Promise<number[]> {
 export async function searchMedia(
   query: string,
   limit: number = 20,
-  threshold: number = 0.3
+  threshold: number = 0.2
 ) {
   try {
     const response = await axios.post(`${API_URL}/api/search`, {

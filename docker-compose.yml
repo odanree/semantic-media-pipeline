@@ -74,6 +74,12 @@ services:
         - PYTHON_VERSION=3.10
         - USE_GPU=false
     container_name: lumen-worker
+    # Shell form so env vars are expanded at runtime (not build time)
+    command: >
+      sh -c "celery -A celery_app worker
+      --loglevel=info
+      --concurrency=$${CELERY_CONCURRENCY:-4}
+      --max-tasks-per-child=$${CELERY_MAX_TASKS_PER_CHILD:-50}"
     env_file:
       - .env
     environment:
@@ -86,10 +92,19 @@ services:
       - QDRANT_GRPC_PORT=${QDRANT_GRPC_PORT:-6334}
       - MEDIA_ROOT=${MEDIA_ROOT:-/data/media}
       - STORAGE_BACKEND=${STORAGE_BACKEND:-local}
+      # Worker throttling — tune in .env to match available RAM
+      # Rule of thumb: CELERY_CONCURRENCY = floor(free_RAM_GB / 2)
+      # Each worker: ~600MB CLIP model + ~400MB FFmpeg buffers per 4K video
+      - CELERY_CONCURRENCY=${CELERY_CONCURRENCY:-4}
+      - CELERY_MAX_TASKS_PER_CHILD=${CELERY_MAX_TASKS_PER_CHILD:-50}
+      - CELERY_MAX_MEMORY_PER_CHILD=${CELERY_MAX_MEMORY_PER_CHILD:-1500000}
+      # Proxy sidecar: faststart copies land here (source stays :ro)
+      - PROXY_ROOT=${PROXY_ROOT:-/mnt/proxies}
     user: root
     volumes:
       - media_data:/data/media
       - worker_tmp:/tmp/lumen_frames
+      - proxies_data:/mnt/proxies        # Faststart proxy cache (:rw — worker writes here)
       - /usr/lib/wsl/lib:/usr/lib/wsl/lib  # WSL2 DirectX driver mapping
       - ${MEDIA_SOURCE_PATH}:/mnt/source:ro # Host media library (path set in .env)
       # Development: Mount worker code for hot-reload (comment out for production)
@@ -132,9 +147,15 @@ services:
       - QDRANT_HOST=${QDRANT_HOST:-lumen-qdrant}
       - QDRANT_PORT=${QDRANT_PORT:-6333}
       - MEDIA_ROOT=${MEDIA_ROOT:-/data/media}
+      # Proxy sidecar: read proxies volume to serve faststart copies
+      - PROXY_ROOT=${PROXY_ROOT:-/mnt/proxies}
+    # Development: mount source for hot-reload (comment out for production)
+    command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
     volumes:
       - media_data:/data/media
+      - proxies_data:/mnt/proxies:ro      # Faststart proxy cache (:ro for API)
       - ${MEDIA_SOURCE_PATH}:/mnt/source:ro # Host media library (path set in .env)
+      - ./api:/app                          # Development: hot-reload (comment out for production)
     depends_on:
       redis:
         condition: service_healthy
@@ -163,8 +184,13 @@ services:
       - API_URL=http://api:8000
       # Client-side API endpoint (for WebSocket and browser-based requests)
       - NEXT_PUBLIC_API_URL=http://api:8000
+      # Browser-direct URL for media streaming (bypasses Next.js proxy, no buffering)
+      - NEXT_PUBLIC_STREAM_URL=${NEXT_PUBLIC_STREAM_URL:-http://localhost:8000}
       - NEXT_PUBLIC_QDRANT_HOST=qdrant
       - NEXT_PUBLIC_QDRANT_PORT=6333
+    volumes:
+      - media_data:/data/media
+      - ${MEDIA_SOURCE_PATH}:/mnt/source:ro # Host media library (for video streaming)
     depends_on:
       - api
     networks:
@@ -245,6 +271,8 @@ volumes:
       o: bind
       device: ${MEDIA_ROOT:-/data/media}
   worker_tmp:
+    driver: local
+  proxies_data:
     driver: local
   prometheus_data:
     driver: local

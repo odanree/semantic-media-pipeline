@@ -2,6 +2,13 @@
 FastAPI Backend - Lumen Media Pipeline API
 """
 
+# CRITICAL: Patch MUST happen before ANY other imports
+# Fix transformers.integrations.accelerate NameError for 'nn'
+import sys
+import builtins
+import torch.nn as nn
+builtins.nn = nn  # Inject nn into builtins so it's globally accessible
+
 import os
 from datetime import datetime
 
@@ -16,7 +23,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from qdrant_client import QdrantClient
 
-# Import routers
+# Import routers (these may use sentence_transformers internally)
 from routers import health, ingest, search, updates
 
 # Initialize FastAPI app
@@ -55,6 +62,12 @@ async def startup_event():
     print("Lumen API starting up...")
     print(f"Qdrant host: {os.getenv('QDRANT_HOST', 'qdrant')}")
     print(f"Database URL: {os.getenv('DATABASE_ASYNC_URL', '***')}")
+
+    # Preload CLIP model so first search request is instant
+    import asyncio
+    from routers.search import get_clip_model
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(None, get_clip_model)
 
 
 @app.on_event("shutdown")

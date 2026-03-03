@@ -24,9 +24,17 @@ app.conf.update(
     result_serializer="json",
     timezone="UTC",
     enable_utc=True,
-    task_acks_late=True,  # At-least-once delivery
+    task_acks_late=True,           # At-least-once delivery
     worker_prefetch_multiplier=1,  # One task at a time for long-running jobs
-    task_track_started=True,  # Track when tasks start
+    task_track_started=True,       # Track when tasks start
+    # -----------------------------------------------------------------------
+    # Memory & lifecycle management
+    # Each worker loads CLIP (~600MB) + FFmpeg buffers (~400MB per 4K video).
+    # Recycle children after N tasks to release FFmpeg/PyTorch memory leaks.
+    # Memory limit (KB) triggers recycle if a child grows past 1 GB.
+    # -----------------------------------------------------------------------
+    worker_max_tasks_per_child=int(os.getenv("CELERY_MAX_TASKS_PER_CHILD", "50")),
+    worker_max_memory_per_child=int(os.getenv("CELERY_MAX_MEMORY_PER_CHILD", "1500000")),  # 1.5 GB in KB
 )
 
 # Configure task defaults (exponential backoff)

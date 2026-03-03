@@ -212,6 +212,141 @@ def extract_thumbnail(
         raise FFmpegError(f"FFmpeg timeout extracting thumbnail from {video_path}")
 
 
+def apply_faststart(
+    video_path: str,
+    output_path: Optional[str] = None,
+    video_duration: Optional[float] = None,
+) -> bool:
+    """
+    Produce a browser-ready version of an MP4/MOV file.
+
+    Two modes depending on whether output_path is supplied:
+
+    Proxy mode  (output_path provided — Zero-Mutation Architecture)
+        Transcodes to a crushed 720p H.264/AAC copy with moov-first.
+        • scale=-2:720   preserves aspect ratio for both landscape AND portrait
+        • CRF 28 + veryfast preset  ≈ 1:20 size ratio vs. 4K original
+        • ~25 GB proxies for a 500 GB library vs 500 GB for a -c copy
+        • Timeout scales with video_duration (pass metadata["duration"] from
+          tasks.py); falls back to a 30 min ceiling if unknown.
+        File is written to output_path on the :rw proxies_data volume.
+        Source is never touched.
+
+    In-place mode (output_path is None)
+        Stream-copies (no re-encode) with -movflags +faststart and atomically
+        replaces the source.  Requires a writable mount — logs a clear message
+        and returns False on PermissionError (:ro source).
+
+    Returns True if a file was written, False if already optimised, wrong
+    container, proxy already exists, or :ro PermissionError.
+    """
+    path = Path(video_path)
+    suffix = path.suffix.lower()
+    if suffix not in (".mp4", ".m4v", ".mov"):
+        return False
+
+    # Proxy mode: idempotent — skip if proxy already exists
+    if output_path and Path(output_path).is_file():
+        print(f"[Faststart] Proxy already exists, skipping: {output_path}")
+        return False
+
+    # In-place mode: skip if moov is already at the front
+    if not output_path:
+        try:
+            result = subprocess.run(
+                ["ffprobe", "-v", "trace", "-i", video_path],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            combined = result.stdout + result.stderr
+            moov_pos = combined.find("moov")
+            mdat_pos = combined.find("mdat")
+            if 0 < moov_pos < mdat_pos:
+                print(f"[Faststart] Already optimised, skipping: {video_path}")
+                return False
+        except Exception:
+            pass  # If probe fails, attempt remux anyway
+
+    tmp_path = Path(tempfile.mktemp(suffix=".mp4", dir="/tmp"))
+    try:
+        if output_path:
+            # ── Proxy mode: crushed 720p H.264 ──────────────────────────────
+            # scale=-2:720  keeps the original aspect ratio for both landscape
+            # (1920×1080 → 1280×720) and portrait (1080×1920 → 404×720).
+            # -2 means FFmpeg auto-rounds the other dimension to be divisible
+            # by 2, which H.264 requires.
+            #
+            # Timeout: veryfast 4K → roughly 3-4× realtime on CPU.
+            # Give 5× duration + 120s buffer, with a 1800s (30 min) floor.
+            encode_timeout = max(
+                1800,
+                int((video_duration or 0) * 5) + 120,
+            )
+            cmd = [
+                "ffmpeg", "-y",
+                "-i", video_path,
+                "-c:v", "libx264",
+                "-crf", "28",
+                "-preset", "veryfast",
+                "-vf", "scale=-2:720",
+                "-c:a", "aac",
+                "-b:a", "128k",
+                "-movflags", "+faststart",
+                str(tmp_path),
+            ]
+            print(
+                f"[Faststart] Encoding 720p proxy "
+                f"(timeout {encode_timeout}s): {video_path}"
+            )
+        else:
+            # ── In-place mode: stream copy, moov-first ───────────────────────
+            # No re-encode; completes in <5s regardless of file size.
+            encode_timeout = 300
+            cmd = [
+                "ffmpeg", "-y",
+                "-i", video_path,
+                "-c", "copy",
+                "-movflags", "+faststart",
+                str(tmp_path),
+            ]
+
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=encode_timeout,
+        )
+        if result.returncode != 0:
+            raise FFmpegError(f"faststart failed: {result.stderr[-500:]}")
+
+        if output_path:
+            dest = Path(output_path)
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            os.replace(str(tmp_path), str(dest))
+            print(f"[Faststart] Proxy written: {output_path}")
+        else:
+            try:
+                os.replace(str(tmp_path), str(path))
+            except PermissionError:
+                print(
+                    f"[Faststart] Skipped (source mount is read-only): {video_path}\n"
+                    f"  To enable in-place faststart, remove ':ro' from the "
+                    f"MEDIA_SOURCE_PATH volume mount in docker-compose.yml"
+                )
+                return False
+            print(f"[Faststart] MOOV atom moved to front: {video_path}")
+        return True
+
+    except subprocess.TimeoutExpired:
+        raise FFmpegError(
+            f"[Faststart] Timed out ({encode_timeout}s) on {video_path}"
+        )
+    finally:
+        if tmp_path.exists():
+            tmp_path.unlink(missing_ok=True)
+
+
 def normalize_image(image_path: str, output_path: str, resolution: int = 224) -> str:
     """
     Normalize an image to a standard format and resolution.
