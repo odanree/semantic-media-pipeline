@@ -307,7 +307,7 @@ def process_video(self, file_path: str, media_record_id: str):
             rel = file_path[len("/mnt/source/"):]  # preserve subdirectory tree
             proxy_path = os.path.join(proxy_root, rel)
         try:
-            apply_faststart(file_path, proxy_path)
+            apply_faststart(file_path, proxy_path, metadata["duration"])
         except FFmpegError as e:
             # Non-fatal: log and continue — video still searchable/playable
             print(f"[Faststart] Warning (non-fatal): {e}")

@@ -212,82 +212,120 @@ def extract_thumbnail(
         raise FFmpegError(f"FFmpeg timeout extracting thumbnail from {video_path}")
 
 
-def apply_faststart(video_path: str, output_path: Optional[str] = None) -> bool:
+def apply_faststart(
+    video_path: str,
+    output_path: Optional[str] = None,
+    video_duration: Optional[float] = None,
+) -> bool:
     """
-    Move the MOOV atom to the front of an MP4 file so browsers can start
-    playback immediately without buffering the entire file first.
+    Produce a browser-ready version of an MP4/MOV file.
 
-    Uses -c copy so no re-encoding occurs — typically completes in <5s
-    regardless of file size.
+    Two modes depending on whether output_path is supplied:
 
-    Args:
-        video_path:   Source MP4/MOV to remux.
-        output_path:  Where to write the faststart copy.
-                      • Provided (proxy mode):  writes to this path, parent dirs
-                        are created automatically.  Source is untouched.
-                      • None (in-place mode):    tries to atomically replace the
-                        source file.  Requires a writable mount; logs a clear
-                        message and returns False on PermissionError.
+    Proxy mode  (output_path provided — Zero-Mutation Architecture)
+        Transcodes to a crushed 720p H.264/AAC copy with moov-first.
+        • scale=-2:720   preserves aspect ratio for both landscape AND portrait
+        • CRF 28 + veryfast preset  ≈ 1:20 size ratio vs. 4K original
+        • ~25 GB proxies for a 500 GB library vs 500 GB for a -c copy
+        • Timeout scales with video_duration (pass metadata["duration"] from
+          tasks.py); falls back to a 30 min ceiling if unknown.
+        File is written to output_path on the :rw proxies_data volume.
+        Source is never touched.
 
-    Returns True if a faststart file was written, False if the source was
-    already optimised, not an MP4 container, or skipped due to :ro mount.
+    In-place mode (output_path is None)
+        Stream-copies (no re-encode) with -movflags +faststart and atomically
+        replaces the source.  Requires a writable mount — logs a clear message
+        and returns False on PermissionError (:ro source).
+
+    Returns True if a file was written, False if already optimised, wrong
+    container, proxy already exists, or :ro PermissionError.
     """
     path = Path(video_path)
     suffix = path.suffix.lower()
     if suffix not in (".mp4", ".m4v", ".mov"):
         return False
 
-    # Proxy mode: skip if the proxy already exists (idempotent re-ingest)
+    # Proxy mode: idempotent — skip if proxy already exists
     if output_path and Path(output_path).is_file():
         print(f"[Faststart] Proxy already exists, skipping: {output_path}")
         return False
 
-    # Check whether moov is already at the front (skip needless work)
-    try:
-        result = subprocess.run(
-            ["ffprobe", "-v", "trace", "-i", video_path],
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-        combined = result.stdout + result.stderr
-        # moov before mdat = already faststart
-        moov_pos = combined.find("moov")
-        mdat_pos = combined.find("mdat")
-        if 0 < moov_pos < mdat_pos:
-            print(f"[Faststart] Already optimised, skipping: {video_path}")
-            return False
-    except Exception:
-        pass  # If probe fails, attempt remux anyway
+    # In-place mode: skip if moov is already at the front
+    if not output_path:
+        try:
+            result = subprocess.run(
+                ["ffprobe", "-v", "trace", "-i", video_path],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            combined = result.stdout + result.stderr
+            moov_pos = combined.find("moov")
+            mdat_pos = combined.find("mdat")
+            if 0 < moov_pos < mdat_pos:
+                print(f"[Faststart] Already optimised, skipping: {video_path}")
+                return False
+        except Exception:
+            pass  # If probe fails, attempt remux anyway
 
-    tmp_path = Path(tempfile.mktemp(suffix=path.suffix, dir="/tmp"))
+    tmp_path = Path(tempfile.mktemp(suffix=".mp4", dir="/tmp"))
     try:
-        result = subprocess.run(
-            [
-                "ffmpeg",
-                "-y",
+        if output_path:
+            # ── Proxy mode: crushed 720p H.264 ──────────────────────────────
+            # scale=-2:720  keeps the original aspect ratio for both landscape
+            # (1920×1080 → 1280×720) and portrait (1080×1920 → 404×720).
+            # -2 means FFmpeg auto-rounds the other dimension to be divisible
+            # by 2, which H.264 requires.
+            #
+            # Timeout: veryfast 4K → roughly 3-4× realtime on CPU.
+            # Give 5× duration + 120s buffer, with a 1800s (30 min) floor.
+            encode_timeout = max(
+                1800,
+                int((video_duration or 0) * 5) + 120,
+            )
+            cmd = [
+                "ffmpeg", "-y",
+                "-i", video_path,
+                "-c:v", "libx264",
+                "-crf", "28",
+                "-preset", "veryfast",
+                "-vf", "scale=-2:720",
+                "-c:a", "aac",
+                "-b:a", "128k",
+                "-movflags", "+faststart",
+                str(tmp_path),
+            ]
+            print(
+                f"[Faststart] Encoding 720p proxy "
+                f"(timeout {encode_timeout}s): {video_path}"
+            )
+        else:
+            # ── In-place mode: stream copy, moov-first ───────────────────────
+            # No re-encode; completes in <5s regardless of file size.
+            encode_timeout = 300
+            cmd = [
+                "ffmpeg", "-y",
                 "-i", video_path,
                 "-c", "copy",
                 "-movflags", "+faststart",
                 str(tmp_path),
-            ],
+            ]
+
+        result = subprocess.run(
+            cmd,
             capture_output=True,
             text=True,
-            timeout=300,  # 5 min ceiling — copy of even 4K 1h file is fast
+            timeout=encode_timeout,
         )
         if result.returncode != 0:
             raise FFmpegError(f"faststart failed: {result.stderr[-500:]}")
 
         if output_path:
-            # Proxy mode: move the faststart copy to the proxy volume.
-            # The proxy volume is :rw so no PermissionError expected here.
             dest = Path(output_path)
             dest.parent.mkdir(parents=True, exist_ok=True)
             os.replace(str(tmp_path), str(dest))
             print(f"[Faststart] Proxy written: {output_path}")
         else:
-            # In-place mode: atomically replace the source file.
-            # Requires a writable mount; :ro → PermissionError.
             try:
                 os.replace(str(tmp_path), str(path))
             except PermissionError:
@@ -301,7 +339,9 @@ def apply_faststart(video_path: str, output_path: Optional[str] = None) -> bool:
         return True
 
     except subprocess.TimeoutExpired:
-        raise FFmpegError(f"[Faststart] Timed out on {video_path}")
+        raise FFmpegError(
+            f"[Faststart] Timed out ({encode_timeout}s) on {video_path}"
+        )
     finally:
         if tmp_path.exists():
             tmp_path.unlink(missing_ok=True)
