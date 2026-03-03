@@ -265,3 +265,8 @@ build-log.txt
 
 # Second isolated stack (local only, not for repo)
 docker-compose.second.yml
+
+# One-time operational scripts (contain real file paths, never commit)
+scripts/retry_*.py
+scripts/*_local.py
+scripts/dispatch_*.py

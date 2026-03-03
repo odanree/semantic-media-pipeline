@@ -405,7 +405,7 @@ def process_video(self, file_path: str, media_record_id: str):
 
 @app.task(
     bind=True,
-    autoretry_for=(FFmpegError,),
+    autoretry_for=(FFmpegError, OSError),
     retry_backoff=True,
     retry_backoff_max=600,
     retry_jitter=True,
