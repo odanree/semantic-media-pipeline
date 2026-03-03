@@ -259,3 +259,5 @@ out/
 build/
 dist/
 *.orig
+# Local build artifacts
+build-log.txt
