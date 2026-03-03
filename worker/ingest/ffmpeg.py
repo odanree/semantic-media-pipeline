@@ -216,6 +216,7 @@ def apply_faststart(
     video_path: str,
     output_path: Optional[str] = None,
     video_duration: Optional[float] = None,
+    source_codec: Optional[str] = None,
 ) -> bool:
     """
     Produce a browser-ready version of an MP4/MOV file.
@@ -271,34 +272,48 @@ def apply_faststart(
     tmp_path = Path(tempfile.mktemp(suffix=".mp4", dir="/tmp"))
     try:
         if output_path:
-            # ── Proxy mode: crushed 720p H.264 ──────────────────────────────
-            # scale=-2:720  keeps the original aspect ratio for both landscape
-            # (1920×1080 → 1280×720) and portrait (1080×1920 → 404×720).
-            # -2 means FFmpeg auto-rounds the other dimension to be divisible
-            # by 2, which H.264 requires.
-            #
-            # Timeout: veryfast 4K → roughly 3-4× realtime on CPU.
-            # Give 5× duration + 120s buffer, with a 1800s (30 min) floor.
-            encode_timeout = max(
-                1800,
-                int((video_duration or 0) * 5) + 120,
-            )
-            cmd = [
-                "ffmpeg", "-y",
-                "-i", video_path,
-                "-c:v", "libx264",
-                "-crf", "28",
-                "-preset", "veryfast",
-                "-vf", "scale=-2:720",
-                "-c:a", "aac",
-                "-b:a", "128k",
-                "-movflags", "+faststart",
-                str(tmp_path),
-            ]
-            print(
-                f"[Faststart] Encoding 720p proxy "
-                f"(timeout {encode_timeout}s): {video_path}"
-            )
+            if source_codec == "h264":
+                # ── Option 3: H264 source → stream-copy, moov-first ─────────
+                # No re-encode. Takes ~30s regardless of file size.
+                # Browser streams full 4K; proxy is bandwidth-heavy but instant
+                # to produce vs. hours of transcode time.
+                encode_timeout = 300
+                cmd = [
+                    "ffmpeg", "-y",
+                    "-i", video_path,
+                    "-c", "copy",
+                    "-movflags", "+faststart",
+                    str(tmp_path),
+                ]
+                print(
+                    f"[Faststart] Stream-copy proxy (H264 source, "
+                    f"timeout {encode_timeout}s): {video_path}"
+                )
+            else:
+                # ── Non-H264: transcode to crushed 720p H.264 ────────────────
+                # scale=-2:720 keeps aspect ratio for landscape and portrait.
+                # Timeout: veryfast 4K → ~3-4× realtime on CPU.
+                # Give 5× duration + 120s buffer, with a 1800s (30 min) floor.
+                encode_timeout = max(
+                    1800,
+                    int((video_duration or 0) * 5) + 120,
+                )
+                cmd = [
+                    "ffmpeg", "-y",
+                    "-i", video_path,
+                    "-c:v", "libx264",
+                    "-crf", "28",
+                    "-preset", "veryfast",
+                    "-vf", "scale=-2:720",
+                    "-c:a", "aac",
+                    "-b:a", "128k",
+                    "-movflags", "+faststart",
+                    str(tmp_path),
+                ]
+                print(
+                    f"[Faststart] Encoding 720p proxy "
+                    f"(timeout {encode_timeout}s): {video_path}"
+                )
         else:
             # ── In-place mode: stream copy, moov-first ───────────────────────
             # No re-encode; completes in <5s regardless of file size.

@@ -265,4 +265,3 @@ build-log.txt
 
 # Second isolated stack (local only, not for repo)
 docker-compose.second.yml
->>>>>>> 04e5ca4 (chore: ignore docker-compose.second.yml)
