@@ -1,12 +1,14 @@
 """
-Ingest and processing endpoints
+Ingest, processing, and media serving endpoints
 """
 
+import mimetypes
 import os
 from datetime import datetime
 
 from celery import Celery
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 router = APIRouter()
@@ -108,3 +110,36 @@ async def get_task_status(task_id: str):
         return response
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ===========================================================================
+# Media streaming
+# ===========================================================================
+
+ALLOWED_ROOTS = [
+    os.path.realpath("/mnt/source"),
+    os.path.realpath("/data/media"),
+]
+
+
+@router.get("/stream")
+async def stream_media(path: str):
+    """
+    Stream a media file with HTTP Range support.
+    Uses Starlette FileResponse which handles byte-range requests natively,
+    enabling efficient video seeking and low-buffer playback in browsers.
+    """
+    resolved = os.path.realpath(path)
+
+    if not any(resolved.startswith(root) for root in ALLOWED_ROOTS):
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    if not os.path.isfile(resolved):
+        raise HTTPException(status_code=404, detail="File not found")
+
+    media_type, _ = mimetypes.guess_type(resolved)
+    return FileResponse(
+        resolved,
+        media_type=media_type or "application/octet-stream",
+        headers={"Cache-Control": "public, max-age=3600"},
+    )
