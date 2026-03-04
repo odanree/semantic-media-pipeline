@@ -480,6 +480,66 @@ prevent operational one-offs from accidentally landing in the repo.
 
 ---
 
+## 11. `os.getenv('VAR', default)` Does Not Guard Against Empty String (1 commit)
+
+**Commit:** `4a7f9a2`
+
+**Symptom**
+`process_video` tasks stuck in perpetual RETRY. No useful error in the
+traceback — just `ValueError: invalid literal for int() with base 10: ''`.
+The tasks retried on backoff but never progressed, consuming worker slots
+indefinitely.
+
+**What happened**
+`KEYFRAME_RESOLUTION` and `EMBEDDING_BATCH_SIZE` were declared in
+`docker-compose.second.yml` as:
+```yaml
+- KEYFRAME_RESOLUTION=${KEYFRAME_RESOLUTION:-224}
+- EMBEDDING_BATCH_SIZE=${EMBEDDING_BATCH_SIZE:-96}
+```
+The host shell had these variables exported as empty strings
+(`KEYFRAME_RESOLUTION=`). The `:-` default in shell substitution fills in a
+default only when the variable is **unset or null**; an exported empty-string
+variable is considered set, so `${KEYFRAME_RESOLUTION:-224}` expands to `""`.
+The container received `KEYFRAME_RESOLUTION=""`. Then:
+```python
+resolution = int(os.getenv("KEYFRAME_RESOLUTION", "224"))
+# os.getenv returns "" (var is set), not "224" (fallback only fires if unset)
+# int("") → ValueError
+```
+
+**Root cause**
+`os.getenv('VAR', 'fallback')` has the same semantics as shell `:-`: fallback
+only activates when the key is absent from `os.environ`. An empty-string value
+is returned as-is. Any subsequent `int()` or `float()` cast will raise.
+
+Because `autoretry_for=(Exception,)` covers `ValueError`, the task retried on
+exponential backoff indefinitely — never succeeding, never failing permanently.
+
+**The fix**
+```python
+# Before — silently passes empty string to int():
+resolution = int(os.getenv("KEYFRAME_RESOLUTION", "224"))
+
+# After — empty string is falsy, falls back to default:
+resolution = int(os.getenv("KEYFRAME_RESOLUTION") or "224")
+```
+Applied to all five affected variables across `tasks.py` and
+`ingest/ffmpeg.py`.
+
+**Interview talking point**
+> "`os.getenv('VAR', default)` and shell `${VAR:-default}` share the same
+> footgun: neither protects against an explicitly-set empty string. The
+> Python `or` idiom is more defensive because it treats any falsy value
+> (empty string, zero, None) as 'use the fallback'. For configuration values
+> that will be passed to int() or float(), always use `os.getenv('VAR') or
+> 'default'`. The bug was invisible until real data hit the pipeline because
+> the dev environment had the variables unset rather than empty."
+
+---
+
+---
+
 ## Cross-Cutting Themes
 
 | Theme | Issues |
@@ -493,6 +553,7 @@ prevent operational one-offs from accidentally landing in the repo.
 | **Build tooling caches can lie** | #8 (BuildKit serves stale apt layer) |
 | **Variable-cost blocking steps before invariant fast steps** | #9 (proxy encode starvation) |
 | **`os.replace()` is a rename, not a copy — fails cross-device** | #10 (cross-device volume mount) |
+| **`os.getenv('VAR', default)` does not protect against empty string** | #11 (empty env var int cast) |
 
 ---
 
@@ -537,3 +598,8 @@ prevent operational one-offs from accidentally landing in the repo.
     destination may be on different mount points.** Docker volume mounts are
     always separate filesystems. Also include `OSError` in `autoretry_for` for
     any task that performs I/O between mounts.
+
+11. **`os.getenv('VAR', 'default')` returns `''` when the variable is set but
+    empty — use `os.getenv('VAR') or 'default'` for any cast to `int`/`float`.**
+    An empty-string env var causes `int('')` → `ValueError`, which with
+    `autoretry_for=(Exception,)` results in infinite retries with no progress.

@@ -330,8 +330,8 @@ def process_video(self, file_path: str, media_record_id: str):
             frame_paths = extract_keyframes(
                 file_path,
                 temp_dir,
-                fps=float(os.getenv("KEYFRAME_FPS", "0.5")),
-                resolution=int(os.getenv("KEYFRAME_RESOLUTION", "224")),
+                fps=float(os.getenv("KEYFRAME_FPS") or "0.5"),
+                resolution=int(os.getenv("KEYFRAME_RESOLUTION") or "224"),
                 video_duration=metadata["duration"],
             )
             print(f"Extracted {len(frame_paths)} frames")
@@ -340,7 +340,7 @@ def process_video(self, file_path: str, media_record_id: str):
                 raise FFmpegError(f"No frames extracted from {file_path}")
 
             # Embed frames in batches
-            batch_size = int(os.getenv("EMBEDDING_BATCH_SIZE", "32"))
+            batch_size = int(os.getenv("EMBEDDING_BATCH_SIZE") or "32")
             print(f"Embedding {len(frame_paths)} frames with batch size {batch_size}")
             embeddings = embedder.embed_frames(frame_paths, batch_size=batch_size)
 
@@ -358,7 +358,7 @@ def process_video(self, file_path: str, media_record_id: str):
                             "file_type": "video",
                             "file_hash": media_record.file_hash,
                             "frame_index": frame_idx,
-                            "timestamp": (frame_idx / float(os.getenv("KEYFRAME_FPS", "0.5"))),
+                            "timestamp": (frame_idx / float(os.getenv("KEYFRAME_FPS") or "0.5")),
                             "created_at": datetime.utcnow().isoformat(),
                             "media_file_id": media_record_id,
                         },
@@ -424,7 +424,7 @@ def generate_proxy(self, file_path: str, proxy_path: str, duration: float, codec
     Set PROXY_MAX_DURATION_SECS env var to control the skip threshold
     (default: 3600 = 1 hour).
     """
-    max_dur = float(os.getenv("PROXY_MAX_DURATION_SECS", "3600"))
+    max_dur = float(os.getenv("PROXY_MAX_DURATION_SECS") or "3600")
 
     if codec != "h264" and duration > max_dur:
         print(
