@@ -78,7 +78,7 @@ services:
     command: >
       sh -c "celery -A celery_app worker
       --loglevel=info
-      --concurrency=$${CELERY_CONCURRENCY:-6}
+      --concurrency=$${CELERY_CONCURRENCY:-4}
       --prefetch-multiplier=$${CELERY_WORKER_PREFETCH_MULTIPLIER:-1}
       --max-tasks-per-child=$${CELERY_MAX_TASKS_PER_CHILD:-50}
       --queues=celery,proxies"
@@ -97,7 +97,7 @@ services:
       # Worker throttling — tune in .env to match available RAM
       # Rule of thumb: CELERY_CONCURRENCY = floor(free_RAM_GB / 2)
       # Each worker: ~600MB CLIP model + ~400MB FFmpeg buffers per 4K video
-      - CELERY_CONCURRENCY=${CELERY_CONCURRENCY:-6}
+      - CELERY_CONCURRENCY=${CELERY_CONCURRENCY:-4}
       - CELERY_WORKER_PREFETCH_MULTIPLIER=${CELERY_WORKER_PREFETCH_MULTIPLIER:-1}
       - CELERY_MAX_TASKS_PER_CHILD=${CELERY_MAX_TASKS_PER_CHILD:-50}
       - CELERY_MAX_MEMORY_PER_CHILD=${CELERY_MAX_MEMORY_PER_CHILD:-1500000}
