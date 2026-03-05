@@ -51,6 +51,12 @@ target/
 .env.local
 .env.*.local
 
+# Working / scratch notes (never commit private task data)
+task-diagnosis.md
+debug-*.md
+.env.local
+.env.*.local
+
 # VS Code
 .vscode/
 *.code-workspace
@@ -263,8 +269,6 @@ dist/
 # Local build artifacts
 build-log.txt
 
-# Second isolated stack (local only, not for repo)
-docker-compose.second.yml
 
 # One-time operational scripts (contain real file paths, never commit)
 scripts/retry_*.py

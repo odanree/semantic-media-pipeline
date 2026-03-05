@@ -1,0 +1,264 @@
+version: '3.9'
+
+# ============================================================================
+# Second isolated Lumen stack — indexes a separate media library.
+#
+# Launch:  docker compose -f docker-compose.second.yml -p lumen2 up -d
+# Tear down: docker compose -f docker-compose.second.yml -p lumen2 down
+# Logs:    docker compose -f docker-compose.second.yml -p lumen2 logs -f worker
+#
+# Port map (main → second):
+#   API      8000 → 8001
+#   Frontend 3000 → 3002
+#   Flower   5555 → 5556
+#   Postgres 5432 → 5433
+#   Redis    6379 → 6380
+#   Qdrant   6333/6334 → 6340/6341
+#
+# Set MEDIA_SOURCE_PATH_2 in .env to the new host media path.
+# ============================================================================
+
+services:
+  # =========================================================================
+  # Data & Message Queue Layer
+  # =========================================================================
+  redis2:
+    image: redis:7.4.8-alpine
+    container_name: lumen2-redis
+    ports:
+      - "6380:6379"
+    volumes:
+      - redis2_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - lumen2-net
+    restart: unless-stopped
+
+  postgres2:
+    image: postgres:17.9-alpine
+    container_name: lumen2-postgres
+    environment:
+      POSTGRES_USER: lumen2_user
+      POSTGRES_PASSWORD: lumen2_secure_password_2026
+      POSTGRES_DB: lumen2
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres2_data:/var/lib/postgresql/data
+      - ./scripts/init-db2.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U lumen2_user"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - lumen2-net
+    restart: unless-stopped
+
+  # =========================================================================
+  # Vector Database Layer
+  # =========================================================================
+  qdrant2:
+    image: qdrant/qdrant:v1.17.0
+    container_name: lumen2-qdrant
+    ports:
+      - "6340:6333"
+      - "6341:6334"
+    volumes:
+      - qdrant2_data:/qdrant/storage
+    environment:
+      QDRANT_API_KEY: ""
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:6333/ || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - lumen2-net
+    restart: unless-stopped
+
+  # =========================================================================
+  # ML Worker (Celery + CLIP + FFmpeg)
+  # =========================================================================
+  worker2:
+    build:
+      context: .
+      dockerfile: worker/Dockerfile
+      args:
+        - PYTHON_VERSION=3.10
+        - USE_GPU=false
+    container_name: lumen2-worker
+    command: >
+      sh -c "celery -A celery_app worker
+      --loglevel=info
+      --concurrency=$${CELERY_CONCURRENCY:-8}
+      --prefetch-multiplier=$${CELERY_WORKER_PREFETCH_MULTIPLIER:-1}
+      --max-tasks-per-child=$${CELERY_MAX_TASKS_PER_CHILD:-50}
+      --queues=celery,proxies"
+    environment:
+      - CELERY_BROKER_URL=redis://lumen2-redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://lumen2-redis:6379/0
+      - DATABASE_URL=postgresql://lumen2_user:lumen2_secure_password_2026@lumen2-postgres:5432/lumen2
+      - DATABASE_ASYNC_URL=postgresql+asyncpg://lumen2_user:lumen2_secure_password_2026@lumen2-postgres:5432/lumen2
+      - QDRANT_HOST=lumen2-qdrant
+      - QDRANT_PORT=6333
+      - QDRANT_GRPC_PORT=6334
+      - QDRANT_PREFER_GRPC=true
+      - QDRANT_COLLECTION_NAME=media_vectors2
+      - MEDIA_ROOT=/data/media
+      - STORAGE_BACKEND=local
+      - PROXY_ROOT=/mnt/proxies
+      - PROXY_MAX_DURATION_SECS=${PROXY_MAX_DURATION_SECS:-3600}
+      - CELERY_CONCURRENCY=${CELERY_CONCURRENCY:-8}
+      - CELERY_WORKER_PREFETCH_MULTIPLIER=${CELERY_WORKER_PREFETCH_MULTIPLIER:-1}
+      - CELERY_MAX_TASKS_PER_CHILD=${CELERY_MAX_TASKS_PER_CHILD:-50}
+      - CELERY_MAX_MEMORY_PER_CHILD=${CELERY_MAX_MEMORY_PER_CHILD:-1500000}
+      - KEYFRAME_FPS=${KEYFRAME_FPS:-0.5}
+      - KEYFRAME_RESOLUTION=${KEYFRAME_RESOLUTION:-224}
+      - CLIP_MODEL_NAME=${CLIP_MODEL_NAME:-clip-ViT-B-32}
+      - EMBEDDING_BATCH_SIZE=${EMBEDDING_BATCH_SIZE:-96}
+      - EMBEDDING_DEVICE=${EMBEDDING_DEVICE:-}
+      - FFMPEG_TIMEOUT=${FFMPEG_TIMEOUT:-}
+    user: root
+    volumes:
+      - media2_data:/data/media
+      - worker2_tmp:/tmp/lumen_frames
+      - proxies2_data:/mnt/proxies
+      - /usr/lib/wsl/lib:/usr/lib/wsl/lib
+      - ${MEDIA_SOURCE_PATH_2}:/mnt/source/d:ro
+      - ${MEDIA_SOURCE_PATH_3}:/mnt/source/e:ro
+      - ${MEDIA_SOURCE_PATH_4}:/mnt/source/f-storage:ro
+      - ${MEDIA_SOURCE_PATH_5}:/mnt/source/f-downloads:ro
+    depends_on:
+      redis2:
+        condition: service_healthy
+      postgres2:
+        condition: service_healthy
+      qdrant2:
+        condition: service_started
+    networks:
+      - lumen2-net
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '8'
+          memory: 12G
+
+  # =========================================================================
+  # FastAPI Backend
+  # =========================================================================
+  api2:
+    build:
+      context: ./api
+      dockerfile: Dockerfile
+    container_name: lumen2-api
+    ports:
+      - "8001:8000"
+    environment:
+      - CELERY_BROKER_URL=redis://lumen2-redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://lumen2-redis:6379/0
+      - DATABASE_ASYNC_URL=postgresql+asyncpg://lumen2_user:lumen2_secure_password_2026@lumen2-postgres:5432/lumen2
+      - QDRANT_HOST=lumen2-qdrant
+      - QDRANT_PORT=6333
+      - QDRANT_COLLECTION_NAME=media_vectors2
+      - MEDIA_ROOT=/data/media
+      - PROXY_ROOT=/mnt/proxies
+    command: uvicorn main:app --host 0.0.0.0 --port 8000
+    volumes:
+      - media2_data:/data/media
+      - proxies2_data:/mnt/proxies:ro
+      - ${MEDIA_SOURCE_PATH_2}:/mnt/source/d:ro
+      - ${MEDIA_SOURCE_PATH_3}:/mnt/source/e:ro
+      - ${MEDIA_SOURCE_PATH_4}:/mnt/source/f-storage:ro
+      - ${MEDIA_SOURCE_PATH_5}:/mnt/source/f-downloads:ro
+    depends_on:
+      redis2:
+        condition: service_healthy
+      postgres2:
+        condition: service_healthy
+      qdrant2:
+        condition: service_started
+    networks:
+      - lumen2-net
+    restart: unless-stopped
+
+  # =========================================================================
+  # Next.js Frontend
+  # =========================================================================
+  frontend2:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        # Bake NEXT_PUBLIC_* into the JS bundle at build time.
+        # These differ from lumen1 defaults (port 8000) because this stack
+        # exposes its API on port 8001.
+        NEXT_PUBLIC_API_URL: http://localhost:8001
+        NEXT_PUBLIC_STREAM_URL: http://localhost:8001
+    container_name: lumen2-frontend
+    ports:
+      - "3002:3000"
+    environment:
+      - API_URL=http://api2:8000
+      - NEXT_PUBLIC_API_URL=http://localhost:8001
+      - NEXT_PUBLIC_STREAM_URL=http://localhost:8001
+      - NEXT_PUBLIC_QDRANT_HOST=lumen2-qdrant
+      - NEXT_PUBLIC_QDRANT_PORT=6340
+    volumes:
+      - media2_data:/data/media
+      - ${MEDIA_SOURCE_PATH_2}:/mnt/source/d:ro
+      - ${MEDIA_SOURCE_PATH_3}:/mnt/source/e:ro
+      - ${MEDIA_SOURCE_PATH_4}:/mnt/source/f-storage:ro
+      - ${MEDIA_SOURCE_PATH_5}:/mnt/source/f-downloads:ro
+    depends_on:
+      - api2
+    networks:
+      - lumen2-net
+    restart: unless-stopped
+
+  # =========================================================================
+  # Celery Monitoring (Flower)
+  # =========================================================================
+  flower2:
+    image: mher/flower:2.0.1
+    container_name: lumen2-flower
+    ports:
+      - "5556:5555"
+    environment:
+      - CELERY_BROKER_URL=redis://lumen2-redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://lumen2-redis:6379/0
+    depends_on:
+      - redis2
+      - worker2
+    networks:
+      - lumen2-net
+    restart: unless-stopped
+
+# ============================================================================
+# Named Volumes
+# ============================================================================
+volumes:
+  redis2_data:
+    driver: local
+  postgres2_data:
+    driver: local
+  qdrant2_data:
+    driver: local
+  media2_data:
+    driver: local
+  worker2_tmp:
+    driver: local
+  proxies2_data:
+    driver: local
+
+# ============================================================================
+# Networks
+# ============================================================================
+networks:
+  lumen2-net:
+    driver: bridge
