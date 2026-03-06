@@ -3,6 +3,7 @@ Celery Task Definitions
 Main orchestration for media ingestion pipeline
 """
 
+import errno as _errno
 import hashlib
 import logging
 import os
@@ -56,6 +57,22 @@ qdrant_client = QdrantClient(
     grpc_port=QDRANT_GRPC_PORT,
     prefer_grpc=QDRANT_PREFER_GRPC,
 )
+
+
+def _is_eio(exc: BaseException) -> bool:
+    """
+    Return True if exc or any chained cause is an OSError with EIO (errno 5).
+    SMB/NFS mounts raise EIO when the transport drops — retrying is pointless
+    until the mount is remounted by the operator.
+    """
+    seen: set = set()
+    cur: BaseException | None = exc
+    while cur and id(cur) not in seen:
+        seen.add(id(cur))
+        if isinstance(cur, OSError) and cur.errno == _errno.EIO:
+            return True
+        cur = cur.__context__ or cur.__cause__  # type: ignore[assignment]
+    return False
 
 
 def ensure_qdrant_collection():
@@ -322,6 +339,20 @@ def process_image(self, file_path: str, media_record_id: str):
             shutil.rmtree(temp_dir, ignore_errors=True)
 
     except Exception as e:
+        if _is_eio(e):
+            # SMB mount dropped — retrying burns worker slots for hours.
+            # Fail immediately; operator must remount the share then reset
+            # these records: UPDATE media_files SET processing_status='pending'
+            # WHERE processing_status='error' AND error_message LIKE '%EIO%';
+            log.error("[EIO] SMB transport error on %s — failing fast, no retry", file_path)
+            if 'media_record' in dir() and media_record is not None:
+                try:
+                    media_record.processing_status = "error"
+                    media_record.error_message = f"SMB I/O error (EIO): {str(e)[:450]}"
+                    db.commit()
+                except Exception:
+                    pass
+            return  # suppress autoretry
         print(f"Image processing failed: {str(e)}")
         if 'media_record' in dir() and media_record is not None:
             try:
@@ -474,6 +505,16 @@ def process_video(self, file_path: str, media_record_id: str):
             shutil.rmtree(temp_dir, ignore_errors=True)
 
     except Exception as e:
+        if _is_eio(e):
+            log.error("[EIO] SMB transport error on %s — failing fast, no retry", file_path)
+            if 'media_record' in dir() and media_record is not None:
+                try:
+                    media_record.processing_status = "error"
+                    media_record.error_message = f"SMB I/O error (EIO): {str(e)[:450]}"
+                    db.commit()
+                except Exception:
+                    pass
+            return  # suppress autoretry
         print(f"Video processing failed: {str(e)}")
         # media_record may not be assigned if failure occurred before the DB
         # query (e.g. ensure_qdrant_collection raised before we fetched it)
