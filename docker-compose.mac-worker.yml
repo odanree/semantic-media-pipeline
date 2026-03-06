@@ -32,6 +32,11 @@ services:
       # SMB mount passthrough — Mac host path → container path
       # Must match MEDIA_SOURCE_PATH in .env.mac-worker but inside container
       - /Volumes/lumen-media-1:/mnt/source:ro
+      # Centralized frame cache — reads/writes to Windows PC over SMB.
+      # Same physical directory as FRAME_CACHE_DIR on Windows host.
+      # Share: lumen-media/frame_cache — no extra SMB share needed.
+      # Write speed over SMB is fine: frames are written once, read many times.
+      - /Volumes/lumen-media-1/frame_cache:/mnt/frame_cache
     restart: unless-stopped
     extra_hosts:
       # Allow container to reach Windows PC by hostname if needed
