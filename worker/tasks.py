@@ -4,9 +4,12 @@ Main orchestration for media ingestion pipeline
 """
 
 import hashlib
+import logging
 import os
 import shutil
+import socket
 import tempfile
+import time
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -35,6 +38,10 @@ from ml.embedder import get_embedder
 from storage import get_storage_backend
 
 log = logging.getLogger(__name__)
+
+# Stable identifier for this worker process — used for Mac vs Windows attribution.
+# Set WORKER_ID env var explicitly in docker-compose for cleaner names (e.g. "windows-1", "mac-1").
+WORKER_ID = os.getenv("WORKER_ID") or socket.gethostname()
 
 # Initialize Qdrant client
 QDRANT_HOST = os.getenv("QDRANT_HOST", "qdrant")
@@ -277,7 +284,12 @@ def process_image(self, file_path: str, media_record_id: str):
 
             # Embed image
             print(f"Embedding image: {file_path}")
+            media_record.embedding_started_at = datetime.utcnow()
+            media_record.worker_id = WORKER_ID
+            db.commit()
+            t0 = time.monotonic()
             embeddings = embedder.embed_images([normalized_path], batch_size=1)
+            embedding_ms = int((time.monotonic() - t0) * 1000)
             vector = embeddings[0].astype(np.float32)
 
             # Upsert to Qdrant
@@ -299,6 +311,7 @@ def process_image(self, file_path: str, media_record_id: str):
             media_record.qdrant_point_id = point_id
             media_record.processing_status = "done"
             media_record.processed_at = datetime.utcnow()
+            media_record.embedding_ms = embedding_ms
             db.commit()
 
             print(f"Successfully processed image: {file_path}")
@@ -402,10 +415,19 @@ def process_video(self, file_path: str, media_record_id: str):
 
                 frame_paths = _save_frame_cache(media_record.file_hash, fps, resolution, raw_frame_paths)
 
+            # Record cache hit/miss and start embedding
+            cache_hit = cached is not None
+            media_record.frame_cache_hit = cache_hit
+            media_record.embedding_started_at = datetime.utcnow()
+            media_record.worker_id = WORKER_ID
+            db.commit()
+
             # Embed frames in batches
             batch_size = int(os.getenv("EMBEDDING_BATCH_SIZE") or "32")
             print(f"Embedding {len(frame_paths)} frames with batch size {batch_size}")
+            t0 = time.monotonic()
             embeddings = embedder.embed_frames(frame_paths, batch_size=batch_size)
+            embedding_ms = int((time.monotonic() - t0) * 1000)
 
             # Prepare Qdrant points (one per frame)
             frame_index = 0
@@ -437,6 +459,7 @@ def process_video(self, file_path: str, media_record_id: str):
                 media_record.qdrant_point_id = points[0].id
             media_record.processing_status = "done"
             media_record.processed_at = datetime.utcnow()
+            media_record.embedding_ms = embedding_ms
             db.commit()
 
             print(f"Successfully processed video: {file_path}")

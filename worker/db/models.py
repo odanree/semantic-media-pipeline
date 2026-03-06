@@ -6,7 +6,7 @@ import uuid
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import JSON, TIMESTAMP, Column, Index, String, Text, create_engine
+from sqlalchemy import JSON, TIMESTAMP, Boolean, Column, Index, Integer, String, Text, create_engine
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import declarative_base, sessionmaker
@@ -35,6 +35,11 @@ class MediaFile(Base):
     )  # pending, processing, done, error
     error_message = Column(Text, nullable=True)  # If processing failed
     processed_at = Column(TIMESTAMP(timezone=True), nullable=True)
+    # Observability columns (added Phase 2)
+    embedding_started_at = Column(TIMESTAMP(timezone=True), nullable=True)  # Queue wait = embedding_started_at - created_at
+    worker_id = Column(String, nullable=True, index=True)  # hostname: Mac vs Windows attribution
+    frame_cache_hit = Column(Boolean, nullable=True)  # Video only: True = skipped FFmpeg
+    embedding_ms = Column(Integer, nullable=True)  # CLIP inference wall time in ms
 
     def __repr__(self):
         return f"<MediaFile(id={self.id}, file_path={self.file_path}, status={self.processing_status})>"

@@ -28,6 +28,9 @@ services:
       --hostname=mac-worker@%h"
     env_file:
       - .env.mac-worker
+    environment:
+      # Stable identifier — shows as "mac-1" in /api/stats/processing worker_id column
+      - WORKER_ID=${WORKER_ID:-mac-1}
     volumes:
       # SMB mount passthrough — Mac host path → container path
       # Must match MEDIA_SOURCE_PATH in .env.mac-worker but inside container

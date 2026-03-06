@@ -105,6 +105,8 @@ services:
       # Proxy skip threshold: non-H264 files longer than this (seconds) are
       # not transcoded. H264 files always get a fast stream-copy proxy.
       - PROXY_MAX_DURATION_SECS=${PROXY_MAX_DURATION_SECS:-3600}
+      # Observability: stable worker identifier for Mac vs Windows attribution in stats
+      - WORKER_ID=${WORKER_ID:-windows-1}
     user: root
     volumes:
       - media_data:/data/media
