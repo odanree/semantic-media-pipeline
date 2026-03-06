@@ -615,6 +615,95 @@ actually contained the expected URL string.
 
 ---
 
+## 13. SMB Mount Is Read-Only on Remote Host — Two Failure Modes
+
+**Branch:** `chore/worker-concurrency`
+
+**Symptom A — frame cache write fails with `[Errno 30] Read-only file system`**
+Mac worker tasks failed with:
+```
+[Errno 30] Read-only file system: '/mnt/frame_cache/...'
+```
+The directory `/mnt/frame_cache` inside the container mapped to
+`/Volumes/lumen-media-1/frame_cache` on the Mac host. That path didn't exist.
+When Docker Desktop can't bind-mount a non-existent host path it falls back to
+mounting the parent — which here is the SMB share root, mounted read-only.
+
+**Symptom B — can't create the missing directory**
+Running `mkdir -p /Volumes/lumen-media-1/frame_cache` on the Mac to pre-create
+the path also failed with `Read-only file system` — the SMB share itself is
+mounted read-only on the Mac (`smb://` default credentials gave read-only
+access to the share, even though the Windows NAS that hosts the share is
+writable).
+
+**What happened**
+The `docker-compose.mac-worker.yml` assumed the Mac could write to the SMB
+share in the same way the Windows worker writes to `J:\frame_cache` locally.
+But the Mac accesses the same storage over the network via SMB, where the
+mount permissions are controlled by the share's access-control list — in this
+case read-only.
+
+Attempting to fix it by creating the directory from the Mac side hit the same
+wall: `EROFS` because the SMB mount is read-only. The directory can only be
+created by a user with write access to the share (i.e., **from Windows,
+not from the Mac**).
+
+**Root cause**
+Two compounding problems:
+1. **Frame cache bind-mount path didn't exist** — Docker falls back to mounting
+   the parent with whatever permissions the parent has.
+2. **Per-worker cache placed on a shared network volume** — the frame cache is
+   a local performance optimisation (avoids re-extracting frames for the same
+   video on the same worker). It doesn't need to be shared. Putting it on a
+   network drive introduced an unnecessary SMB write dependency.
+
+**The fix**
+Change the Mac worker's frame cache to a **Docker named volume** — local to
+the Mac's Docker daemon, always writable, zero SMB dependency:
+```yaml
+# docker-compose.mac-worker.yml
+volumes:
+  - mac_frame_cache:/mnt/frame_cache   # was: /Volumes/lumen-media-1/frame_cache:/mnt/frame_cache
+
+volumes:
+  mac_frame_cache:   # Docker-managed, created automatically
+```
+Docker creates the named volume on first `up`. No host directory required.
+Cache hits are still effective per worker; cross-worker cache sharing was never
+implemented anyway.
+
+**Complementary note — two distinct SMB stale-mount error signatures**
+A stale or dropped SMB mount produces *two different* error types depending
+on which library hits the mount first:
+
+| Source | Exception | Signal |
+|---|---|---|
+| PIL / Python file open | `OSError(errno=5 EIO)` | `_is_eio()` chain walk |
+| ffprobe subprocess | `FFmpegError('ffprobe failed: ')` | empty stderr after colon |
+
+Both require **fast-fail** (no retry). Only the EIO path is currently handled
+by `_is_eio()`. The `FFmpegError` path still triggers the full
+`autoretry_for=(Exception,)` backoff loop (up to 5× retries, ~600s) before
+permanent failure. A companion check is needed:
+```python
+# companion to _is_eio() — detects stale SMB via empty ffprobe stderr
+def _is_stale_mount_ffprobe(exc: BaseException) -> bool:
+    return isinstance(exc, FFmpegError) and str(exc).strip().endswith("ffprobe failed:")
+```
+
+**Interview talking point**
+> "I hit two separate `[Errno 30]` walls in one session. The first was Docker
+> falling back to a read-only parent mount when the bind-mount target didn't
+> exist. The second was the SMB share itself being read-only on the Mac,
+> so `mkdir` couldn't fix it either. The correct solution wasn't to fight the
+> network share — it was to recognise that the frame cache is a per-worker
+> local optimisation that never needed to be on a shared drive. Switching to
+> a Docker named volume removed the dependency entirely. The broader lesson:
+> before adding a network mount to a service's compose file, ask whether the
+> data *must* be shared, and if not, keep it local."
+
+---
+
 ## Cross-Cutting Themes
 
 | Theme | Issues |
@@ -632,6 +721,9 @@ actually contained the expected URL string.
 | **`NEXT_PUBLIC_*` in Next.js prod = build-time only; use Docker `ARG`** | #12 (wrong stream URL) |
 | **Placeholder media must be real bytes — crafted hex is almost never correct** | #12 (invalid MP4 stub) |
 | **Symptom convergence: multiple independent bugs → identical error** | #12 (video player layers) |
+| **Docker bind-mount falls back to read-only parent when target dir is missing** | #13 (SMB frame cache) |
+| **Per-worker local caches belong in Docker named volumes, not shared network mounts** | #13 (SMB frame cache) |
+| **SMB stale mount produces two distinct exceptions: `OSError(EIO)` and `FFmpegError(ffprobe failed:)` — both need fast-fail** | #13 (stale mount signatures) |
 
 ---
 
@@ -665,6 +757,20 @@ actually contained the expected URL string.
 8. **After changing `apt-get install` in an existing `RUN` block, rebuild
    with `--no-cache` and verify with `docker exec`.**
    BuildKit's layer cache can serve the pre-change image silently.
+
+13. **A Docker bind-mount whose host path doesn't exist will silently fall back
+    to mounting the parent — with whatever permissions the parent carries.**
+    Always pre-create bind-mount targets, or use Docker named volumes for
+    anything that only needs to be local to one container.
+
+14. **Per-worker caches (frame cache, model cache) belong in Docker named
+    volumes, not shared network mounts.** A cache that doesn't need cross-
+    worker sharing shouldn't carry a network I/O dependency.
+
+15. **An SMB share mounted read-only on the remote client cannot be made
+    writable by `mkdir` — permission is controlled by the share's ACL on the
+    server.** Create missing directories from the machine that *hosts* the
+    share, or use a local volume instead of fighting the ACL.
 
 9. **Order pipeline steps by cost: cheap invariants first, variable-cost
    optionals last (or async).** A best-effort step with unbounded cost placed
