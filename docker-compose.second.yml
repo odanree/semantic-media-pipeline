@@ -1,4 +1,3 @@
-version: '3.9'
 
 # ============================================================================
 # Second isolated Lumen stack — indexes a separate media library.
@@ -51,7 +50,7 @@ services:
       - postgres2_data:/var/lib/postgresql/data
       - ./scripts/init-db2.sql:/docker-entrypoint-initdb.d/init.sql
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U lumen2_user"]
+      test: ["CMD-SHELL", "pg_isready -U lumen2_user -d lumen2"]
       interval: 10s
       timeout: 5s
       retries: 5
