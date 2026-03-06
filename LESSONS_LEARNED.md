@@ -687,3 +687,54 @@ actually contained the expected URL string.
     them under `build.args:` in compose, not `environment:`. When multiple stacks
     share the same image with different ports/endpoints, each compose file needs
     its own `build.args` block to produce a distinct image.
+
+## Debuging Commands:
+
+# 1. Are all containers actually running?
+docker ps
+
+# 2. See recent logs for every container (last 50 lines each)
+docker compose logs --tail=50
+
+# 3. Zoom into a specific container
+docker compose logs --tail=100 lumen-worker
+
+# 4. Follow logs live
+docker compose logs -f lumen-worker
+
+# 5. Is the container restarting / crashing?
+docker ps -a  # look at STATUS and RESTARTS column
+
+# 6. What's the exit code / last event?
+docker inspect lumen-worker --format '{{.State.ExitCode}} {{.State.Error}}'
+
+# 7. Get a shell inside the container
+docker exec -it lumen-worker bash
+
+# 8. Is the process actually running inside?
+docker exec lumen-worker ps aux
+
+# 9. Check environment variables are set correctly
+docker exec lumen-worker env | sort
+
+# 10. Is the network reachable between containers?
+docker exec lumen-worker curl -s http://lumen-postgres:5432 || echo "unreachable"
+docker exec lumen-worker curl -s http://lumen-redis:6379 || echo "unreachable"
+docker exec lumen-worker curl -s http://lumen-qdrant:6333/healthz
+
+# 11. Disk / memory pressure?
+docker stats --no-stream
+
+# 12. Any OOM kills or resource events?
+docker inspect lumen-worker --format '{{.State.OOMKilled}}'
+
+# 13. Celery specifically — are workers alive and what are they doing?
+docker exec lumen-worker celery -A celery_app inspect ping
+docker exec lumen-worker celery -A celery_app inspect active
+docker exec lumen-worker celery -A celery_app inspect reserved
+
+# 14. Postgres reachable and correct db exists?
+docker exec lumen-postgres psql -U lumen_user -d lumen -c "\l"
+
+# 15. Nuclear — full event log for a container
+docker events --filter container=lumen-worker --since 1h
