@@ -119,7 +119,8 @@ def processing_summary():
             qdrant = _get_qdrant()
             collection_name = os.getenv("QDRANT_COLLECTION_NAME", "media_vectors")
             info = qdrant.get_collection(collection_name)
-            qdrant_vectors = info.vectors_count
+            # qdrant-client >= 1.7: attribute renamed vectors_count → points_count
+            qdrant_vectors = getattr(info, "points_count", None) or getattr(info, "vectors_count", None)
         except Exception as e:
             qdrant_status = f"error: {str(e)}"
 
