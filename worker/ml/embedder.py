@@ -4,7 +4,8 @@ CLIP Embedder - Multimodal embedding using OpenAI CLIP model
 Device priority:
   1. DirectML  (/dev/dxg via torch-directml, works on WSL2 + AMD/Intel/NVIDIA)
   2. CUDA/ROCm (torch.cuda, works on native Linux with proper drivers)
-  3. CPU       (fallback)
+  3. MPS       (Apple Metal, works on macOS M-series)
+  4. CPU       (fallback)
 """
 
 import logging
@@ -49,7 +50,12 @@ def _detect_device() -> str:
         log.info("CUDA/ROCm device detected: %s", torch.cuda.get_device_name(0))
         return "cuda"
 
-    # 3. CPU fallback
+    # 3. Apple Metal (MPS) — M-series Macs
+    if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+        log.info("Apple MPS device detected (Metal)")
+        return "mps"
+
+    # 4. CPU fallback
     log.info("No GPU backend available — using CPU")
     return "cpu"
 

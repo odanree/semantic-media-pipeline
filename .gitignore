@@ -50,6 +50,7 @@ target/
 .env
 .env.local
 .env.*.local
+.env.mac-worker
 
 # Working / scratch notes (never commit private task data)
 task-diagnosis.md
