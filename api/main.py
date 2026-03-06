@@ -24,7 +24,7 @@ from pydantic import BaseModel
 from qdrant_client import QdrantClient
 
 # Import routers (these may use sentence_transformers internally)
-from routers import health, ingest, search, updates
+from routers import health, ingest, search, updates, stats
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -49,6 +49,7 @@ app.include_router(health.router, prefix="/api", tags=["health"])
 app.include_router(ingest.router, prefix="/api", tags=["ingest"])
 app.include_router(search.router, prefix="/api", tags=["search"])
 app.include_router(updates.router, prefix="/api", tags=["realtime"])
+app.include_router(stats.router, prefix="/api", tags=["observability"])
 
 
 # ============================================================================
