@@ -96,13 +96,17 @@ def processing_summary():
         ).fetchall()
         top_errors = [{"error": row[0], "count": row[1]} for row in error_rows]
 
-        # --- Stuck files (processing status older than 30 minutes) ---
+        # --- Stuck files (in 'processing' > 2 hours with no processed_at) ---
+        # NOTE: created_at = discovery time, not processing start time.
+        # Using created_at as a conservative proxy: a file stuck in 'processing'
+        # for > 2 hours since it was first seen is almost certainly stalled.
         stuck_rows = db.execute(
             text(
                 """
                 SELECT COUNT(*) FROM media_files
                 WHERE processing_status = 'processing'
-                  AND created_at < NOW() - INTERVAL '30 minutes'
+                  AND processed_at IS NULL
+                  AND created_at < NOW() - INTERVAL '2 hours'
                 """
             )
         ).fetchone()
@@ -134,8 +138,9 @@ def processing_summary():
                 "status": qdrant_status,
                 "vector_count": qdrant_vectors,
                 "db_done_count": done_count,
-                # Positive = more vectors than DB records (e.g. videos have N frames each)
-                # Negative = DB records without vectors (pipeline gap)
+                # Expected: vectors > db_done_count (videos produce N frame vectors each).
+                # Negative drift = DB records without vectors — indicates a pipeline gap
+                # (files marked 'done' in Postgres but never upserted to Qdrant).
                 "drift": vector_drift,
             },
             "top_errors": top_errors,
@@ -150,7 +155,7 @@ def processing_summary():
 
 @router.get("/stats/processing")
 def processing_times(
-    hours: int = Query(default=24, ge=1, le=720, description="Lookback window in hours"),
+    hours: int = Query(default=720, ge=1, le=8760, description="Lookback window in hours (default 720 = 30 days)"),
     limit: int = Query(default=20, ge=1, le=200, description="Number of slowest jobs to return"),
 ):
     """
@@ -261,7 +266,8 @@ def processing_times(
 
         # --- Re-index session detection ---
         # Fetch completed timestamps ordered by time, then group bursts
-        # separated by gaps > 10 minutes into discrete "sessions"
+        # separated by gaps > 10 minutes into discrete "sessions".
+        # Scoped to the same lookback window as the rest of this endpoint.
         ts_rows = db.execute(
             text(
                 """
@@ -269,9 +275,11 @@ def processing_times(
                 FROM media_files
                 WHERE processing_status = 'done'
                   AND processed_at IS NOT NULL
+                  AND processed_at >= :since
                 ORDER BY processed_at ASC
                 """
-            )
+            ),
+            {"since": since},
         ).fetchall()
 
         sessions = []
