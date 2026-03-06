@@ -1,5 +1,3 @@
-version: '3.9'
-
 # ============================================================================
 # Mac Remote Worker — connects to Windows PC master over local network
 #

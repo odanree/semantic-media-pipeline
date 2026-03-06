@@ -50,8 +50,14 @@ def _detect_device() -> str:
         log.info("CUDA/ROCm device detected: %s", torch.cuda.get_device_name(0))
         return "cuda"
 
-    # 3. Apple Metal (MPS) — M-series Macs
-    if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+    # 3. Apple Metal (MPS) — M-series Macs, native macOS only (not inside Docker/Linux)
+    # MPS requires macOS kernel — unavailable in Linux containers even on Apple Silicon.
+    import platform
+    if (
+        platform.system() == "Darwin"
+        and hasattr(torch.backends, "mps")
+        and torch.backends.mps.is_available()
+    ):
         log.info("Apple MPS device detected (Metal)")
         return "mps"
 
