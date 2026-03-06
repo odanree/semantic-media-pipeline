@@ -216,6 +216,10 @@ services:
   flower:
     image: mher/flower:2.0.1
     container_name: lumen-flower
+    command: >
+      celery flower
+      --broker=${CELERY_BROKER_URL:-redis://lumen-redis:6379/0}
+      --purge_offline_workers=30
     ports:
       - "5555:5555"
     environment:
