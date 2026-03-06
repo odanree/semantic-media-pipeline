@@ -34,6 +34,49 @@ def _placeholder_jpeg(width: int = 320, height: int = 180) -> bytes:
     PILImage.new("RGB", (width, height), (30, 30, 30)).save(buf, format="JPEG", quality=40)
     return buf.getvalue()
 
+
+_PLACEHOLDER_MP4_CACHE: bytes | None = None
+
+def _placeholder_video_stub() -> bytes:
+    """
+    Return a real 1-second silent black MP4 generated via ffmpeg.
+    Cached on first call. Used whenever the stream endpoint cannot serve a
+    real file so <video> tags always receive Content-Type: video/mp4 and
+    Chrome ORB (Opaque Response Blocking) never fires.
+
+    Falls back to an empty bytes object if ffmpeg is unavailable — the
+    browser will show its native 'video unavailable' UI rather than an
+    ORB-blocked opaque error.
+    """
+    global _PLACEHOLDER_MP4_CACHE
+    if _PLACEHOLDER_MP4_CACHE is not None:
+        return _PLACEHOLDER_MP4_CACHE
+
+    import subprocess
+    try:
+        result = subprocess.run(
+            [
+                "ffmpeg", "-y",
+                "-f", "lavfi", "-i", "color=c=black:s=320x180:d=1:r=1",
+                "-f", "lavfi", "-i", "anullsrc=r=44100:cl=mono",
+                "-c:v", "libx264", "-pix_fmt", "yuv420p", "-t", "1",
+                "-c:a", "aac", "-b:a", "64k",
+                "-movflags", "+faststart",
+                "-f", "mp4", "pipe:1",
+            ],
+            capture_output=True,
+            timeout=15,
+        )
+        if result.returncode == 0 and result.stdout:
+            _PLACEHOLDER_MP4_CACHE = result.stdout
+            log.info(f"[Stream] Placeholder MP4 generated ({len(result.stdout)} bytes)")
+            return _PLACEHOLDER_MP4_CACHE
+        else:
+            log.warning(f"[Stream] ffmpeg placeholder generation failed: {result.stderr[-200:]}")
+    except Exception as e:
+        log.warning(f"[Stream] Could not generate placeholder MP4: {e}")
+    return b""
+
 router = APIRouter()
 
 # Initialize Celery client
@@ -165,81 +208,109 @@ async def stream_media(path: str, request: Request, quality: str = "proxy"):
     quality=proxy    (default) transparently serves the 720p faststart proxy
                      if one exists, falling back to the original source.
     quality=original bypasses the proxy lookup and always serves the raw file.
+    
+    CRITICAL: Returns placeholder video on ANY error to prevent Chrome ORB 
+    (Opaque Response Blocking) from blocking <video> tag loads. Errors are 
+    logged server-side, not returned to client.
     """
-    resolved = os.path.realpath(path)
+    try:
+        resolved = os.path.realpath(path)
 
-    if not any(resolved.startswith(root) for root in ALLOWED_ROOTS):
-        raise HTTPException(status_code=403, detail="Access denied")
+        if not any(resolved.startswith(root) for root in ALLOWED_ROOTS):
+            log.warning(f"[Stream] Access denied: {path}")
+            # Return placeholder to prevent ORB blocking
+            return Response(
+                content=_placeholder_video_stub(),
+                status_code=200,
+                media_type="video/mp4",
+                headers={"Cache-Control": "no-store"}
+            )
 
-    # Transparently serve proxy when available (skipped for quality=original).
-    # The worker writes a faststart copy to PROXY_ROOT mirroring the source
-    # tree; that copy has moov-first so the browser can seek instantly.
-    if quality != "original":
-        proxy_root = os.getenv("PROXY_ROOT", _PROXY_ROOT_DEFAULT).strip()
-        if proxy_root and resolved.startswith(_SOURCE_ROOT + os.sep):
-            rel = resolved[len(_SOURCE_ROOT) + 1:]
-            proxy_candidate = os.path.join(proxy_root, rel)
-            if os.path.isfile(proxy_candidate):
-                resolved = proxy_candidate
+        # Transparently serve proxy when available (skipped for quality=original).
+        # The worker writes a faststart copy to PROXY_ROOT mirroring the source
+        # tree; that copy has moov-first so the browser can seek instantly.
+        if quality != "original":
+            proxy_root = os.getenv("PROXY_ROOT", _PROXY_ROOT_DEFAULT).strip()
+            if proxy_root and resolved.startswith(_SOURCE_ROOT + os.sep):
+                rel = resolved[len(_SOURCE_ROOT) + 1:]
+                proxy_candidate = os.path.join(proxy_root, rel)
+                if os.path.isfile(proxy_candidate):
+                    resolved = proxy_candidate
 
-    if not os.path.isfile(resolved):
-        raise HTTPException(status_code=404, detail="File not found")
+        if not os.path.isfile(resolved):
+            log.warning(f"[Stream] File not found: {path} (resolved: {resolved})")
+            # Return placeholder to prevent ORB blocking
+            return Response(
+                content=_placeholder_video_stub(),
+                status_code=200,
+                media_type="video/mp4",
+                headers={"Cache-Control": "no-store"}
+            )
 
-    file_size = os.path.getsize(resolved)
-    media_type, _ = mimetypes.guess_type(resolved)
+        file_size = os.path.getsize(resolved)
+        media_type, _ = mimetypes.guess_type(resolved)
 
-    media_type = media_type or "application/octet-stream"
+        media_type = media_type or "application/octet-stream"
 
-    range_header = request.headers.get("range")
-    range_match = re.match(r"bytes=(\d+)-(\d*)", range_header or "")
+        range_header = request.headers.get("range")
+        range_match = re.match(r"bytes=(\d+)-(\d*)", range_header or "")
 
-    if range_match:
-        start = int(range_match.group(1))
-        end = int(range_match.group(2)) if range_match.group(2) else file_size - 1
-        end = min(end, file_size - 1)
-        content_length = end - start + 1
+        if range_match:
+            start = int(range_match.group(1))
+            end = int(range_match.group(2)) if range_match.group(2) else file_size - 1
+            end = min(end, file_size - 1)
+            content_length = end - start + 1
 
-        async def ranged_sender():
+            async def ranged_sender():
+                async with aiofiles.open(resolved, "rb") as f:
+                    await f.seek(start)
+                    remaining = content_length
+                    while remaining > 0:
+                        chunk = await f.read(min(STREAM_CHUNK_SIZE, remaining))
+                        if not chunk:
+                            break
+                        remaining -= len(chunk)
+                        yield chunk
+
+            return StreamingResponse(
+                ranged_sender(),
+                status_code=206,
+                media_type=media_type,
+                headers={
+                    "Content-Range": f"bytes {start}-{end}/{file_size}",
+                    "Accept-Ranges": "bytes",
+                    "Content-Length": str(content_length),
+                    "Cache-Control": "public, max-age=3600",
+                },
+            )
+
+        # No Range header — stream the full file
+        async def full_sender():
             async with aiofiles.open(resolved, "rb") as f:
-                await f.seek(start)
-                remaining = content_length
-                while remaining > 0:
-                    chunk = await f.read(min(STREAM_CHUNK_SIZE, remaining))
+                while True:
+                    chunk = await f.read(STREAM_CHUNK_SIZE)
                     if not chunk:
                         break
-                    remaining -= len(chunk)
                     yield chunk
 
         return StreamingResponse(
-            ranged_sender(),
-            status_code=206,
+            full_sender(),
             media_type=media_type,
             headers={
-                "Content-Range": f"bytes {start}-{end}/{file_size}",
                 "Accept-Ranges": "bytes",
-                "Content-Length": str(content_length),
+                "Content-Length": str(file_size),
                 "Cache-Control": "public, max-age=3600",
             },
         )
-
-    # No Range header — stream the full file
-    async def full_sender():
-        async with aiofiles.open(resolved, "rb") as f:
-            while True:
-                chunk = await f.read(STREAM_CHUNK_SIZE)
-                if not chunk:
-                    break
-                yield chunk
-
-    return StreamingResponse(
-        full_sender(),
-        media_type=media_type,
-        headers={
-            "Accept-Ranges": "bytes",
-            "Content-Length": str(file_size),
-            "Cache-Control": "public, max-age=3600",
-        },
-    )
+    except Exception as e:
+        log.error(f"[Stream] Internal error: {str(e)}", exc_info=True)
+        # Return placeholder on any unexpected error
+        return Response(
+            content=_placeholder_video_stub(),
+            status_code=200,
+            media_type="video/mp4",
+            headers={"Cache-Control": "no-store"}
+        )
 
 
 @router.get("/thumbnail")

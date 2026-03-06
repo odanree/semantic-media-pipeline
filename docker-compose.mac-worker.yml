@@ -1,0 +1,49 @@
+# ============================================================================
+# Mac Remote Worker — connects to Windows PC master over local network
+#
+# Usage:
+#   docker compose -f docker-compose.mac-worker.yml --env-file .env.mac-worker up --build
+#
+# Prerequisites:
+#   1. SMB share mounted: open smb://danh@outlook.com@192.168.1.137/lumen-media
+#   2. Windows PC ports reachable: 6379, 6333, 6334, 5432
+#   3. .env.mac-worker has correct IP and DB password
+# ============================================================================
+
+services:
+  worker:
+    build:
+      context: .
+      dockerfile: worker/Dockerfile.mac
+    container_name: lumen-worker-mac
+    command: >
+      sh -c "celery -A celery_app worker
+      --loglevel=info
+      --concurrency=${CELERY_CONCURRENCY:-2}
+      --prefetch-multiplier=${CELERY_WORKER_PREFETCH_MULTIPLIER:-1}
+      --max-tasks-per-child=${CELERY_MAX_TASKS_PER_CHILD:-50}
+      --queues=celery,proxies
+      --hostname=mac-worker@%h"
+    env_file:
+      - .env.mac-worker
+    environment:
+      # Stable identifier — shows as "mac-1" in /api/stats/processing worker_id column
+      - WORKER_ID=${WORKER_ID:-mac-1}
+    volumes:
+      # SMB mount passthrough — Mac host path → container path
+      # Must match MEDIA_SOURCE_PATH in .env.mac-worker but inside container
+      - /Volumes/lumen-media-1:/mnt/source:ro
+      # Local frame cache — Docker named volume on the Mac host.
+      # Cannot create subdirs on the SMB share (share is mounted :ro on Mac).
+      # Frame cache is a per-worker performance optimisation; it does not need
+      # to be shared with the Windows worker.
+      - mac_frame_cache:/mnt/frame_cache
+    restart: unless-stopped
+    extra_hosts:
+      # Allow container to reach Windows PC by hostname if needed
+      - "windows-pc:192.168.1.137"
+
+volumes:
+  mac_frame_cache:
+    # Local Docker-managed volume — always writable, no SMB dependency.
+    # Named so it persists across `docker compose down` restarts.
