@@ -1,0 +1,30 @@
+# ============================================================================
+# Mac Worker Requirements
+# ============================================================================
+# Same as requirements.txt but WITHOUT torch-directml (Windows/WSL2 only).
+# PyTorch macOS wheels include MPS (Apple Metal) support built in.
+# torch-directml pins torch==2.4.1 — matched here for consistency.
+# ============================================================================
+
+torch==2.4.1
+torchvision==0.19.1
+# torch-directml omitted — DirectML is WSL2/Windows only
+
+celery[redis]==5.6.2
+redis==5.2.1
+sentence-transformers==5.2.3
+qdrant-client==1.17.0
+SQLAlchemy==2.0.47
+asyncpg==0.30.0
+psycopg2-binary==2.9.10
+Pillow==10.4.0
+pillow-heif==0.14.0
+opencv-python==4.13.0.92
+tqdm==4.67.1
+python-dotenv==1.0.1
+pydantic==2.10.6
+boto3==1.34.136
+google-cloud-storage==2.16.0
+ffmpeg-python==0.2.0
+psutil==6.0.0
+prometheus-client==0.20.0

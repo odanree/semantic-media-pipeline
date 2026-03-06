@@ -4,9 +4,11 @@ CLIP Embedder - Multimodal embedding using OpenAI CLIP model
 Device priority:
   1. DirectML  (/dev/dxg via torch-directml, works on WSL2 + AMD/Intel/NVIDIA)
   2. CUDA/ROCm (torch.cuda, works on native Linux with proper drivers)
-  3. CPU       (fallback)
+  3. MPS       (Apple Metal, works on macOS M-series)
+  4. CPU       (fallback)
 """
 
+import logging
 import os
 from typing import List, Optional, Union
 
@@ -14,6 +16,14 @@ import numpy as np
 import torch
 from PIL import Image
 from sentence_transformers import SentenceTransformer
+
+# Suppress noisy transformers info-level warnings that fire on every model load.
+# use_fast=True is the new default and is fine; position_ids UNEXPECTED keys are
+# expected when loading a CLIPModel from a SentenceTransformer checkpoint.
+logging.getLogger("transformers.models.clip.image_processing_clip").setLevel(logging.ERROR)
+logging.getLogger("transformers.modeling_utils").setLevel(logging.ERROR)
+
+log = logging.getLogger(__name__)
 
 
 def _detect_device() -> str:
@@ -30,18 +40,29 @@ def _detect_device() -> str:
         dml_device = torch_directml.device()  # e.g. 'privateuseone:0'
         # Quick sanity: allocate a tiny tensor to confirm the device works
         torch.zeros(1, device=dml_device)
-        print(f"DirectML device detected: {dml_device}")
+        log.info("DirectML device detected: %s", dml_device)
         return str(dml_device)
     except Exception as exc:
-        print(f"DirectML not available ({exc}), trying CUDA/ROCm...")
+        log.info("DirectML not available (%s), trying CUDA/ROCm...", exc)
 
     # 2. CUDA / ROCm
     if torch.cuda.is_available():
-        print(f"CUDA/ROCm device detected: {torch.cuda.get_device_name(0)}")
+        log.info("CUDA/ROCm device detected: %s", torch.cuda.get_device_name(0))
         return "cuda"
 
-    # 3. CPU fallback
-    print("No GPU backend available — using CPU")
+    # 3. Apple Metal (MPS) — M-series Macs, native macOS only (not inside Docker/Linux)
+    # MPS requires macOS kernel — unavailable in Linux containers even on Apple Silicon.
+    import platform
+    if (
+        platform.system() == "Darwin"
+        and hasattr(torch.backends, "mps")
+        and torch.backends.mps.is_available()
+    ):
+        log.info("Apple MPS device detected (Metal)")
+        return "mps"
+
+    # 4. CPU fallback
+    log.info("No GPU backend available — using CPU")
     return "cpu"
 
 
@@ -49,13 +70,13 @@ class CLIPEmbedder:
     """CLIP embedder for images and text"""
 
     def __init__(
-        self, model_name: str = "clip-ViT-B-32", device: Optional[str] = None
+        self, model_name: str = "clip-ViT-L-14", device: Optional[str] = None
     ):
         """
         Initialize CLIP embedder.
 
         Args:
-            model_name: HuggingFace model name (default: clip-ViT-B-32)
+            model_name: HuggingFace model name (default: clip-ViT-L-14, 768-dim)
             device: Device to use ('privateuseone:0', 'cuda', 'cpu', or auto-detect)
         """
         self.model_name = model_name
@@ -66,9 +87,10 @@ class CLIPEmbedder:
         else:
             self.device = device
 
-        print(f"Loading {model_name} on device: {self.device}")
+        log.info("Loading %s on device: %s", model_name, self.device)
         self.model = SentenceTransformer(model_name, device=self.device)
-        self.embedding_dim = 512  # CLIP ViT-B-32 outputs 512-dim vectors
+        # Query the model directly — never hardcode; changes with model name
+        self.embedding_dim = self.model.get_sentence_embedding_dimension()
 
     def embed_images(
         self, image_paths: List[str], batch_size: int = 32
@@ -81,7 +103,7 @@ class CLIPEmbedder:
             batch_size: Batch size for inference (default: 32)
 
         Returns:
-            NumPy array of shape (len(image_paths), 512)
+            NumPy array of shape (len(image_paths), embedding_dim)
         """
         images = []
         for image_path in image_paths:
@@ -89,9 +111,11 @@ class CLIPEmbedder:
                 img = Image.open(image_path).convert("RGB")
                 images.append(img)
             except Exception as e:
-                print(f"Warning: Could not load image {image_path}: {e}")
-                # Add a black image as fallback
-                images.append(Image.new("RGB", (224, 224), color="black"))
+                log.warning("Skipping unreadable image %s: %s", image_path, e)
+                # Do NOT append a placeholder — a black image produces a valid
+                # embedding that would be stored in Qdrant as legitimate data,
+                # poisoning search results with fake vectors.
+                continue
 
         # Embed in batches
         embeddings = self.model.encode(
@@ -108,7 +132,7 @@ class CLIPEmbedder:
             text: Single text string or list of text strings
 
         Returns:
-            NumPy array of shape (1, 512) if single text, (len(text), 512) if list
+            NumPy array of shape (1, embedding_dim) if single text, (len(text), embedding_dim) if list
         """
         if isinstance(text, str):
             text = [text]
@@ -131,7 +155,7 @@ class CLIPEmbedder:
             skip_errors: If True, skip frames that fail to load
 
         Returns:
-            NumPy array of shape (len(frame_paths), 512)
+            NumPy array of shape (len(frame_paths), embedding_dim)
         """
         return self.embed_images(frame_paths, batch_size=batch_size)
 
@@ -144,7 +168,7 @@ class CLIPEmbedder:
 _embedder = None
 
 
-def get_embedder(model_name: str = None) -> CLIPEmbedder:
+def get_embedder(model_name: Optional[str] = None) -> CLIPEmbedder:
     """
     Get or create the global CLIP embedder instance.
     Uses lazy loading to avoid loading the model until needed.
@@ -157,9 +181,20 @@ def get_embedder(model_name: str = None) -> CLIPEmbedder:
     """
     global _embedder
 
+    resolved_name = model_name or os.getenv("CLIP_MODEL_NAME", "clip-ViT-L-14")
+
+    # Invalidate cache if a different model is requested — returning the wrong
+    # model silently is worse than the overhead of reloading.
+    if _embedder is not None and _embedder.model_name != resolved_name:
+        log.warning(
+            "get_embedder() called with '%s' but cached instance is '%s' — reloading.",
+            resolved_name,
+            _embedder.model_name,
+        )
+        _embedder = None
+
     if _embedder is None:
-        model_name = model_name or os.getenv("CLIP_MODEL_NAME", "clip-ViT-B-32")
         device = os.getenv("EMBEDDING_DEVICE", "").strip() or None
-        _embedder = CLIPEmbedder(model_name, device)
+        _embedder = CLIPEmbedder(resolved_name, device)
 
     return _embedder

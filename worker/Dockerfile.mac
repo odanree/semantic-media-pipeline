@@ -1,0 +1,44 @@
+# syntax=docker/dockerfile:1
+# ============================================================================
+# Worker Dockerfile - Mac variant (Apple Silicon / MPS acceleration)
+# ============================================================================
+# Uses Apple MPS (Metal Performance Shaders) for GPU acceleration.
+# No torch-directml — that is WSL2/Windows only.
+#
+# Supports: Apple M1, M2, M3, M4 (MPS via torch.backends.mps)
+# Falls back to CPU if MPS is unavailable.
+# ============================================================================
+
+FROM python:3.10-slim
+
+# System deps layer (cached unless Dockerfile changes)
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    git \
+    curl \
+    ffmpeg \
+    libgl1 \
+    libglib2.0-0 \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Deps layer — uses Mac-specific requirements (no torch-directml)
+COPY worker/requirements.mac.txt .
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install -U pip setuptools wheel && \
+    pip install -r requirements.mac.txt
+
+# Code layer
+COPY worker/ .
+
+# Copy test scripts from repo root
+COPY scripts ./scripts
+
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1
+# No WSL2 LD_LIBRARY_PATH needed on Mac
+
+CMD ["celery", "-A", "celery_app", "worker", "--loglevel=info"]
