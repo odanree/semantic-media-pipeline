@@ -704,6 +704,83 @@ def _is_stale_mount_ffprobe(exc: BaseException) -> bool:
 
 ---
 
+## 14. CLIP Model / Qdrant Collection Dimension Mismatch — Silent Backlog (multi-session)
+
+**Branch:** `chore/worker-concurrency`
+
+**Symptom**
+Stats API showed a growing `error` count with `INVALID_ARGUMENT` after the
+Qdrant collection was recreated and the re-index was restarted. Workers were
+running and completing tasks, so the pipeline *appeared* healthy. The error
+count grew from 2 → 169 → 269 → 502 across restarts before it was caught.
+
+**What happened**
+The Qdrant `media_vectors` collection was deleted and recreated at 768 dimensions
+to match `clip-ViT-L-14`. But `.env` still had `CLIP_MODEL_NAME=clip-ViT-B-32`
+(512-dim), left over from an earlier configuration. After a `docker compose up`
+the Windows worker loaded ViT-B-32 and produced 512-dim vectors, which Qdrant
+rejected:
+```
+status = StatusCode.INVALID_ARGUMENT
+details = "Wrong input: Vector dimension error: expected dim: 768, got 512"
+```
+Because `autoretry_for=(Exception,)` covers all exceptions, every rejected
+task retried 5× before landing in `error` — the error message in the DB made
+the cause clear, but nobody was watching the error column closely during the
+first hours of the re-index.
+
+A second issue surfaced at the same time: `stats.py` read
+`info.vectors_count` from the Qdrant `CollectionInfo` object, but the
+installed `qdrant-client` version had renamed it to `points_count`. This caused
+the entire `/api/stats/summary` endpoint to return 500 (see also Lesson #1 —
+Qdrant renames attributes across minor versions without deprecation warnings).
+
+**Root cause**
+1. **`.env` was not updated when the Qdrant collection dimension changed.** The
+   collection and the model env var were changed in separate steps with no
+   cross-check. The worker silently loaded the wrong model because there is no
+   startup assertion that `embedder.embedding_dim == collection.vector_size`.
+2. **Qdrant `INVALID_ARGUMENT` errors are not distinguishable from transient
+   errors** by the current retry logic — `autoretry_for=(Exception,)` retries
+   them the full 5×, wasting ~10 minutes of worker time per file before
+   permanent failure.
+3. **Stats API was broken** so the growing error count was only visible via
+   direct Postgres queries, not the dashboard.
+
+**The fix**
+- Updated `.env`: `CLIP_MODEL_NAME=clip-ViT-L-14`
+- Reset 502 `INVALID_ARGUMENT` errors to `pending` (all produced by the wrong
+  model — none were genuine vector defects)
+- Fixed `stats.py`: `getattr(info, 'points_count', None) or getattr(info, 'vectors_count', None)`
+  for forward/backward compat with qdrant-client version changes
+- Rebuilt both `worker` and `api` containers
+
+**Prevention**
+Add a startup assertion in `tasks.py` or `embedder.py`:
+```python
+qdrant_info = qdrant_client.get_collection(QDRANT_COLLECTION_NAME)
+collection_dim = qdrant_info.config.params.vectors.size
+if collection_dim != embedder.embedding_dim:
+    raise RuntimeError(
+        f"Dimension mismatch: Qdrant collection is {collection_dim}-dim "
+        f"but {embedder.model_name} produces {embedder.embedding_dim}-dim vectors. "
+        f"Check CLIP_MODEL_NAME in .env."
+    )
+```
+This makes the mismatch loud and immediate (worker fails to start) rather than
+silent and gradual (tasks fail one by one over hours).
+
+**Interview talking point**
+> "When you change a schema — whether it's a database column type or a vector
+> dimension — every producer of that schema must be updated atomically. In this
+> case I changed the Qdrant collection and the model name in separate steps and
+> missed updating `.env`, so the worker ran with the wrong model for hours.
+> The fix was straightforward, but the real lesson is: add a startup assertion
+> that checks the producer's output format against the store's expected format
+> before any work begins. Fail loud at startup, not silently at scale."
+
+---
+
 ## Cross-Cutting Themes
 
 | Theme | Issues |
@@ -724,6 +801,8 @@ def _is_stale_mount_ffprobe(exc: BaseException) -> bool:
 | **Docker bind-mount falls back to read-only parent when target dir is missing** | #13 (SMB frame cache) |
 | **Per-worker local caches belong in Docker named volumes, not shared network mounts** | #13 (SMB frame cache) |
 | **SMB stale mount produces two distinct exceptions: `OSError(EIO)` and `FFmpegError(ffprobe failed:)` — both need fast-fail** | #13 (stale mount signatures) |
+| **Changing a vector store's dimension requires updating all producers atomically — add a startup dimension assertion** | #14 (CLIP/Qdrant dim mismatch) |
+| **Third-party SDK attributes renamed across minor versions; use `getattr` fallbacks at call sites** | #14, #1 (Qdrant `vectors_count` → `points_count`) |
 
 ---
 
@@ -758,20 +837,6 @@ def _is_stale_mount_ffprobe(exc: BaseException) -> bool:
    with `--no-cache` and verify with `docker exec`.**
    BuildKit's layer cache can serve the pre-change image silently.
 
-13. **A Docker bind-mount whose host path doesn't exist will silently fall back
-    to mounting the parent — with whatever permissions the parent carries.**
-    Always pre-create bind-mount targets, or use Docker named volumes for
-    anything that only needs to be local to one container.
-
-14. **Per-worker caches (frame cache, model cache) belong in Docker named
-    volumes, not shared network mounts.** A cache that doesn't need cross-
-    worker sharing shouldn't carry a network I/O dependency.
-
-15. **An SMB share mounted read-only on the remote client cannot be made
-    writable by `mkdir` — permission is controlled by the share's ACL on the
-    server.** Create missing directories from the machine that *hosts* the
-    share, or use a local volume instead of fighting the ACL.
-
 9. **Order pipeline steps by cost: cheap invariants first, variable-cost
    optionals last (or async).** A best-effort step with unbounded cost placed
    before mandatory fast steps will starve the pipeline under real-world data.
@@ -787,12 +852,38 @@ def _is_stale_mount_ffprobe(exc: BaseException) -> bool:
     empty — use `os.getenv('VAR') or 'default'` for any cast to `int`/`float`.**
     An empty-string env var causes `int('')` → `ValueError`, which with
     `autoretry_for=(Exception,)` results in infinite retries with no progress.
+
 12. **`NEXT_PUBLIC_*` in a Next.js production Docker image is baked at `next build`
     time — `docker-compose` `environment:` vars arrive too late.**
     Pass values as `ARG`/`ENV` before the `RUN npm run build` step and supply
     them under `build.args:` in compose, not `environment:`. When multiple stacks
     share the same image with different ports/endpoints, each compose file needs
     its own `build.args` block to produce a distinct image.
+
+13. **A Docker bind-mount whose host path doesn't exist will silently fall back
+    to mounting the parent — with whatever permissions the parent carries.**
+    Always pre-create bind-mount targets, or use Docker named volumes for
+    anything that only needs to be local to one container.
+
+14. **Per-worker caches (frame cache, model cache) belong in Docker named
+    volumes, not shared network mounts.** A cache that doesn't need cross-
+    worker sharing shouldn't carry a network I/O dependency.
+
+15. **An SMB share mounted read-only on the remote client cannot be made
+    writable by `mkdir` — permission is controlled by the share's ACL on the
+    server.** Create missing directories from the machine that *hosts* the
+    share, or use a local volume instead of fighting the ACL.
+
+16. **When changing a vector store's collection dimension, update all producer
+    `.env` files atomically and add a startup assertion comparing
+    `embedder.embedding_dim` to `collection.vector_size`.** A mismatch fails
+    silently per-task (INVALID_ARGUMENT retried 5×) rather than loudly at
+    startup, accumulating hundreds of wasted errors before detection.
+
+17. **Third-party SDK attributes renamed across minor versions should be
+    accessed with `getattr(obj, 'new_name', None) or getattr(obj, 'old_name', None)`.**
+    Qdrant renamed `CollectionInfo.vectors_count` → `points_count` without a
+    deprecation warning, breaking the stats endpoint silently.
 
 ## Debuging Commands:
 
