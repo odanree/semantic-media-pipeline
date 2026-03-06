@@ -3,6 +3,7 @@ Celery Task Definitions
 Main orchestration for media ingestion pipeline
 """
 
+import hashlib
 import os
 import shutil
 import tempfile
@@ -33,6 +34,7 @@ from ingest.hasher import compute_file_hash, get_existing_hash_record
 from ml.embedder import get_embedder
 from storage import get_storage_backend
 
+log = logging.getLogger(__name__)
 
 # Initialize Qdrant client
 QDRANT_HOST = os.getenv("QDRANT_HOST", "qdrant")
@@ -58,16 +60,65 @@ def ensure_qdrant_collection():
         # Guard against race condition: another worker may have created it
         # between our get and create calls (ALREADY_EXISTS is safe to ignore).
         try:
+            vector_size = get_embedder().get_embedding_dimension()
             qdrant_client.create_collection(
                 collection_name=QDRANT_COLLECTION_NAME,
-                vectors_config=VectorParams(size=512, distance=Distance.COSINE),
+                vectors_config=VectorParams(size=vector_size, distance=Distance.COSINE),
             )
-            print(f"Created Qdrant collection: {QDRANT_COLLECTION_NAME}")
+            print(f"Created Qdrant collection: {QDRANT_COLLECTION_NAME} (dim={vector_size})")
         except Exception as create_err:
             if "already exists" in str(create_err).lower():
                 pass  # Another worker won the race — collection exists, continue
             else:
                 raise
+
+
+def _frame_cache_key(file_hash: str, fps: float, resolution: int) -> str:
+    """
+    Build a deterministic cache key from extraction parameters.
+    Model-agnostic — frames are raw pixels, independent of CLIP version.
+    """
+    raw = f"{file_hash}:fps={fps}:res={resolution}"
+    return hashlib.sha256(raw.encode()).hexdigest()[:16]
+
+
+def _frame_cache_dir(file_hash: str, fps: float, resolution: int) -> Path:
+    """Return the cache directory for a given video + extraction params."""
+    base = Path(os.getenv("FRAME_CACHE_DIR", "/tmp/lumen_frame_cache"))
+    return base / _frame_cache_key(file_hash, fps, resolution)
+
+
+def _get_cached_frames(file_hash: str, fps: float, resolution: int) -> Optional[List[str]]:
+    """
+    Return cached frame paths if a complete cache exists, else None.
+    A cache is considered complete when a '.done' sentinel file is present
+    (guards against partial writes from a previous interrupted extraction).
+    """
+    cache_dir = _frame_cache_dir(file_hash, fps, resolution)
+    sentinel = cache_dir / ".done"
+    if sentinel.exists():
+        frames = sorted(cache_dir.glob("frame_*.jpg"))
+        if frames:
+            return [str(f) for f in frames]
+    return None
+
+
+def _save_frame_cache(file_hash: str, fps: float, resolution: int, frame_paths: List[str]) -> List[str]:
+    """
+    Copy freshly extracted frames into the persistent cache directory.
+    Writes a '.done' sentinel only after all frames are copied.
+    Returns the new frame paths inside the cache directory.
+    """
+    cache_dir = _frame_cache_dir(file_hash, fps, resolution)
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    cached_paths = []
+    for src in frame_paths:
+        dst = cache_dir / Path(src).name
+        shutil.copy2(src, dst)
+        cached_paths.append(str(dst))
+    (cache_dir / ".done").touch()
+    log.info("[FrameCache] Saved %d frames → %s", len(cached_paths), cache_dir)
+    return cached_paths
 
 
 @app.task(
@@ -326,18 +377,30 @@ def process_video(self, file_path: str, media_record_id: str):
         # Extract frames
         temp_dir = tempfile.mkdtemp(prefix="lumen_frames_")
         try:
-            print(f"Extracting frames from video: {file_path}")
-            frame_paths = extract_keyframes(
-                file_path,
-                temp_dir,
-                fps=float(os.getenv("KEYFRAME_FPS") or "0.5"),
-                resolution=int(os.getenv("KEYFRAME_RESOLUTION") or "224"),
-                video_duration=metadata["duration"],
-            )
-            print(f"Extracted {len(frame_paths)} frames")
+            fps = float(os.getenv("KEYFRAME_FPS") or "0.5")
+            resolution = int(os.getenv("KEYFRAME_RESOLUTION") or "224")
 
-            if not frame_paths:
-                raise FFmpegError(f"No frames extracted from {file_path}")
+            # --- Frame cache check ---
+            cached = _get_cached_frames(media_record.file_hash, fps, resolution)
+            if cached:
+                log.info("[FrameCache] HIT — %d frames for %s", len(cached), file_path)
+                frame_paths = cached
+            else:
+                log.info("[FrameCache] MISS — extracting frames from %s", file_path)
+                print(f"Extracting frames from video: {file_path}")
+                raw_frame_paths = extract_keyframes(
+                    file_path,
+                    temp_dir,
+                    fps=fps,
+                    resolution=resolution,
+                    video_duration=metadata["duration"],
+                )
+                print(f"Extracted {len(raw_frame_paths)} frames")
+
+                if not raw_frame_paths:
+                    raise FFmpegError(f"No frames extracted from {file_path}")
+
+                frame_paths = _save_frame_cache(media_record.file_hash, fps, resolution, raw_frame_paths)
 
             # Embed frames in batches
             batch_size = int(os.getenv("EMBEDDING_BATCH_SIZE") or "32")
@@ -358,7 +421,7 @@ def process_video(self, file_path: str, media_record_id: str):
                             "file_type": "video",
                             "file_hash": media_record.file_hash,
                             "frame_index": frame_idx,
-                            "timestamp": (frame_idx / float(os.getenv("KEYFRAME_FPS") or "0.5")),
+                            "timestamp": (frame_idx / fps),
                             "created_at": datetime.utcnow().isoformat(),
                             "media_file_id": media_record_id,
                         },

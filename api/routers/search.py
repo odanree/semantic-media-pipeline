@@ -58,7 +58,7 @@ def get_clip_model():
             # Import SentenceTransformer (should work now that accelerate.py is patched)
             from sentence_transformers import SentenceTransformer
             
-            model_name = os.getenv("CLIP_MODEL_NAME", "clip-ViT-B-32")
+            model_name = os.getenv("CLIP_MODEL_NAME", "clip-ViT-L-14")
             device = _get_device()
             print(f"Loading {model_name} on device: {device}")
             _clip_model = SentenceTransformer(model_name, device=device)

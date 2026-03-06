@@ -64,13 +64,13 @@ class CLIPEmbedder:
     """CLIP embedder for images and text"""
 
     def __init__(
-        self, model_name: str = "clip-ViT-B-32", device: Optional[str] = None
+        self, model_name: str = "clip-ViT-L-14", device: Optional[str] = None
     ):
         """
         Initialize CLIP embedder.
 
         Args:
-            model_name: HuggingFace model name (default: clip-ViT-B-32)
+            model_name: HuggingFace model name (default: clip-ViT-L-14, 768-dim)
             device: Device to use ('privateuseone:0', 'cuda', 'cpu', or auto-detect)
         """
         self.model_name = model_name
@@ -175,7 +175,7 @@ def get_embedder(model_name: Optional[str] = None) -> CLIPEmbedder:
     """
     global _embedder
 
-    resolved_name = model_name or os.getenv("CLIP_MODEL_NAME", "clip-ViT-B-32")
+    resolved_name = model_name or os.getenv("CLIP_MODEL_NAME", "clip-ViT-L-14")
 
     # Invalidate cache if a different model is requested — returning the wrong
     # model silently is worse than the overhead of reloading.
