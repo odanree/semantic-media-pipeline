@@ -781,6 +781,83 @@ silent and gradual (tasks fail one by one over hours).
 
 ---
 
+## 15. Docker Disk Bloat — Three Independent Root Causes
+
+**Branch:** `fix/frame-cache-container-path`
+
+**Symptom**
+`docker system df` reported:
+```
+Images       66.85 GB   (88% reclaimable)
+Containers   22.26 GB   (0 reclaimable)
+Local Volumes 58.63 GB  (0 reclaimable)
+```
+The containers number was the surprise — all containers were healthy with no obvious
+extra writes. The local volume figure was expected due to proxy transcode output, but
+the container layer size warranted investigation.
+
+**What happened — three separate causes**
+
+**Cause 1: Orphaned temp mp4 in worker writable layer (8 GB)**
+A video proxy transcode task was interrupted mid-encode. `ffmpeg` had already written
+a temp file at `/tmp/tmp<random>.mp4` inside the container. Because `/tmp` was not
+mounted as a named volume, the file lived in the container's writable overlay layer
+and survived container restarts indefinitely. It was invisible to normal ops monitoring
+because no log or metric tracked `/tmp` fill rate.
+
+**Cause 2: HuggingFace model re-downloaded on every rebuild (3.2 GB × per container)**
+The API containers load a CLIP model at startup via the HuggingFace `transformers` /
+`sentence-transformers` library. With `/root/.cache/huggingface` unmounted, each
+`docker compose up --build` created a fresh container layer and re-downloaded the
+full model into it. With two API containers (`lumen-api` and `lumen2-api`) rebuilding
+multiple times per session, this accumulated ~10 GB of duplicate model blobs spread
+across container layers.
+
+**Cause 3: Second stack API missing `REDIS_URL` / `DATABASE_URL`**
+A secondary issue: `docker-compose.second.yml` was missing `REDIS_URL` and
+`DATABASE_URL` on `api2`, so its WebSocket status poller was querying lumen1's
+database and publishing to lumen1's Redis channel. This didn't directly cause disk
+bloat but compounded debugging time.
+
+**The fixes**
+
+1. **Orphaned tmp**: `docker exec lumen2-worker sh -c "rm /tmp/tmp*.mp4"` (immediate);
+long-term: worker should `os.unlink()` temp files in a `finally` block, or `/tmp`
+should be a named volume (`worker_tmp`) so it's bounded and inspectable.
+
+2. **Model cache**: Mounted `hf_cache` named volume at `/root/.cache/huggingface` in
+both `api` and `api2` services. `lumen2` references it as `external: true` so both
+stacks share one download — model persists across all future rebuilds.
+
+3. **Second stack env vars**: Added `REDIS_URL=redis://lumen2-redis:6379` and
+`DATABASE_URL=postgresql://...@lumen2-postgres:5432/lumen2` to `api2`, and
+`REDIS_URL` to `worker2`, so each stack talks only to its own infrastructure.
+
+**Diagnosis commands**
+```powershell
+# Which container layer is large?
+docker ps --format "{{.Names}}: {{.Size}}"
+
+# What's inside a specific container filling space?
+docker exec <container> sh -c "du -sh /tmp/* /root/.cache/* 2>&1 | sort -rh | head -20"
+
+# Verify a volume is actually mounted (not writing to layer)
+docker exec <container> sh -c "df -h /root/.cache/huggingface"
+
+# Prune build cache without touching volumes or running containers
+docker builder prune --keep-storage 5GB
+```
+
+**Interview talking point**
+> "Container writable layer bloat is silent — it doesn't show up in application
+> metrics, and `docker ps` doesn't report it by default. I learned to treat `/tmp`
+> and model cache directories as named volumes from day one. The rule is: anything
+> that grows over time and survives a crash goes on a named volume where it's visible
+> to `docker system df`. Anything that *should* be cleaned up on restart goes on a
+> `tmpfs` mount so the OS enforces the boundary."
+
+---
+
 ## Cross-Cutting Themes
 
 | Theme | Issues |
@@ -803,6 +880,8 @@ silent and gradual (tasks fail one by one over hours).
 | **SMB stale mount produces two distinct exceptions: `OSError(EIO)` and `FFmpegError(ffprobe failed:)` — both need fast-fail** | #13 (stale mount signatures) |
 | **Changing a vector store's dimension requires updating all producers atomically — add a startup dimension assertion** | #14 (CLIP/Qdrant dim mismatch) |
 | **Third-party SDK attributes renamed across minor versions; use `getattr` fallbacks at call sites** | #14, #1 (Qdrant `vectors_count` → `points_count`) |
+| **Container writable layer bloat is invisible — `/tmp` and model caches must be named volumes** | #15 (HF model cache, orphaned tmp mp4) |
+| **Multi-stack compose files must hardcode stack-local service hostnames — missing env vars silently cross-connect stacks** | #15 (lumen2 REDIS_URL → lumen1) |
 
 ---
 
