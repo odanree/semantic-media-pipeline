@@ -32,13 +32,12 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
 
 # Initialize FastAPI app
-# require_api_key is a global dependency — every route in every router is
-# automatically protected. Toggle with API_KEY_REQUIRED=true in .env.
 app = FastAPI(
     title="Lumen API",
     description="Semantic media indexing and search API",
     version="1.2.0",
-    dependencies=[Depends(require_api_key)],
+    # Note: auth is applied per-router below (NOT globally) because
+    # APIKeyHeader uses Request scope which is incompatible with WebSocket routes.
 )
 
 # Attach rate limiter — must happen before add_middleware
@@ -58,11 +57,13 @@ app.add_middleware(
 )
 
 # Include routers
-app.include_router(health.router, prefix="/api", tags=["health"])
-app.include_router(ingest.router, prefix="/api", tags=["ingest"])
-app.include_router(search.router, prefix="/api", tags=["search"])
-app.include_router(updates.router, prefix="/api", tags=["realtime"])
-app.include_router(stats.router, prefix="/api", tags=["observability"])
+# WebSocket routes (updates) are excluded from auth: APIKeyHeader uses HTTP Request
+# scope which is incompatible with WebSocket connections. WS routes are internal.
+app.include_router(health.router,   prefix="/api", tags=["health"],        dependencies=[Depends(require_api_key)])
+app.include_router(ingest.router,   prefix="/api", tags=["ingest"],        dependencies=[Depends(require_api_key)])
+app.include_router(search.router,   prefix="/api", tags=["search"],        dependencies=[Depends(require_api_key)])
+app.include_router(updates.router,  prefix="/api", tags=["realtime"])       # WS — no HTTP auth
+app.include_router(stats.router,    prefix="/api", tags=["observability"], dependencies=[Depends(require_api_key)])
 
 
 # ============================================================================

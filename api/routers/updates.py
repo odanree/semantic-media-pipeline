@@ -254,15 +254,6 @@ async def websocket_media_updates(websocket: WebSocket):
         except RuntimeError:
             pass
 
-
-import asyncio
-import logging
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect
-
-logger = logging.getLogger(__name__)
-
-router = APIRouter(tags=["realtime"])
-
 # Track active connections to prevent resource exhaustion
 active_connections = {
     "media_updates": [],
