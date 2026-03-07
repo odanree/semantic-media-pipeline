@@ -26,6 +26,10 @@ from qdrant_client import QdrantClient
 # Import routers (these may use sentence_transformers internally)
 from routers import health, ingest, search, updates, stats
 from auth import require_api_key
+from rate_limit import limiter, LIMIT_DEFAULT
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
 
 # Initialize FastAPI app
 # require_api_key is a global dependency — every route in every router is
@@ -36,6 +40,11 @@ app = FastAPI(
     version="1.2.0",
     dependencies=[Depends(require_api_key)],
 )
+
+# Attach rate limiter — must happen before add_middleware
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+app.add_middleware(SlowAPIMiddleware)
 
 # Add CORS middleware
 # Note: allow_credentials=True is incompatible with allow_origins=["*"]
@@ -75,6 +84,7 @@ async def startup_event():
         print("Auth: API_KEY_REQUIRED=true but API_KEY not set — all requests will be rejected!")
     else:
         print("Auth: disabled (API_KEY_REQUIRED=false — set to true for production)")
+    print(f"Rate limits: search={os.getenv('RATE_LIMIT_SEARCH','30/min')}, stream={os.getenv('RATE_LIMIT_STREAM','60/min')}, default={os.getenv('RATE_LIMIT_DEFAULT','200/min')} [Redis: {os.getenv('REDIS_URL','redis://redis:6379')}]")
 
     # Preload CLIP model so first search request is instant
     import asyncio
