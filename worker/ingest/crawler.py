@@ -169,3 +169,39 @@ def count_media_by_type(media_root: str) -> dict:
         if file_type in counts:
             counts[file_type] += 1
     return counts
+
+
+def crawl_s3(prefix: str = "") -> List[Tuple[str, str]]:
+    """List media objects under an S3/MinIO prefix.
+
+    Returns a list of (key, file_type) tuples, the same shape as crawl_media().
+    Prefix can be an empty string (entire bucket) or a subdirectory path.
+    """
+    import boto3
+    import os
+
+    bucket = os.getenv("S3_BUCKET", "lumen-media")
+    client = boto3.client(
+        "s3",
+        endpoint_url=os.getenv("S3_ENDPOINT_URL"),
+        aws_access_key_id=os.getenv("S3_ACCESS_KEY"),
+        aws_secret_access_key=os.getenv("S3_SECRET_KEY"),
+        region_name=os.getenv("S3_REGION", "us-east-1"),
+    )
+    paginator = client.get_paginator("list_objects_v2")
+    results: List[Tuple[str, str]] = []
+    for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
+        for obj in page.get("Contents", []):
+            key = obj["Key"]
+            if key.endswith("/"):
+                continue
+            ext = Path(key).suffix.lower()
+            if ext in SUPPORTED_EXTENSIONS:
+                results.append((key, get_file_type(key)))
+    log.info(
+        "S3 crawl found %d media objects in s3://%s/%s",
+        len(results),
+        bucket,
+        prefix,
+    )
+    return results
