@@ -8,6 +8,7 @@ export interface SearchFilters {
   fromDate?: string
   toDate?: string
   minSimilarity?: number
+  maxResults?: number
 }
 
 interface SearchBarProps {
@@ -22,6 +23,7 @@ export default function SearchBar({ onSearch, isLoading = false }: SearchBarProp
   const [filters, setFilters] = useState<SearchFilters>({
     fileType: 'all',
     minSimilarity: 0.3,
+    maxResults: 20,
   })
   const { history, addToHistory } = useSearchHistory()
   const historyRef = useRef<HTMLDivElement>(null)
@@ -276,6 +278,37 @@ export default function SearchBar({ onSearch, isLoading = false }: SearchBarProp
             </p>
           </div>
 
+          {/* Results Limit */}
+          <div>
+            <div className="flex justify-between items-center mb-3">
+              <label className="text-sm font-semibold text-gray-300">
+                Max Results
+              </label>
+              <span className="text-sm text-blue-400 font-semibold">
+                {filters.maxResults ?? 20}
+              </span>
+            </div>
+            <div className="flex gap-2">
+              {[20, 50, 100, 200].map((n) => (
+                <button
+                  key={n}
+                  type="button"
+                  onClick={() => setFilters({ ...filters, maxResults: n })}
+                  className={`flex-1 py-2 rounded text-sm font-semibold transition ${
+                    (filters.maxResults ?? 20) === n
+                      ? 'bg-blue-600 text-white'
+                      : 'bg-gray-700 text-gray-300 hover:bg-gray-600 hover:text-white'
+                  }`}
+                >
+                  {n}
+                </button>
+              ))}
+            </div>
+            <p className="text-xs text-gray-500 mt-2">
+              Larger values return more matches but take slightly longer
+            </p>
+          </div>
+
           {/* Reset Filters */}
           <button
             type="button"
@@ -283,6 +316,7 @@ export default function SearchBar({ onSearch, isLoading = false }: SearchBarProp
               setFilters({
                 fileType: 'all',
                 minSimilarity: 0.3,
+                maxResults: 20,
               })
             }
             className="w-full px-4 py-2 bg-gray-700 hover:bg-gray-600 text-gray-300 hover:text-white rounded transition text-sm font-semibold"
