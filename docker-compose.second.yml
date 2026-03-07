@@ -178,6 +178,7 @@ services:
       - ${MEDIA_SOURCE_PATH_3}:/mnt/source/e:ro
       - ${MEDIA_SOURCE_PATH_4}:/mnt/source/f-storage:ro
       - ${MEDIA_SOURCE_PATH_5}:/mnt/source/f-downloads:ro
+      - hf_cache:/root/.cache/huggingface   # Persist model downloads across rebuilds
     depends_on:
       redis2:
         condition: service_healthy
@@ -257,6 +258,8 @@ volumes:
     driver: local
   proxies2_data:
     driver: local
+  hf_cache:
+    external: true   # Shared with main lumen stack — same model, one download
 
 # ============================================================================
 # Networks
