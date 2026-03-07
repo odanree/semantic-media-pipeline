@@ -40,6 +40,7 @@ class MediaFile(Base):
     worker_id = Column(String, nullable=True, index=True)  # hostname: Mac vs Windows attribution
     frame_cache_hit = Column(Boolean, nullable=True)  # Video only: True = skipped FFmpeg
     embedding_ms = Column(Integer, nullable=True)  # CLIP inference wall time in ms
+    model_version = Column(String(100), nullable=True, index=True)  # CLIP model that produced this vector (e.g. clip-ViT-L-14)
 
     def __repr__(self):
         return f"<MediaFile(id={self.id}, file_path={self.file_path}, status={self.processing_status})>"

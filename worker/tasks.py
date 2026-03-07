@@ -329,6 +329,7 @@ def process_image(self, file_path: str, media_record_id: str):
             media_record.processing_status = "done"
             media_record.processed_at = datetime.utcnow()
             media_record.embedding_ms = embedding_ms
+            media_record.model_version = os.getenv("CLIP_MODEL_NAME", "unknown")
             db.commit()
 
             print(f"Successfully processed image: {file_path}")
@@ -491,6 +492,7 @@ def process_video(self, file_path: str, media_record_id: str):
             media_record.processing_status = "done"
             media_record.processed_at = datetime.utcnow()
             media_record.embedding_ms = embedding_ms
+            media_record.model_version = os.getenv("CLIP_MODEL_NAME", "unknown")
             db.commit()
 
             print(f"Successfully processed video: {file_path}")

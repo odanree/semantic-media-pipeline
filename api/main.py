@@ -18,19 +18,23 @@ from dotenv import load_dotenv
 load_dotenv()
 
 import numpy as np
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from qdrant_client import QdrantClient
 
 # Import routers (these may use sentence_transformers internally)
 from routers import health, ingest, search, updates, stats
+from auth import require_api_key
 
 # Initialize FastAPI app
+# require_api_key is a global dependency — every route in every router is
+# automatically protected. Toggle with API_KEY_REQUIRED=true in .env.
 app = FastAPI(
     title="Lumen API",
     description="Semantic media indexing and search API",
     version="1.2.0",
+    dependencies=[Depends(require_api_key)],
 )
 
 # Add CORS middleware
@@ -63,6 +67,14 @@ async def startup_event():
     print("Lumen API starting up...")
     print(f"Qdrant host: {os.getenv('QDRANT_HOST', 'qdrant')}")
     print(f"Database URL: {os.getenv('DATABASE_ASYNC_URL', '***')}")
+    api_key_required = os.getenv("API_KEY_REQUIRED", "false").lower() in ("true", "1", "yes")
+    api_key_set = bool(os.getenv("API_KEY", "").strip())
+    if api_key_required and api_key_set:
+        print("Auth: API key required (X-API-Key header)")
+    elif api_key_required and not api_key_set:
+        print("Auth: API_KEY_REQUIRED=true but API_KEY not set — all requests will be rejected!")
+    else:
+        print("Auth: disabled (API_KEY_REQUIRED=false — set to true for production)")
 
     # Preload CLIP model so first search request is instant
     import asyncio
