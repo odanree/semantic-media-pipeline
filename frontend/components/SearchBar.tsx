@@ -119,7 +119,7 @@ export default function SearchBar({ onSearch, isLoading = false }: SearchBarProp
                         <button
                           key={idx}
                           type="button"
-                          onClick={() => handleHistoryClick(item)}
+                          onMouseDown={(e) => { e.preventDefault(); handleHistoryClick(item) }}
                           className="w-full text-left px-4 py-2 hover:bg-gray-800 transition text-sm text-gray-300 border-b border-gray-800 last:border-b-0"
                         >
                           <div className="flex justify-between items-start">
