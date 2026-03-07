@@ -87,7 +87,7 @@ export default function SearchBar({ onSearch, isLoading = false }: SearchBarProp
   return (
     <div className="w-full space-y-4">
       {/* Main search input */}
-      <form onSubmit={handleSubmit} className="w-full">
+      <form onSubmit={handleSubmit} className="w-full relative z-50">
         <div className="relative flex gap-2">
           <div className="flex-1 relative">
             <input
@@ -105,7 +105,7 @@ export default function SearchBar({ onSearch, isLoading = false }: SearchBarProp
             {showHistory && (
               <div
                 ref={historyRef}
-                className="absolute top-full left-0 right-0 mt-2 bg-gray-900 border border-gray-700 rounded-lg shadow-lg z-10 overflow-hidden"
+                className="absolute top-full left-0 right-0 mt-2 bg-gray-900 border border-gray-700 rounded-lg shadow-lg z-50 overflow-hidden"
               >
                 {history.length > 0 ? (
                   <>
