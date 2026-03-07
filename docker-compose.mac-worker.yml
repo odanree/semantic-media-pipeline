@@ -29,6 +29,9 @@ services:
     environment:
       # Stable identifier — shows as "mac-1" in /api/stats/processing worker_id column
       - WORKER_ID=${WORKER_ID:-mac-1}
+      # Frame cache: write to the named volume (persists across restarts)
+      # Without this, the worker falls back to /tmp/lumen_frame_cache (ephemeral).
+      - FRAME_CACHE_DIR=/mnt/frame_cache
     volumes:
       # SMB mount passthrough — Mac host path → container path
       # Must match MEDIA_SOURCE_PATH in .env.mac-worker but inside container

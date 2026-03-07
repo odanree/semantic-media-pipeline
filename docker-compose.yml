@@ -107,6 +107,8 @@ services:
       - PROXY_MAX_DURATION_SECS=${PROXY_MAX_DURATION_SECS:-3600}
       # Observability: stable worker identifier for Mac vs Windows attribution in stats
       - WORKER_ID=${WORKER_ID:-windows-1}
+      # Frame cache: always /mnt/frame_cache inside container (bind handles host-side path)
+      - FRAME_CACHE_DIR=/mnt/frame_cache
     user: root
     volumes:
       - media_data:/data/media
