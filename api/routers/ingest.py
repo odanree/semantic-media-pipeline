@@ -116,7 +116,8 @@ async def start_ingest(request: IngestRequest):
         Task ID for monitoring progress
     """
     try:
-        if not os.path.isdir(request.media_root):
+        storage_backend = os.getenv("STORAGE_BACKEND", "local").lower()
+        if storage_backend != "s3" and not os.path.isdir(request.media_root):
             raise ValueError(f"Invalid directory: {request.media_root}")
 
         # Send task via Celery using the correct task name ('tasks.crawl_and_dispatch')

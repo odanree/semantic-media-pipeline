@@ -13,6 +13,7 @@ import tempfile
 import time
 import uuid
 from datetime import datetime
+from contextlib import contextmanager
 from pathlib import Path
 from typing import List, Optional
 
@@ -25,7 +26,7 @@ from sqlalchemy import select
 from celery_app import app
 from db.models import MediaFile
 from db.session import SyncSessionLocal
-from ingest.crawler import crawl_media
+from ingest.crawler import crawl_media, crawl_s3
 from ingest.ffmpeg import (
     FFmpegError,
     apply_faststart,
@@ -63,6 +64,52 @@ def _publish_update(payload: dict) -> None:
         _redis_client.publish("lumen:media_updates", json.dumps(payload))
     except Exception as e:
         log.debug(f"Redis publish failed (non-fatal): {e}")
+
+# ---------------------------------------------------------------------------
+# Storage mode helpers
+# ---------------------------------------------------------------------------
+
+IS_S3 = os.getenv("STORAGE_BACKEND", "local").lower() == "s3"
+
+
+@contextmanager
+def _local_path(s3_key_or_local: str):
+    """Yield a local filesystem path for file processing.
+
+    Local mode: pass-through with no copy overhead.
+    S3 mode: download object to a temp file, yield its path, then delete.
+    """
+    if not IS_S3:
+        yield s3_key_or_local
+        return
+    storage = get_storage_backend()
+    suffix = Path(s3_key_or_local).suffix
+    tmp_fd, tmp_path = tempfile.mkstemp(suffix=suffix, prefix="lumen_s3_")
+    try:
+        with os.fdopen(tmp_fd, "wb") as fobj:
+            fobj.write(storage.read(s3_key_or_local))
+        yield tmp_path
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+
+
+def _s3_size_and_hash(key: str) -> tuple:
+    """Return (file_size_bytes, sha256_hex) for an S3 object without a full download.
+
+    Videos: byte-range read of first 8 KB (matches hasher.py local behaviour).
+    Images: full download (small files; hash must cover full content).
+    """
+    storage = get_storage_backend()
+    meta = storage.head(key)
+    file_size = meta["size"]
+    ext = Path(key).suffix.lower()
+    is_video = ext in {".mp4", ".mov", ".mkv", ".avi", ".flv", ".wmv", ".webm", ".m4v"}
+    data = storage.read_partial(key, 8192) if is_video else storage.read(key)
+    return file_size, hashlib.sha256(data).hexdigest()
+
 
 # Stable identifier for this worker process — used for Mac vs Windows attribution.
 # Set WORKER_ID env var explicitly in docker-compose for cleaner names (e.g. "windows-1", "mac-1").
@@ -187,7 +234,10 @@ def crawl_and_dispatch(self, media_root: str):
     """
     try:
         print(f"Starting crawl of {media_root}")
-        files = crawl_media(media_root)
+        if IS_S3:
+            files = crawl_s3(prefix=media_root)
+        else:
+            files = crawl_media(media_root)
         print(f"Found {len(files)} media files")
 
         # Dispatch a task for each file
@@ -219,25 +269,59 @@ def ingest_media(self, file_path: str, file_type: str):
     """
     db = SyncSessionLocal()
     try:
-        # Fast path: check if file exists and is readable
-        if not os.path.isfile(file_path):
-            print(f"File not found: {file_path}")
-            return {"status": "skipped", "reason": "file_not_found"}
+        # Fastest path: if this exact file_path is already DONE in the DB, skip without
+        # touching the filesystem at all. Avoids SMB reads for already-processed files.
+        # Only skip 'done' — 'pending'/'processing' should be re-dispatched to the processor.
+        path_done = db.query(MediaFile.id).filter(
+            MediaFile.file_path == file_path,
+            MediaFile.processing_status == "done",
+        ).first()
+        if path_done:
+            return {"status": "skipped", "reason": "already_ingested"}
 
-        # Get file size (fast)
-        try:
-            file_size = os.path.getsize(file_path)
-        except Exception as e:
-            print(f"Could not get file size for {file_path}: {e}")
-            return {"status": "skipped", "reason": "cannot_stat_file"}
+        # If file is pending/processing (stuck or not yet dispatched), re-dispatch to processor.
+        stale = db.query(MediaFile).filter(
+            MediaFile.file_path == file_path,
+            MediaFile.processing_status.in_(["pending", "processing"]),
+        ).first()
+        if stale:
+            if stale.file_type == "image":
+                result = process_image.delay(file_path, str(stale.id))
+            else:
+                result = process_video.delay(file_path, str(stale.id))
+            print(f"Re-dispatched {stale.processing_status} file: {file_path}")
+            return {"status": "redispatched", "media_record_id": str(stale.id), "task_id": result.id}
 
-        # Compute hash here — fast (8KB read for video, full read for images)
-        # Must be done before INSERT because file_hash is NOT NULL in the schema
-        try:
-            file_hash = compute_file_hash(file_path)
-        except ValueError as e:
-            print(f"Cannot hash file {file_path}: {e}")
-            return {"status": "skipped", "reason": "cannot_hash_file"}
+        # Check file existence and compute size + hash.
+        if IS_S3:
+            # S3: head() for size, read_partial() for hash — no full download needed.
+            try:
+                file_size, file_hash = _s3_size_and_hash(file_path)
+            except FileNotFoundError:
+                print(f"S3 object not found: {file_path}")
+                return {"status": "skipped", "reason": "file_not_found"}
+            except Exception as e:
+                print(f"Cannot stat/hash S3 object {file_path}: {e}")
+                return {"status": "skipped", "reason": "cannot_hash_file"}
+        else:
+            if not os.path.isfile(file_path):
+                print(f"File not found: {file_path}")
+                return {"status": "skipped", "reason": "file_not_found"}
+
+            # Get file size (fast)
+            try:
+                file_size = os.path.getsize(file_path)
+            except Exception as e:
+                print(f"Could not get file size for {file_path}: {e}")
+                return {"status": "skipped", "reason": "cannot_stat_file"}
+
+            # Compute hash here — fast (8KB read for video, full read for images)
+            # Must be done before INSERT because file_hash is NOT NULL in the schema
+            try:
+                file_hash = compute_file_hash(file_path)
+            except ValueError as e:
+                print(f"Cannot hash file {file_path}: {e}")
+                return {"status": "skipped", "reason": "cannot_hash_file"}
 
         # Check for duplicates before creating a record
         existing = db.query(MediaFile).filter(
@@ -312,12 +396,13 @@ def process_image(self, file_path: str, media_record_id: str):
         try:
             from ingest.ffmpeg import normalize_image
 
-            normalize_image(file_path, normalized_path, resolution=224)
+            with _local_path(file_path) as _local_img:
+                normalize_image(_local_img, normalized_path, resolution=224)
 
-            # Extract metadata from image
-            with Image.open(file_path) as img:
-                width, height = img.size
-                # Skip EXIF extraction - causes JSON serialization issues with bytes
+                # Extract metadata from image
+                with Image.open(_local_img) as img:
+                    width, height = img.size
+                    # Skip EXIF extraction - causes JSON serialization issues with bytes
 
             media_record.width = str(width)
             media_record.height = str(height)
@@ -429,7 +514,8 @@ def process_video(self, file_path: str, media_record_id: str):
 
         # Get video metadata
         print(f"Probing video: {file_path}")
-        metadata = probe_media(file_path)
+        with _local_path(file_path) as _probe_local:
+            metadata = probe_media(_probe_local)
         media_record.width = str(metadata["width"])
         media_record.height = str(metadata["height"])
         media_record.duration_secs = str(metadata["duration"])
@@ -444,7 +530,7 @@ def process_video(self, file_path: str, media_record_id: str):
         # generate_proxy applies Option 2 (duration threshold) and Option 3
         # (stream-copy for H264) — see generate_proxy task below.
         proxy_root = os.getenv("PROXY_ROOT", "").strip()
-        if proxy_root and file_path.startswith("/mnt/source/"):
+        if proxy_root and not IS_S3 and file_path.startswith("/mnt/source/"):
             rel = file_path[len("/mnt/source/"):]  # preserve subdirectory tree
             proxy_path = os.path.join(proxy_root, rel)
             generate_proxy.apply_async(
@@ -466,13 +552,14 @@ def process_video(self, file_path: str, media_record_id: str):
             else:
                 log.info("[FrameCache] MISS — extracting frames from %s", file_path)
                 print(f"Extracting frames from video: {file_path}")
-                raw_frame_paths = extract_keyframes(
-                    file_path,
-                    temp_dir,
-                    fps=fps,
-                    resolution=resolution,
-                    video_duration=metadata["duration"],
-                )
+                with _local_path(file_path) as _extract_local:
+                    raw_frame_paths = extract_keyframes(
+                        _extract_local,
+                        temp_dir,
+                        fps=fps,
+                        resolution=resolution,
+                        video_duration=metadata["duration"],
+                    )
                 print(f"Extracted {len(raw_frame_paths)} frames")
 
                 if not raw_frame_paths:

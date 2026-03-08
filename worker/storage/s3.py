@@ -92,5 +92,28 @@ class S3Storage(StorageBackend):
         except ClientError:
             raise ValueError(f"Could not generate presigned URL for {path}")
 
+    def head(self, path: str) -> dict:
+        """Return object metadata (size, etag) without downloading the body."""
+        try:
+            resp = self.s3_client.head_object(Bucket=self.bucket, Key=path)
+            return {
+                "size": resp["ContentLength"],
+                "etag": resp.get("ETag", "").strip('"'),
+            }
+        except ClientError as e:
+            raise FileNotFoundError(f"S3 object not found: {path}") from e
+
+    def read_partial(self, path: str, num_bytes: int) -> bytes:
+        """Read the first num_bytes of an S3 object using a byte-range request."""
+        try:
+            resp = self.s3_client.get_object(
+                Bucket=self.bucket,
+                Key=path,
+                Range=f"bytes=0-{num_bytes - 1}",
+            )
+            return resp["Body"].read()
+        except ClientError as e:
+            raise FileNotFoundError(f"S3 object not found: {path}") from e
+
 
 from typing import Optional
