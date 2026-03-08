@@ -161,8 +161,8 @@ services:
     deploy:
       resources:
         limits:
-          cpus: '8'
-          memory: 12G
+          cpus: '4'
+          memory: 6G
     # -----------------------------------------------------------------------
     # GPU passthrough (currently blocked by Docker Desktop + AMD limitation)
     # DirectML detects AMD GPUs in native WSL2 but Docker Desktop's VM
