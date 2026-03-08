@@ -2,6 +2,7 @@
 Database Models and ORM Configuration
 """
 
+import os
 import uuid
 from datetime import datetime
 from typing import Optional
@@ -86,6 +87,3 @@ def get_sync_session(engine=None):
         engine = get_sync_engine()
 
     return sessionmaker(bind=engine, expire_on_commit=False)
-
-
-import os
