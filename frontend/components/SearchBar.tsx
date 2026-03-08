@@ -15,9 +15,10 @@ interface SearchBarProps {
   onSearch: (query: string, filters: SearchFilters) => void
   isLoading?: boolean
   suggestions?: string[]
+  externalQuery?: string
 }
 
-export default function SearchBar({ onSearch, isLoading = false, suggestions }: SearchBarProps) {
+export default function SearchBar({ onSearch, isLoading = false, suggestions, externalQuery }: SearchBarProps) {
   const [query, setQuery] = useState('')
   const [showFilters, setShowFilters] = useState(false)
   const [showHistory, setShowHistory] = useState(false)
@@ -29,6 +30,15 @@ export default function SearchBar({ onSearch, isLoading = false, suggestions }: 
   const { history, addToHistory } = useSearchHistory()
   const historyRef = useRef<HTMLDivElement>(null)
   const filterRef = useRef<HTMLDivElement>(null)
+
+  // Sync externally-triggered query (e.g. tag pill clicks) into the input and history
+  useEffect(() => {
+    if (externalQuery && externalQuery !== query) {
+      setQuery(externalQuery)
+      addToHistory(externalQuery, filters)
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [externalQuery])
 
   // Close dropdowns when clicking outside
   useEffect(() => {
