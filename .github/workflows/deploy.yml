@@ -10,6 +10,7 @@ jobs:
     name: Deploy to Hetzner
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    environment: production
 
     steps:
       - name: Checkout (for path detection only)
