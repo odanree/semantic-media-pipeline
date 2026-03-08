@@ -22,7 +22,7 @@ export default function SearchPage() {
   const [collectionInfo, setCollectionInfo] = useState<CollectionInfo | null>(null)
 
   useEffect(() => {
-    fetch('/api/collection')
+    fetch('/api/stats/collection')
       .then(r => {
         if (!r.ok) return // silently fall back to static text on 404/500
         return r.json()
