@@ -1,0 +1,81 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]   # also run on main so merge commits are validated
+
+jobs:
+  # -------------------------------------------------------------------------
+  # Python: lint + syntax check (api + worker)
+  # -------------------------------------------------------------------------
+  lint-python:
+    name: Lint Python
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install ruff
+        run: pip install ruff
+
+      - name: Lint api/
+        run: ruff check api/ --select=E,F,W --ignore=E501,W503,E402
+        # E501 = line length (not enforced), E402 = module-level import not at top (builtins patch)
+
+      - name: Lint worker/
+        run: ruff check worker/ --select=E,F,W --ignore=E501,W503
+
+  # -------------------------------------------------------------------------
+  # Validate docker-compose config parses without errors
+  # (catches typos, missing keys, bad YAML)
+  # -------------------------------------------------------------------------
+  validate-compose:
+    name: Validate docker-compose
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check docker-compose.yml is valid
+        run: docker compose config --quiet
+        env:
+          # Provide dummy values so interpolation doesn't fail on missing vars
+          DATABASE_URL: postgresql://user:pass@postgres:5432/lumen
+          DATABASE_ASYNC_URL: postgresql+asyncpg://user:pass@postgres:5432/lumen
+          REDIS_URL: redis://redis:6379
+          QDRANT_HOST: qdrant
+          S3_ENDPOINT_URL: https://placeholder.r2.cloudflarestorage.com
+          S3_BUCKET: lumen-media
+          AWS_ACCESS_KEY_ID: placeholder
+          AWS_SECRET_ACCESS_KEY: placeholder
+          STORAGE_BACKEND: s3
+          NEXT_PUBLIC_API_URL: http://localhost:8000
+          NEXT_PUBLIC_STREAM_URL: http://localhost:8000
+
+  # -------------------------------------------------------------------------
+  # Check requirements files are pip-installable (syntax + version conflicts)
+  # -------------------------------------------------------------------------
+  check-requirements:
+    name: Check requirements
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Dry-run install api/requirements.txt
+        run: pip install --dry-run -r api/requirements.txt
+
+      - name: Check worker requirements exist
+        run: |
+          if [ -f worker/requirements.txt ]; then
+            pip install --dry-run -r worker/requirements.txt
+          else
+            echo "No worker/requirements.txt — skipping"
+          fi
