@@ -21,7 +21,7 @@ export default function SearchPage() {
     try {
       const payload: any = {
         query: searchQuery,
-        limit: 20,
+        limit: filters.maxResults ?? 20,
       }
 
       // Add filters to request if they differ from defaults

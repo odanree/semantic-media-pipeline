@@ -8,7 +8,8 @@ from typing import List, Optional
 
 import numpy as np
 import torch
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
+from rate_limit import limiter, LIMIT_SEARCH, LIMIT_SEARCH_VEC
 from pydantic import BaseModel
 from qdrant_client import QdrantClient
 
@@ -125,21 +126,22 @@ async def search_status():
 
 
 @router.post("/search", response_model=SearchResponse)
-async def search_media(request: SearchRequest):
+@limiter.limit(LIMIT_SEARCH)
+async def search_media(request: Request, body: SearchRequest):
     """
     Search for media using text query.
-    
+
     Embeds the text query using CLIP and searches Qdrant for similar embeddings.
-    
+
     Args:
         query: Text search query
         limit: Maximum number of results (default: 20)
         threshold: Minimum similarity threshold 0-1 (default: 0.3)
-    
+
     Returns:
         List of matching media with similarity scores
     """
-    if not request.query or not request.query.strip():
+    if not body.query or not body.query.strip():
         raise HTTPException(status_code=400, detail="Query cannot be empty")
     
     try:
@@ -155,7 +157,7 @@ async def search_media(request: SearchRequest):
             )
         
         # Embed the text query using CLIP
-        query_embedding = model.encode(request.query, convert_to_tensor=False)
+        query_embedding = model.encode(body.query, convert_to_tensor=False)
         if isinstance(query_embedding, np.ndarray):
             query_vector = query_embedding.tolist()
         else:
@@ -165,11 +167,11 @@ async def search_media(request: SearchRequest):
         search_result = qdrant_client.query_points(
             collection_name=QDRANT_COLLECTION_NAME,
             query=query_vector,
-            limit=request.limit,
+            limit=body.limit,
             with_payload=True,
-            score_threshold=request.threshold,
+            score_threshold=body.threshold,
         ).points
-        
+
         # Process results
         results = []
         for point in search_result:
@@ -183,11 +185,11 @@ async def search_media(request: SearchRequest):
                 "timestamp": payload.get("timestamp"),
             }
             results.append(result)
-        
+
         execution_time_ms = (time.time() - start_time) * 1000
-        
+
         return SearchResponse(
-            query=request.query,
+            query=body.query,
             results=results,
             count=len(results),
             execution_time_ms=execution_time_ms,
@@ -203,7 +205,9 @@ async def search_media(request: SearchRequest):
 
 
 @router.post("/search-vector")
+@limiter.limit(LIMIT_SEARCH_VEC)
 async def search_by_vector(
+    request: Request,
     vector: List[float],
     limit: int = 20,
     threshold: float = 0.3

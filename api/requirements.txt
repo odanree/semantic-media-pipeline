@@ -15,3 +15,5 @@ pillow==10.4.0
 numpy<2
 prometheus-client==0.20.0
 httpx==0.28.1
+slowapi==0.1.9
+limits[redis]==3.14.0
