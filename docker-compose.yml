@@ -41,6 +41,34 @@ services:
     restart: unless-stopped
 
   # =========================================================================
+  # Object Storage (MinIO) — S3-compatible, used by Mac worker as SMB replacement
+  # =========================================================================
+  minio:
+    image: minio/minio:latest
+    container_name: lumen-minio
+    command: server /data --console-address ":9001"
+    ports:
+      - "9000:9000"   # S3 API (workers + mc CLI)
+      - "9001:9001"   # Web console
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+    volumes:
+      # J:\ is MinIO's data directory directly — zero copy, no duplication.
+      # MinIO writes only a small .minio.sys metadata folder to J:\.
+      # All media files are served in-place from J:\.
+      # Requires J:\ to be shared in Docker Desktop → Resources → File Sharing.
+      - ${MEDIA_SOURCE_PATH:-J:/}:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    networks:
+      - lumen-net
+    restart: unless-stopped
+
+  # =========================================================================
   # Vector Database Layer
   # =========================================================================
   qdrant:

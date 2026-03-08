@@ -174,23 +174,24 @@ def processing_times(
         since = datetime.utcnow() - timedelta(hours=hours)
 
         # --- Aggregate timing stats ---
+        # Use embedding_ms (actual ML processing time) not processed_at - created_at
+        # (which includes queue wait time and inflates to days).
         agg = db.execute(
             text(
                 """
                 SELECT
                     COUNT(*)                                                          AS total,
-                    AVG(EXTRACT(EPOCH FROM (processed_at - created_at)))              AS avg_secs,
+                    AVG(embedding_ms) / 1000.0                                        AS avg_secs,
                     PERCENTILE_CONT(0.5) WITHIN GROUP
-                        (ORDER BY EXTRACT(EPOCH FROM (processed_at - created_at)))   AS median_secs,
+                        (ORDER BY embedding_ms) / 1000.0                              AS median_secs,
                     PERCENTILE_CONT(0.95) WITHIN GROUP
-                        (ORDER BY EXTRACT(EPOCH FROM (processed_at - created_at)))   AS p95_secs,
-                    MIN(EXTRACT(EPOCH FROM (processed_at - created_at)))              AS min_secs,
-                    MAX(EXTRACT(EPOCH FROM (processed_at - created_at)))              AS max_secs
+                        (ORDER BY embedding_ms) / 1000.0                              AS p95_secs,
+                    MIN(embedding_ms) / 1000.0                                        AS min_secs,
+                    MAX(embedding_ms) / 1000.0                                        AS max_secs
                 FROM media_files
                 WHERE processing_status = 'done'
                   AND processed_at >= :since
-                  AND created_at IS NOT NULL
-                  AND processed_at IS NOT NULL
+                  AND embedding_ms IS NOT NULL
                 """
             ),
             {"since": since},
@@ -212,14 +213,13 @@ def processing_times(
                 SELECT
                     file_path,
                     file_type,
-                    ROUND(EXTRACT(EPOCH FROM (processed_at - created_at))::numeric, 1) AS duration_secs,
+                    ROUND(embedding_ms / 1000.0, 1) AS duration_secs,
                     processed_at
                 FROM media_files
                 WHERE processing_status = 'done'
                   AND processed_at >= :since
-                  AND created_at IS NOT NULL
-                  AND processed_at IS NOT NULL
-                ORDER BY duration_secs DESC
+                  AND embedding_ms IS NOT NULL
+                ORDER BY embedding_ms DESC
                 LIMIT :limit
                 """
             ),
