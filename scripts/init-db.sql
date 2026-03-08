@@ -23,7 +23,13 @@ CREATE TABLE IF NOT EXISTS media_files (
     qdrant_point_id UUID,
     processing_status VARCHAR(20) DEFAULT 'pending',
     error_message TEXT,
-    processed_at TIMESTAMP WITH TIME ZONE
+    processed_at TIMESTAMP WITH TIME ZONE,
+    -- Observability columns (added in PR #10+)
+    embedding_started_at TIMESTAMP,
+    worker_id VARCHAR(100),
+    frame_cache_hit BOOLEAN DEFAULT FALSE,
+    embedding_ms INTEGER,
+    model_version VARCHAR(100)
 );
 
 -- Create indexes for common queries
@@ -41,6 +47,9 @@ CREATE INDEX IF NOT EXISTS idx_media_files_created_at
 
 CREATE INDEX IF NOT EXISTS idx_media_files_qdrant_point_id 
     ON media_files(qdrant_point_id);
+
+CREATE INDEX IF NOT EXISTS idx_model_version
+    ON media_files(model_version);
 
 -- ============================================================================
 -- Grant permissions to application user
