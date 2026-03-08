@@ -9,6 +9,8 @@ Endpoints:
 """
 
 import os
+import re
+from collections import Counter
 from datetime import datetime, timedelta
 from typing import Optional
 
@@ -331,6 +333,76 @@ def processing_times(
                 "total_sessions": len(sessions),
                 "sessions": sessions[-10:],  # last 10 sessions
             },
+        }
+    finally:
+        db.close()
+
+
+# ---------------------------------------------------------------------------
+# /api/stats/collection
+# ---------------------------------------------------------------------------
+
+_STOP_WORDS = {
+    "a", "an", "the", "of", "in", "on", "at", "to", "for", "and", "or",
+    "with", "by", "from", "is", "are", "was", "be", "it", "its", "this",
+    "that", "as", "into", "over", "up", "out", "video", "footage", "clip",
+    "view", "shot", "scene", "slow", "motion", "close", "aerial", "drone",
+    "4k", "hd", "1080p", "720p", "mp4", "mov", "person", "people", "man",
+    "woman", "men", "women", "using", "while", "during", "they", "their",
+    "doing", "being", "having",
+}
+
+
+@router.get("/stats/collection")
+def collection_info():
+    """
+    Collection summary for demo context UI.
+
+    Returns file counts by type/status and topic tags derived from filename
+    stems — surfaces what the collection contains without exposing architecture.
+    """
+    db = _get_session()
+    try:
+        rows = db.execute(
+            text(
+                "SELECT file_type, processing_status, COUNT(*) "
+                "FROM media_files GROUP BY file_type, processing_status"
+            )
+        ).fetchall()
+
+        by_type: dict = {}
+        total = 0
+        indexed = 0
+        for ftype, status, count in rows:
+            by_type[ftype] = by_type.get(ftype, 0) + count
+            total += count
+            if status == "done":
+                indexed += count
+
+        sample_rows = db.execute(
+            text(
+                "SELECT file_path FROM media_files "
+                "WHERE processing_status = 'done' "
+                "ORDER BY RANDOM() LIMIT 300"
+            )
+        ).fetchall()
+
+        word_counts: Counter = Counter()
+        for (path,) in sample_rows:
+            stem = os.path.splitext(os.path.basename(path))[0]
+            words = re.split(r"[-_\s\d]+", stem.lower())
+            for w in words:
+                if len(w) >= 4 and w not in _STOP_WORDS:
+                    word_counts[w] += 1
+
+        top_topics = [word for word, _ in word_counts.most_common(10)]
+
+        return {
+            "total": total,
+            "indexed": indexed,
+            "percent_indexed": round((indexed / total * 100) if total else 0, 1),
+            "by_type": by_type,
+            "topic_tags": top_topics,
         }
     finally:
         db.close()

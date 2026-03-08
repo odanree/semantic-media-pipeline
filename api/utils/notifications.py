@@ -157,10 +157,9 @@ if __name__ == "__main__":
     # Example usage - listen for all notifications
     import os
 
-    db_url = os.getenv(
-        "DATABASE_ASYNC_URL",
-        "postgresql://lumen_user:REDACTED_DB_PASSWORD@localhost/lumen"
-    )
+    db_url = os.getenv("DATABASE_ASYNC_URL")
+    if not db_url:
+        raise ValueError("DATABASE_ASYNC_URL environment variable is required")
 
     async def main():
         listener = MediaNotificationListener(db_url)
