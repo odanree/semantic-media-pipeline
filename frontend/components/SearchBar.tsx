@@ -90,13 +90,6 @@ export default function SearchBar({ onSearch, isLoading = false, suggestions, ex
         'events and celebrations',
       ]
 
-  const handleQuickFilter = (suggestion: string) => {
-    setQuery(suggestion)
-    addToHistory(suggestion, filters)
-    onSearch(suggestion, filters)
-    setShowHistory(false)
-  }
-
   return (
     <div className="w-full space-y-4">
       {/* Main search input */}
