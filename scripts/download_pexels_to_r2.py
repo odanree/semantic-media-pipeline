@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Pexels → Cloudflare R2 Demo Content Downloader
+Pexels -> Cloudflare R2 Demo Content Downloader
 ================================================
 Downloads sports/action videos from Pexels and uploads them to R2.
 
@@ -21,12 +21,12 @@ Requirements:
     pip install requests boto3 python-dotenv
 
 Reads from .env:
-    PEXELS_API_KEY      — required
-    S3_ENDPOINT_URL     — R2 endpoint (https://<account>.r2.cloudflarestorage.com)
-    S3_BUCKET           — R2 bucket name
-    S3_ACCESS_KEY       — R2 Access Key ID
-    S3_SECRET_KEY       — R2 Secret Access Key
-    S3_REGION           — auto (for R2)
+    PEXELS_API_KEY      - required
+    S3_ENDPOINT_URL     - R2 endpoint (https://<account>.r2.cloudflarestorage.com)
+    S3_BUCKET           - R2 bucket name
+    S3_ACCESS_KEY       - R2 Access Key ID
+    S3_SECRET_KEY       - R2 Secret Access Key
+    S3_REGION           - auto (for R2)
 
 Output folder: ./data/pexels_demo/
 R2 prefix: pexels-demo/
@@ -64,9 +64,9 @@ S3_REGION       = os.getenv("R2_REGION")       or os.getenv("S3_REGION", "auto")
 LOCAL_DIR = Path(__file__).parent.parent / "data" / "pexels_demo"
 
 # Hard cap: stop downloading once we hit this (leave headroom under 10GB R2 free tier)
-MAX_TOTAL_BYTES = 8_000_000_000  # 8 GB
+MAX_TOTAL_BYTES = 9_000_000_000  # 9 GB  (raised to accommodate office/work content batch)
 
-# Per-video max — skip anything bigger than this (keeps files manageable)
+# Per-video max - skip anything bigger than this (keeps files manageable)
 MAX_VIDEO_BYTES = 200_000_000  # 200 MB
 
 # Pexels search queries: (query, per_page, pages)
@@ -126,6 +126,15 @@ SEARCH_QUERIES = [
     ("food market ingredients", 50, 1),
     ("travel adventure",        50, 1),
     ("family outdoor picnic",   50, 1),
+    # --- Office & work ---
+    ("office meeting business team",     50, 1),
+    ("people working desk laptop",       50, 1),
+    ("corporate presentation boardroom", 50, 1),
+    ("remote work home office",          50, 1),
+    ("business professionals handshake", 50, 1),
+    ("coworkers whiteboard collaboration",50, 1),
+    ("call center customer service",     50, 1),
+    ("startup modern workspace",         50, 1),
 ]
 
 # Preferred video quality (will fall back down the list)
@@ -143,9 +152,9 @@ PEXELS_API_BASE = "https://api.pexels.com/videos"
 # ---------------------------------------------------------------------------
 def _fmt_bytes(n: int) -> str:
     for unit in ("B", "KB", "MB", "GB"):
-        if n < 1024:
+        if n < 1000:
             return f"{n:.1f} {unit}"
-        n /= 1024
+        n /= 1000
     return f"{n:.1f} TB"
 
 
@@ -182,16 +191,39 @@ def best_video_file(video: dict) -> dict | None:
 
 
 def safe_filename(video: dict, ext: str = "mp4") -> str:
-    vid_id = video["id"]
-    query_slug = (video.get("url", "").split("/")[-2] or f"video-{vid_id}")[:40]
-    return f"{query_slug}_{vid_id}.{ext}"
+    """Stable filename based on source (search) + Pexels video ID - never changes between runs."""
+    return f"pexels-search-{video['id']}.{ext}"
+
+
+def extract_video_id(filename: str) -> str | None:
+    """Extract Pexels video ID from any filename format.
+
+    Handled formats (in order):
+      pexels-search-12345.mp4   <- current format (source + id)
+      pexels-12345.mp4          <- previous format (id only)
+      some-slug_12345.mp4       <- legacy slug format
+    """
+    import re
+    # Current format: pexels-<source>-12345.mp4
+    m = re.match(r"pexels-[a-z]+-([0-9]+)\.mp4$", filename)
+    if m:
+        return m.group(1)
+    # Previous format: pexels-12345.mp4
+    m = re.match(r"pexels-([0-9]+)\.mp4$", filename)
+    if m:
+        return m.group(1)
+    # Legacy format: some-slug_12345.mp4 (ID after last underscore)
+    m = re.search(r"_([0-9]+)\.mp4$", filename)
+    if m:
+        return m.group(1)
+    return None
 
 
 # ---------------------------------------------------------------------------
 # R2 helpers
 # ---------------------------------------------------------------------------
-def fetch_r2_filenames() -> set[str]:
-    """Return the set of bare filenames already stored in R2 under R2_PREFIX/."""
+def fetch_r2_video_ids() -> set[str]:
+    """Return the set of Pexels video IDs already stored in R2 (works with old and new filenames)."""
     if not all([S3_ENDPOINT_URL, S3_BUCKET, S3_ACCESS_KEY, S3_SECRET_KEY]):
         return set()
     try:
@@ -205,12 +237,15 @@ def fetch_r2_filenames() -> set[str]:
             region_name=S3_REGION,
             config=Config(signature_version="s3v4"),
         )
-        existing: set[str] = set()
+        ids: set[str] = set()
         paginator = s3.get_paginator("list_objects_v2")
         for page in paginator.paginate(Bucket=S3_BUCKET, Prefix=f"{R2_PREFIX}/"):
             for obj in page.get("Contents", []):
-                existing.add(obj["Key"].split("/")[-1])
-        return existing
+                fname = obj["Key"].split("/")[-1]
+                vid_id = extract_video_id(fname)
+                if vid_id:
+                    ids.add(vid_id)
+        return ids
     except Exception as e:
         print(f"  WARNING: Could not list R2 objects: {e}")
         return set()
@@ -219,10 +254,10 @@ def fetch_r2_filenames() -> set[str]:
 # ---------------------------------------------------------------------------
 # Download
 # ---------------------------------------------------------------------------
-def download_videos(dry_run: bool = False, r2_filenames: set[str] | None = None) -> list[Path]:
+def download_videos(dry_run: bool = False, r2_video_ids: set[str] | None = None, limit: int | None = None) -> list[Path]:
     """Download all queued videos; return list of local paths."""
-    if r2_filenames is None:
-        r2_filenames = set()
+    if r2_video_ids is None:
+        r2_video_ids = set()
     if not PEXELS_API_KEY:
         print("ERROR: PEXELS_API_KEY not set in .env")
         sys.exit(1)
@@ -230,19 +265,27 @@ def download_videos(dry_run: bool = False, r2_filenames: set[str] | None = None)
     LOCAL_DIR.mkdir(parents=True, exist_ok=True)
 
     total_bytes = sum(f.stat().st_size for f in LOCAL_DIR.glob("*.mp4"))
-    downloaded: list[Path] = list(LOCAL_DIR.glob("*.mp4"))
+    # Only track newly downloaded files - don't re-upload the entire local dir each run
+    downloaded: list[Path] = []
 
     print(f"\n{'=' * 60}")
-    print(f"  Pexels → R2 Demo Downloader")
+    print(f"  Pexels -> R2 Demo Downloader")
     print(f"  Local dir : {LOCAL_DIR}")
     print(f"  Size cap  : {_fmt_bytes(MAX_TOTAL_BYTES)}")
-    print(f"  Local     : {_fmt_bytes(total_bytes)} ({len(downloaded)} files)")
-    print(f"  R2 skip   : {len(r2_filenames)} files already in R2")
+    print(f"  Local     : {_fmt_bytes(total_bytes)} ({len(list(LOCAL_DIR.glob('*.mp4')))} files)")
+    print(f"  R2 skip   : {len(r2_video_ids)} video IDs already in R2")
+    if limit:
+        print(f"  Limit     : {limit} new files")
     print(f"{'=' * 60}\n")
+
+    new_count = 0  # track newly downloaded files for --limit
 
     for query, per_page, pages in SEARCH_QUERIES:
         if total_bytes >= MAX_TOTAL_BYTES:
             print(f"  [CAP REACHED] Stopping at {_fmt_bytes(total_bytes)}")
+            break
+        if limit is not None and new_count >= limit:
+            print(f"  [LIMIT REACHED] Downloaded {new_count} new files")
             break
 
         videos = []
@@ -261,18 +304,20 @@ def download_videos(dry_run: bool = False, r2_filenames: set[str] | None = None)
         for video in videos:
             if total_bytes >= MAX_TOTAL_BYTES:
                 break
+            if limit is not None and new_count >= limit:
+                break
 
             vfile = best_video_file(video)
             if not vfile:
-                print(f"    SKIP  id={video['id']} — no suitable file found")
+                print(f"    SKIP  id={video['id']} - no suitable file found")
                 continue
 
             filename = safe_filename(video)
             dest = LOCAL_DIR / filename
 
-            # Skip if already in R2
-            if filename in r2_filenames:
-                print(f"    R2    {filename} (already in R2, skipping download)")
+            # Skip if already in R2 (match by stable video ID)
+            if str(video["id"]) in r2_video_ids:
+                print(f"    R2    {filename} (id={video['id']} already in R2, skipping)")
                 continue
 
             # Skip if already downloaded locally
@@ -282,7 +327,7 @@ def download_videos(dry_run: bool = False, r2_filenames: set[str] | None = None)
 
             size = vfile.get("size") or 0
             if total_bytes + size > MAX_TOTAL_BYTES:
-                print(f"    SKIP  {filename} — would exceed cap ({_fmt_bytes(size)})")
+                print(f"    SKIP  {filename} - would exceed cap ({_fmt_bytes(size)})")
                 continue
 
             print(f"    GET   {filename:60s} ~{_fmt_bytes(size)}", end="", flush=True)
@@ -303,7 +348,8 @@ def download_videos(dry_run: bool = False, r2_filenames: set[str] | None = None)
 
                 total_bytes += actual
                 downloaded.append(dest)
-                print(f"  ✓ {_fmt_bytes(actual)}  total={_fmt_bytes(total_bytes)}")
+                new_count += 1
+                print(f"  OK {_fmt_bytes(actual)}  total={_fmt_bytes(total_bytes)}")
             except Exception as e:
                 print(f"  ERROR: {e}")
                 dest.unlink(missing_ok=True)
@@ -340,18 +386,27 @@ def upload_to_r2(files: list[Path], dry_run: bool = False) -> None:
         config=Config(signature_version="s3v4"),
     )
 
-    # Build set of already-uploaded keys to allow resuming
+    # Build set of already-uploaded keys + track current R2 usage
     print(f"  Checking existing R2 objects under {R2_PREFIX}/ ...")
     existing_keys: set[str] = set()
+    r2_used_bytes: int = 0
     try:
         paginator = s3.get_paginator("list_objects_v2")
         for page in paginator.paginate(Bucket=S3_BUCKET, Prefix=f"{R2_PREFIX}/"):
             for obj in page.get("Contents", []):
                 existing_keys.add(obj["Key"])
+                r2_used_bytes += obj["Size"]
     except Exception as e:
         print(f"  WARNING: Could not list R2 objects: {e}")
 
-    print(f"  {len(existing_keys)} files already in R2\n")
+    print(f"  {len(existing_keys)} files already in R2 ({_fmt_bytes(r2_used_bytes)} / {_fmt_bytes(MAX_TOTAL_BYTES)})")
+
+    if r2_used_bytes >= MAX_TOTAL_BYTES:
+        print(f"\n  R2 CAP REACHED: bucket already at {_fmt_bytes(r2_used_bytes)}, limit is {_fmt_bytes(MAX_TOTAL_BYTES)}.")
+        print(f"  Skipping upload. Delete some objects or raise MAX_TOTAL_BYTES to continue.")
+        return
+
+    print()
 
     for path in files:
         key = f"{R2_PREFIX}/{path.name}"
@@ -360,6 +415,10 @@ def upload_to_r2(files: list[Path], dry_run: bool = False) -> None:
         if key in existing_keys:
             print(f"  EXIST {path.name:60s} {_fmt_bytes(size)}")
             continue
+
+        if r2_used_bytes + size > MAX_TOTAL_BYTES:
+            print(f"  CAP   {path.name:60s} {_fmt_bytes(size)} -- would exceed R2 cap, stopping.")
+            break
 
         print(f"  PUT   {path.name:60s} {_fmt_bytes(size)}", end="", flush=True)
 
@@ -374,11 +433,87 @@ def upload_to_r2(files: list[Path], dry_run: bool = False) -> None:
                 key,
                 ExtraArgs={"ContentType": "video/mp4"},
             )
-            print("  ✓")
+            r2_used_bytes += size
+            print("  OK")
         except Exception as e:
             print(f"  ERROR: {e}")
 
-    print(f"\n  Upload complete → s3://{S3_BUCKET}/{R2_PREFIX}/\n")
+    print(f"\n  Upload complete -> s3://{S3_BUCKET}/{R2_PREFIX}/\n")
+
+
+# ---------------------------------------------------------------------------
+# R2 deduplication
+# ---------------------------------------------------------------------------
+def dedup_r2(dry_run: bool = False) -> None:
+    """Remove duplicate R2 objects that share the same Pexels video ID.
+    Keeps the newest object (by LastModified) and deletes the rest.
+    """
+    if not all([S3_ENDPOINT_URL, S3_BUCKET, S3_ACCESS_KEY, S3_SECRET_KEY]):
+        print("ERROR: R2 credentials incomplete.")
+        return
+    try:
+        import boto3
+        from botocore.config import Config
+    except ImportError:
+        print("ERROR: boto3 not installed. Run: pip install boto3")
+        return
+
+    s3 = boto3.client(
+        "s3",
+        endpoint_url=S3_ENDPOINT_URL,
+        aws_access_key_id=S3_ACCESS_KEY,
+        aws_secret_access_key=S3_SECRET_KEY,
+        region_name=S3_REGION,
+        config=Config(signature_version="s3v4"),
+    )
+
+    print(f"  Scanning R2 bucket for duplicates under {R2_PREFIX}/ ...")
+    objects: list[dict] = []
+    paginator = s3.get_paginator("list_objects_v2")
+    for page in paginator.paginate(Bucket=S3_BUCKET, Prefix=f"{R2_PREFIX}/"):
+        objects.extend(page.get("Contents", []))
+
+    print(f"  Found {len(objects)} total objects")
+
+    # Group by extracted video ID
+    from collections import defaultdict
+    by_id: dict[str, list[dict]] = defaultdict(list)
+    no_id: list[dict] = []
+    for obj in objects:
+        fname = obj["Key"].split("/")[-1]
+        vid_id = extract_video_id(fname)
+        if vid_id:
+            by_id[vid_id].append(obj)
+        else:
+            no_id.append(obj)
+
+    dupes_found = 0
+    freed_bytes = 0
+    for vid_id, objs in by_id.items():
+        if len(objs) < 2:
+            continue
+        # Sort by LastModified descending - keep the newest
+        objs.sort(key=lambda o: o["LastModified"], reverse=True)
+        keep = objs[0]
+        to_delete = objs[1:]
+        dupes_found += len(to_delete)
+        for obj in to_delete:
+            freed_bytes += obj["Size"]
+            print(f"  DELETE {obj['Key']:70s} {_fmt_bytes(obj['Size'])}  (keep: {keep['Key'].split('/')[-1]})", end="")
+            if dry_run:
+                print("  [DRY RUN]")
+                continue
+            try:
+                s3.delete_object(Bucket=S3_BUCKET, Key=obj["Key"])
+                print("  OK")
+            except Exception as e:
+                print(f"  ERROR: {e}")
+
+    if dupes_found == 0:
+        print("  No duplicates found.")
+    else:
+        action = "Would free" if dry_run else "Freed"
+        print(f"\n  Removed {dupes_found} duplicate objects. {action} {_fmt_bytes(freed_bytes)}.")
 
 
 # ---------------------------------------------------------------------------
@@ -396,20 +531,30 @@ def main() -> None:
                         help="Print what would happen without downloading/uploading")
     parser.add_argument("--upload-to-r2",  action="store_true",
                         help="After downloading, also upload to Cloudflare R2 (default: local only)")
+    parser.add_argument("--dedup-r2",       action="store_true",
+                        help="Remove duplicate R2 objects (same video ID, old slug-based names kept newest)")
+    parser.add_argument("--limit",          type=int, default=None, metavar="N",
+                        help="Download/upload at most N new files (useful for testing)")
     args = parser.parse_args()
 
     if args.dry_run:
-        print("\n  [DRY RUN MODE — no files will be written]\n")
+        print("\n  [DRY RUN MODE - no files will be written]\n")
+
+    # Dedup is a standalone operation - run and exit
+    if args.dedup_r2:
+        dedup_r2(dry_run=args.dry_run)
+        print("  Done.")
+        return
 
     # Pre-fetch R2 contents so we skip re-downloading files already there
-    r2_filenames: set[str] = set()
+    r2_video_ids: set[str] = set()
     if args.upload_to_r2 and not args.upload_only:
         print("  Checking R2 for already-uploaded files...")
-        r2_filenames = fetch_r2_filenames()
-        print(f"  {len(r2_filenames)} files already in R2 — will skip downloading those\n")
+        r2_video_ids = fetch_r2_video_ids()
+        print(f"  {len(r2_video_ids)} video IDs already in R2 - will skip downloading those\n")
 
     if not args.upload_only:
-        files = download_videos(dry_run=args.dry_run, r2_filenames=r2_filenames)
+        files = download_videos(dry_run=args.dry_run, r2_video_ids=r2_video_ids, limit=args.limit)
     else:
         files = list(LOCAL_DIR.glob("*.mp4"))
         print(f"  Upload-only: found {len(files)} local files in {LOCAL_DIR}")

@@ -393,6 +393,14 @@ _TOPIC_VOCABULARY: list[str] = [
     "travel adventure",
     "coding laptop",
     "drone flight",
+    # Office & work
+    "office meeting business team",
+    "people working at desk",
+    "corporate presentation boardroom",
+    "remote work home office",
+    "coworkers collaborating whiteboard",
+    "call center customer service",
+    "startup modern workspace",
 ]
 
 # Module-level cache: (topic_vecs np.ndarray, encoded_at monotonic)
