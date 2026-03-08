@@ -298,9 +298,9 @@ export default function StatusPanel() {
       {/* Quick Stats */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
         <StatCard
-          label="Processing Rate"
-          value={`${by_status.processing}`}
-          unit="active"
+          label="Throughput"
+          value={filesPerMin !== null ? `${filesPerMin}` : '—'}
+          unit="files/min"
           color="purple"
         />
         <StatCard
