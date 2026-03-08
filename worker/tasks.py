@@ -269,7 +269,30 @@ def ingest_media(self, file_path: str, file_type: str):
     """
     db = SyncSessionLocal()
     try:
-        # Fast path: check file existence and compute size + hash.
+        # Fastest path: if this exact file_path is already DONE in the DB, skip without
+        # touching the filesystem at all. Avoids SMB reads for already-processed files.
+        # Only skip 'done' — 'pending'/'processing' should be re-dispatched to the processor.
+        path_done = db.query(MediaFile.id).filter(
+            MediaFile.file_path == file_path,
+            MediaFile.processing_status == "done",
+        ).first()
+        if path_done:
+            return {"status": "skipped", "reason": "already_ingested"}
+
+        # If file is pending/processing (stuck or not yet dispatched), re-dispatch to processor.
+        stale = db.query(MediaFile).filter(
+            MediaFile.file_path == file_path,
+            MediaFile.processing_status.in_(["pending", "processing"]),
+        ).first()
+        if stale:
+            if stale.file_type == "image":
+                result = process_image.delay(file_path, str(stale.id))
+            else:
+                result = process_video.delay(file_path, str(stale.id))
+            print(f"Re-dispatched {stale.processing_status} file: {file_path}")
+            return {"status": "redispatched", "media_record_id": str(stale.id), "task_id": result.id}
+
+        # Check file existence and compute size + hash.
         if IS_S3:
             # S3: head() for size, read_partial() for hash — no full download needed.
             try:

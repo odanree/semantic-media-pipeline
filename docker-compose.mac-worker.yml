@@ -5,11 +5,10 @@
 #   docker compose -f docker-compose.mac-worker.yml --env-file .env.mac-worker up --build
 #
 # Prerequisites:
-#   1. Windows PC running: docker compose up -d  (starts MinIO on port 9000)
-#   2. MinIO bucket 'lumen-media' populated: mc mirror J:\ lumen/lumen-media --watch
-#   3. Windows PC ports reachable: 6379, 6333, 6334, 5432, 9000
-#   4. .env.mac-worker has correct IP and DB password
-#   NO SMB mount needed — Mac worker reads media via MinIO over HTTP.
+#   1. SMB share mounted: open 'smb://192.168.1.137/lumen-media' in Finder
+#      (or: mkdir -p /Volumes/lumen-media && mount_smbfs //guest@192.168.1.137/lumen-media /Volumes/lumen-media)
+#   2. Windows PC ports reachable: 6379, 6333, 6334, 5432
+#   3. .env.mac-worker has correct IP and DB password
 # ============================================================================
 
 services:
@@ -34,21 +33,15 @@ services:
       # Frame cache: write to the named volume (persists across restarts)
       # Without this, the worker falls back to /tmp/lumen_frame_cache (ephemeral).
       - FRAME_CACHE_DIR=/mnt/frame_cache
-      # S3/MinIO source storage — replaces SMB mount.
-      # Windows PC hosts MinIO at 9000; mac worker reaches it over LAN.
-      - STORAGE_BACKEND=s3
-      - S3_ENDPOINT_URL=http://windows-pc:9000
-      - S3_BUCKET=${S3_BUCKET:-lumen-media}
-      - S3_ACCESS_KEY=${MINIO_ROOT_USER:-minioadmin}
-      - S3_SECRET_KEY=${MINIO_ROOT_PASSWORD:-minioadmin}
-      - S3_REGION=us-east-1
+      - STORAGE_BACKEND=local
     volumes:
-      # Frame cache only — SMB mount removed; media served via MinIO over HTTP.
+      # SMB share root is smb://192.168.1.137/lumen-media = J:\ on Windows.
+      # Media lives at J:\lumen-media\ so we mount that subfolder as /mnt/source
+      # to match Windows worker paths (/mnt/source/DJI xxx/...) stored in the DB.
+      # Mount share in Finder first: open smb://192.168.1.137/lumen-media
+      - /Volumes/lumen-media/lumen-media:/mnt/source:ro
       - mac_frame_cache:/mnt/frame_cache
     restart: unless-stopped
-    extra_hosts:
-      # Allow container to reach Windows PC by hostname if needed
-      - "windows-pc:192.168.1.137"
 
 volumes:
   mac_frame_cache:
