@@ -1169,9 +1169,11 @@ Fixed by logging `path` (always present) instead of `resolved`.
 
 26. **Running a linter on CI will surface real bugs that local development didn't catch.**
     `ruff` found duplicate WebSocket handler definitions (F811) in `updates.py` — the second
-    definitions silently shadowed the first, meaning Redis pub/sub and DB polling were both
-    dead in production. The bug had no runtime error, no test failure, and no visible symptom
-    until the linter flagged it. Linting is not style enforcement; it is bug detection.
+    definitions shadowed the first, meaning the Redis pub/sub path was never reached. Status
+    updates still worked via the DB-polling fallback, so there was no visible symptom.
+    The practical cost was unnecessary DB polling on every connected client instead of
+    event-driven Redis fanout. No runtime error, no test failure — only the linter flagged it.
+    Linting is not style enforcement; it is bug detection.
 
 
 
