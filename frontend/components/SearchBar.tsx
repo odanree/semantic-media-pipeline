@@ -98,7 +98,7 @@ export default function SearchBar({ onSearch, isLoading = false, suggestions }: 
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               onFocus={() => history.length > 0 && setShowHistory(true)}
-              placeholder="Search by intent... e.g., 'baby playing in the backyard'"
+              placeholder={`Search by intent... e.g., '${suggestedQueries[0]}'`}
               disabled={isLoading}
               aria-label="Search query"
               className="w-full px-6 py-4 text-lg bg-gray-800 text-white border-2 border-gray-700 rounded-lg focus:outline-none focus:border-blue-500 transition disabled:opacity-50 disabled:cursor-not-allowed"
