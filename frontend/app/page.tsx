@@ -1,9 +1,17 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import SearchBar, { SearchFilters } from '@/components/SearchBar'
 import ResultGrid from '@/components/ResultGrid'
 import StatusPanel from '@/components/StatusPanel'
+
+interface CollectionInfo {
+  total: number
+  indexed: number
+  percent_indexed: number
+  by_type: Record<string, number>
+  topic_tags: string[]
+}
 
 export default function SearchPage() {
   const [results, setResults] = useState([])
@@ -11,6 +19,23 @@ export default function SearchPage() {
   const [error, setError] = useState<string | null>(null)
   const [query, setQuery] = useState('')
   const [appliedFilters, setAppliedFilters] = useState<SearchFilters>({})
+  const [collectionInfo, setCollectionInfo] = useState<CollectionInfo | null>(null)
+
+  useEffect(() => {
+    fetch('/api/collection')
+      .then(r => r.json())
+      .then(setCollectionInfo)
+      .catch(() => {}) // silently fall back to static text
+  }, [])
+
+  // Build two example intent phrases from the top topic tags
+  const exampleQueries = useMemo(() => {
+    const tags = collectionInfo?.topic_tags ?? []
+    if (tags.length >= 4) {
+      return [`${tags[0]} ${tags[1]}`, `${tags[2]} ${tags[3]}`]
+    }
+    return ['family trip to Vietnam in late 2025', 'home ADU construction']
+  }, [collectionInfo])
 
   const handleSearch = async (searchQuery: string, filters: SearchFilters) => {
     setQuery(searchQuery)
@@ -66,9 +91,31 @@ export default function SearchPage() {
           Search your personal archive using natural language:
           <br />
           <em>
-            &quot;family trip to Vietnam in late 2025&quot; or &quot;home ADU construction&quot;
+            &quot;{exampleQueries[0]}&quot; or &quot;{exampleQueries[1]}&quot;
           </em>
         </p>
+        <div className="mt-4 flex flex-wrap gap-2 text-xs">
+          <span className="bg-gray-800 border border-gray-700 text-gray-300 px-3 py-1 rounded-full">
+            📂{' '}
+            {collectionInfo
+              ? `${collectionInfo.indexed.toLocaleString()} of ${collectionInfo.total.toLocaleString()} ${Object.keys(collectionInfo.by_type).map(t => `${t}s`).join('/')} indexed`
+              : '~500 personal home videos'}
+          </span>
+        </div>
+        {collectionInfo && collectionInfo.topic_tags.length > 0 && (
+          <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">
+            <span className="text-gray-500">Try searching for:</span>
+            {collectionInfo.topic_tags.map(tag => (
+              <button
+                key={tag}
+                onClick={() => handleSearch(tag, {})}
+                className="bg-blue-950 border border-blue-800 text-blue-300 px-3 py-1 rounded-full hover:bg-blue-900 transition-colors cursor-pointer"
+              >
+                {tag}
+              </button>
+            ))}
+          </div>
+        )}
       </div>
 
       <SearchBar onSearch={handleSearch} isLoading={loading} />
