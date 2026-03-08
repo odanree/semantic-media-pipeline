@@ -14,9 +14,10 @@ export interface SearchFilters {
 interface SearchBarProps {
   onSearch: (query: string, filters: SearchFilters) => void
   isLoading?: boolean
+  suggestions?: string[]
 }
 
-export default function SearchBar({ onSearch, isLoading = false }: SearchBarProps) {
+export default function SearchBar({ onSearch, isLoading = false, suggestions }: SearchBarProps) {
   const [query, setQuery] = useState('')
   const [showFilters, setShowFilters] = useState(false)
   const [showHistory, setShowHistory] = useState(false)
@@ -69,13 +70,15 @@ export default function SearchBar({ onSearch, isLoading = false }: SearchBarProp
     setShowHistory(false)
   }
 
-  const suggestedQueries = [
-    'family time outdoors',
-    'construction progress',
-    'travel and exploration',
-    'pets and animals',
-    'events and celebrations',
-  ]
+  const suggestedQueries = suggestions && suggestions.length > 0
+    ? suggestions
+    : [
+        'family time outdoors',
+        'construction progress',
+        'travel and exploration',
+        'pets and animals',
+        'events and celebrations',
+      ]
 
   const handleQuickFilter = (suggestion: string) => {
     setQuery(suggestion)
@@ -95,7 +98,7 @@ export default function SearchBar({ onSearch, isLoading = false }: SearchBarProp
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               onFocus={() => history.length > 0 && setShowHistory(true)}
-              placeholder="Search by intent... e.g., 'baby playing in the backyard'"
+              placeholder={`Search by intent... e.g., '${suggestedQueries[0]}'`}
               disabled={isLoading}
               aria-label="Search query"
               className="w-full px-6 py-4 text-lg bg-gray-800 text-white border-2 border-gray-700 rounded-lg focus:outline-none focus:border-blue-500 transition disabled:opacity-50 disabled:cursor-not-allowed"
@@ -326,26 +329,6 @@ export default function SearchBar({ onSearch, isLoading = false }: SearchBarProp
         </div>
       )}
 
-      {/* Quick suggestions */}
-      {!showHistory && !showFilters && !query && (
-        <div className="bg-gray-800 border border-gray-700 rounded-lg p-4">
-          <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-3">
-            Try searching for
-          </p>
-          <div className="flex flex-wrap gap-2">
-            {suggestedQueries.map((suggestion) => (
-              <button
-                key={suggestion}
-                type="button"
-                onClick={() => handleQuickFilter(suggestion)}
-                className="px-3 py-2 bg-gray-700 hover:bg-blue-600 text-gray-300 hover:text-white rounded text-sm transition"
-              >
-                {suggestion}
-              </button>
-            ))}
-          </div>
-        </div>
-      )}
     </div>
   )
 }
