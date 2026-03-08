@@ -27,6 +27,17 @@ export default function RootLayout({
         </main>
         <footer className="bg-gray-800 border-t border-gray-700 px-6 py-4 text-center text-sm text-gray-400">
           <p>Distributed semantic indexing for 500GB+ personal media archives</p>
+          <p className="mt-1">
+            Created by{' '}
+            <a
+              href="https://danhle.net"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-gray-300 hover:text-white underline transition-colors"
+            >
+              danhle.net
+            </a>
+          </p>
         </footer>
       </body>
     </html>
