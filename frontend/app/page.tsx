@@ -120,6 +120,18 @@ export default function SearchPage() {
             ))}
           </div>
         )}
+        <p className="mt-4 text-xs text-gray-600">
+          Demo videos sourced for creative use from{' '}
+          <a
+            href="https://www.pexels.com"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-gray-500 underline hover:text-gray-400"
+          >
+            Pexels
+          </a>
+          . Your own media would replace these.
+        </p>
       </div>
 
       <SearchBar onSearch={handleSearch} isLoading={loading} suggestions={collectionInfo?.topic_tags} />

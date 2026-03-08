@@ -329,26 +329,6 @@ export default function SearchBar({ onSearch, isLoading = false, suggestions }: 
         </div>
       )}
 
-      {/* Quick suggestions */}
-      {!showHistory && !showFilters && !query && (
-        <div className="bg-gray-800 border border-gray-700 rounded-lg p-4">
-          <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-3">
-            Try searching for
-          </p>
-          <div className="flex flex-wrap gap-2">
-            {suggestedQueries.map((suggestion) => (
-              <button
-                key={suggestion}
-                type="button"
-                onClick={() => handleQuickFilter(suggestion)}
-                className="px-3 py-2 bg-gray-700 hover:bg-blue-600 text-gray-300 hover:text-white rounded text-sm transition"
-              >
-                {suggestion}
-              </button>
-            ))}
-          </div>
-        </div>
-      )}
     </div>
   )
 }
