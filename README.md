@@ -47,6 +47,8 @@ A distributed, multimodal ingestion engine that transforms massive personal medi
 
 ## 🏗️ System Architecture
 
+Lumen is a **service-oriented monolith** split across three containers (`api`, `worker`, `frontend`) that share a single PostgreSQL database and communicate via a Redis task queue. This is intentionally not microservices — there are no independent service contracts or per-service databases. The split exists purely to isolate CPU/GPU-heavy ML processing from the HTTP API, not to create service boundaries.
+
 The system is built on a "Producer-Consumer" architecture to ensure that processing 1,000s of high-resolution files doesn't overwhelm the host system.
 
 ### 1. Ingestion Layer (Python/FFmpeg)
@@ -72,6 +74,9 @@ The system is built on a "Producer-Consumer" architecture to ensure that process
 
 ### Why a Distributed Architecture?
 **Scaling personal media to 500GB+ requires isolation:** Processing a single corrupted 1GB video should not block indexing the rest of the library. Celery + Redis separates the ingestion dispatcher (API) from compute-heavy workers, allowing graceful degradation and horizontal scaling. Each worker can fail independently while others continue.
+
+### Why Not Microservices?
+**Pragmatism over pattern-matching:** `api` and `worker` share the same PostgreSQL schema directly — there is no service contract between them. Splitting into true microservices (separate DBs, versioned HTTP/gRPC interfaces per capability) would add significant operational overhead with no benefit at this scale and team size. The worker/queue pattern gives the only meaningful isolation needed: keeping ML inference off the API process.
 
 ### Why CLIP + Qdrant?
 **Unified semantic space:** By embedding both images and video frames into the same 768-dimensional CLIP space, a single semantic query ("my family vacation") returns both photos and video scenes. This cross-modal retrieval is impossible with traditional image tagging or keyword search.
