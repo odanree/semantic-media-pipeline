@@ -100,4 +100,9 @@ jobs:
             curl -sf http://localhost:8000/health || \
               curl -sf http://localhost:8000/api/health || \
               curl -sf http://localhost:8000/api/stats/summary > /dev/null
+
+            echo "=== Resume ingest ==="
+            curl -sf -X POST http://localhost:8000/api/ingest \
+              -H "Content-Type: application/json" \
+              -d '{"media_root": ""}' || echo "Ingest trigger skipped (no pending files or API unavailable)"
             echo "Deploy complete ✓"
