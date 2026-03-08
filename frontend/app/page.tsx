@@ -23,9 +23,14 @@ export default function SearchPage() {
 
   useEffect(() => {
     fetch('/api/collection')
-      .then(r => r.json())
-      .then(setCollectionInfo)
-      .catch(() => {}) // silently fall back to static text
+      .then(r => {
+        if (!r.ok) return // silently fall back to static text on 404/500
+        return r.json()
+      })
+      .then(data => {
+        if (data && 'indexed' in data) setCollectionInfo(data)
+      })
+      .catch(() => {})
   }, [])
 
   // Pick two example queries from the top topic tags
