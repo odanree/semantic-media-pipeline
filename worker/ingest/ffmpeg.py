@@ -107,7 +107,7 @@ def extract_keyframes(
                 video_duration = metadata.get("duration", 0)
             except FFmpegError:
                 video_duration = 0
-        
+
         # Calculate timeout: 120s base + 2s per second of video content
         # This accounts for I/O overhead and processing time
         base_timeout = int(os.getenv("FFMPEG_TIMEOUT") or "1200")  # 20 minutes default

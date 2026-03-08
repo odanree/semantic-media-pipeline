@@ -168,7 +168,6 @@ dmypy.json
 
 # Node.js & npm
 node_modules/
-package-lock.json
 npm-debug.log
 npm-error.log
 yarn-error.log

@@ -379,7 +379,7 @@ def process_image(self, file_path: str, media_record_id: str):
     """
     db = SyncSessionLocal()
     embedder = get_embedder()
-    storage = get_storage_backend()
+    get_storage_backend()
 
     try:
         ensure_qdrant_collection()
@@ -582,7 +582,6 @@ def process_video(self, file_path: str, media_record_id: str):
             embedding_ms = int((time.monotonic() - t0) * 1000)
 
             # Prepare Qdrant points (one per frame)
-            frame_index = 0
             points = []
             for frame_idx, embedding in enumerate(embeddings):
                 point_id = str(uuid.uuid4())
@@ -716,7 +715,7 @@ def health_check(self):
         db.close()
 
         # Check embedder
-        embedder = get_embedder()
+        get_embedder()
 
         return {
             "status": "healthy",
@@ -731,4 +730,3 @@ def health_check(self):
         }
 
 
-from PIL import Image
