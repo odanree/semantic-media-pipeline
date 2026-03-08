@@ -3,7 +3,31 @@
 
 A distributed, multimodal ingestion engine designed to semantically index and cluster massive personal media archives (500GB+). It unifies photos and videos into a single searchable vector space using **CLIP embeddings**, **Celery**, and **Qdrant**.
 
-[Image of a multimodal machine learning pipeline architecture showing image and video ingestion into a shared vector space]
+```mermaid
+flowchart LR
+    subgraph Ingest["Ingestion (Celery Workers)"]
+        direction TB
+        P[📷 Photos\nJPEG / PNG] --> CE[CLIP Encoder]
+        V[🎬 Videos\nMP4 / MOV] --> FF[ffmpeg\nFrame Extraction] --> CE
+    end
+
+    subgraph Storage["Storage"]
+        direction TB
+        M[MinIO / R2\nRaw Media] 
+        Q[(Qdrant\nVector DB)]
+        PG[(PostgreSQL\nMetadata)]
+    end
+
+    subgraph API["API + Frontend"]
+        direction TB
+        FA[FastAPI] --> NX[Next.js\nSearch UI]
+    end
+
+    CE -->|512-dim float32 vectors| Q
+    CE -->|metadata + file path| PG
+    P & V --> M
+    Q & PG --> FA
+```
 
 ## 🌟 The Vision
 In the era of 4K Pixel cameras and high-capacity storage, manual organization is a bottleneck. **Semantic-Media-Pipeline** treats your 500GB+ backup not as a file tree, but as a **high-dimensional knowledge base**. 
