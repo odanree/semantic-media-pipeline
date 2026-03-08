@@ -454,13 +454,13 @@ async def get_thumbnail(request: Request, path: str, t: float = 0.0):
         if proc.returncode != 0 or not stdout:
             log.warning(
                 "thumbnail: ffmpeg non-zero exit %s for %s: %s",
-                proc.returncode, resolved,
+                proc.returncode, path,
                 stderr[-300:].decode(errors="replace"),
             )
     except asyncio.TimeoutError:
-        log.warning("thumbnail: ffmpeg timed out for %s at t=%.1f", resolved, seek)
+        log.warning("thumbnail: ffmpeg timed out for %s at t=%.1f", path, seek)
     except Exception as e:
-        log.warning("thumbnail: ffmpeg exec error for %s: %s", resolved, e)
+        log.warning("thumbnail: ffmpeg exec error for %s: %s", path, e)
 
     if not stdout:
         return Response(
