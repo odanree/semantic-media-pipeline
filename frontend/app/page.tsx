@@ -28,13 +28,12 @@ export default function SearchPage() {
       .catch(() => {}) // silently fall back to static text
   }, [])
 
-  // Build two example intent phrases from the top topic tags
+  // Pick two example queries from the top topic tags
   const exampleQueries = useMemo(() => {
     const tags = collectionInfo?.topic_tags ?? []
-    if (tags.length >= 4) {
-      return [`${tags[0]} ${tags[1]}`, `${tags[2]} ${tags[3]}`]
-    }
-    return ['family trip to Vietnam in late 2025', 'home ADU construction']
+    if (tags.length >= 2) return [tags[0], tags[1]]
+    if (tags.length === 1) return [tags[0], 'outdoor activity']
+    return ['person running on treadmill', 'yoga stretching']
   }, [collectionInfo])
 
   const handleSearch = async (searchQuery: string, filters: SearchFilters) => {
