@@ -222,10 +222,14 @@ def extract_video_id(filename: str) -> str | None:
 # ---------------------------------------------------------------------------
 # R2 helpers
 # ---------------------------------------------------------------------------
-def fetch_r2_video_ids() -> set[str]:
-    """Return the set of Pexels video IDs already stored in R2 (works with old and new filenames)."""
+def fetch_r2_video_ids() -> tuple[set[str], int]:
+    """Return (set of Pexels video IDs already stored in R2, total R2 bytes used).
+
+    Using R2 bytes as the cap baseline — not local disk — so re-running on a
+    machine with a warm local cache doesn't falsely trigger the size limit.
+    """
     if not all([S3_ENDPOINT_URL, S3_BUCKET, S3_ACCESS_KEY, S3_SECRET_KEY]):
-        return set()
+        return set(), 0
     try:
         import boto3
         from botocore.config import Config
@@ -238,6 +242,7 @@ def fetch_r2_video_ids() -> set[str]:
             config=Config(signature_version="s3v4"),
         )
         ids: set[str] = set()
+        r2_bytes: int = 0
         paginator = s3.get_paginator("list_objects_v2")
         for page in paginator.paginate(Bucket=S3_BUCKET, Prefix=f"{R2_PREFIX}/"):
             for obj in page.get("Contents", []):
@@ -245,16 +250,17 @@ def fetch_r2_video_ids() -> set[str]:
                 vid_id = extract_video_id(fname)
                 if vid_id:
                     ids.add(vid_id)
-        return ids
+                r2_bytes += obj.get("Size", 0)
+        return ids, r2_bytes
     except Exception as e:
         print(f"  WARNING: Could not list R2 objects: {e}")
-        return set()
+        return set(), 0
 
 
 # ---------------------------------------------------------------------------
 # Download
 # ---------------------------------------------------------------------------
-def download_videos(dry_run: bool = False, r2_video_ids: set[str] | None = None, limit: int | None = None) -> list[Path]:
+def download_videos(dry_run: bool = False, r2_video_ids: set[str] | None = None, r2_bytes: int = 0, limit: int | None = None) -> list[Path]:
     """Download all queued videos; return list of local paths."""
     if r2_video_ids is None:
         r2_video_ids = set()
@@ -264,15 +270,21 @@ def download_videos(dry_run: bool = False, r2_video_ids: set[str] | None = None,
 
     LOCAL_DIR.mkdir(parents=True, exist_ok=True)
 
-    total_bytes = sum(f.stat().st_size for f in LOCAL_DIR.glob("*.mp4"))
+    # Cap is based on R2 usage, not local disk — re-running on a warm local cache
+    # won't falsely trigger the limit before new queries are processed.
+    local_file_count = len(list(LOCAL_DIR.glob("*.mp4")))
+    local_bytes = sum(f.stat().st_size for f in LOCAL_DIR.glob("*.mp4"))
+    total_bytes = r2_bytes  # tracks R2 total (existing + newly uploaded)
     # Only track newly downloaded files - don't re-upload the entire local dir each run
     downloaded: list[Path] = []
 
     print(f"\n{'=' * 60}")
     print(f"  Pexels -> R2 Demo Downloader")
     print(f"  Local dir : {LOCAL_DIR}")
-    print(f"  Size cap  : {_fmt_bytes(MAX_TOTAL_BYTES)}")
-    print(f"  Local     : {_fmt_bytes(total_bytes)} ({len(list(LOCAL_DIR.glob('*.mp4')))} files)")
+    print(f"  Size cap  : {_fmt_bytes(MAX_TOTAL_BYTES)} (R2-based)")
+    print(f"  R2 current: {_fmt_bytes(total_bytes)} ({len(r2_video_ids)} files)")
+    print(f"  Local cache: {_fmt_bytes(local_bytes)} ({local_file_count} files)")
+    print(f"  R2 headroom: {_fmt_bytes(MAX_TOTAL_BYTES - total_bytes)}")
     print(f"  R2 skip   : {len(r2_video_ids)} video IDs already in R2")
     if limit:
         print(f"  Limit     : {limit} new files")
@@ -548,13 +560,14 @@ def main() -> None:
 
     # Pre-fetch R2 contents so we skip re-downloading files already there
     r2_video_ids: set[str] = set()
+    r2_bytes: int = 0
     if args.upload_to_r2 and not args.upload_only:
         print("  Checking R2 for already-uploaded files...")
-        r2_video_ids = fetch_r2_video_ids()
-        print(f"  {len(r2_video_ids)} video IDs already in R2 - will skip downloading those\n")
+        r2_video_ids, r2_bytes = fetch_r2_video_ids()
+        print(f"  {len(r2_video_ids)} video IDs already in R2 ({_fmt_bytes(r2_bytes)}) - will skip downloading those\n")
 
     if not args.upload_only:
-        files = download_videos(dry_run=args.dry_run, r2_video_ids=r2_video_ids, limit=args.limit)
+        files = download_videos(dry_run=args.dry_run, r2_video_ids=r2_video_ids, r2_bytes=r2_bytes, limit=args.limit)
     else:
         files = list(LOCAL_DIR.glob("*.mp4"))
         print(f"  Upload-only: found {len(files)} local files in {LOCAL_DIR}")
