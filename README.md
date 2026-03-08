@@ -23,7 +23,7 @@ flowchart LR
         FA[FastAPI] --> NX[Next.js\nSearch UI]
     end
 
-    CE -->|512-dim float32 vectors| Q
+    CE -->|768-dim float32 vectors| Q
     CE -->|metadata + file path| PG
     P & V --> M
     Q & PG --> FA
