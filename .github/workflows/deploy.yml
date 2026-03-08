@@ -96,10 +96,8 @@ jobs:
             docker compose up -d
 
             echo "=== Health check ==="
-            sleep 5
-            curl -sf http://localhost:8000/health || \
-              curl -sf http://localhost:8000/api/health || \
-              curl -sf http://localhost:8000/api/stats/summary > /dev/null
+            sleep 8
+            curl -sf http://localhost:8000/api/stats/summary > /dev/null
 
             echo "=== Resume ingest ==="
             curl -sf -X POST http://localhost:8000/api/ingest \
