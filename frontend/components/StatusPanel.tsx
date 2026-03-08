@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useStatusUpdates } from '@/hooks/useStatusUpdates'
 
 interface StatusData {
@@ -22,10 +22,24 @@ export default function StatusPanel() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [retrying, setRetrying] = useState(false)
+  const [filesPerMin, setFilesPerMin] = useState<number | null>(null)
+  const prevDoneRef = useRef<{ count: number; time: number } | null>(null)
 
   const { status: wsStatus, isConnected, error: wsError } = useStatusUpdates({
     onUpdate: (newStatus) => {
-      setStatus(newStatus)
+      setStatus(prev => {
+        // Compute files/min from delta between updates
+        const now = Date.now()
+        if (prevDoneRef.current) {
+          const deltaDone = newStatus.by_status.done - prevDoneRef.current.count
+          const deltaMinutes = (now - prevDoneRef.current.time) / 60000
+          if (deltaMinutes > 0 && deltaDone >= 0) {
+            setFilesPerMin(Math.round(deltaDone / deltaMinutes))
+          }
+        }
+        prevDoneRef.current = { count: newStatus.by_status.done, time: now }
+        return newStatus
+      })
       setLoading(false)
       setError(null)
     },
@@ -113,7 +127,6 @@ export default function StatusPanel() {
   // Calculate percentages
   const percentages = {
     pending: total > 0 ? (by_status.pending / total) * 100 : 0,
-    processing: total > 0 ? (by_status.processing / total) * 100 : 0,
     done: total > 0 ? (by_status.done / total) * 100 : 0,
     error: total > 0 ? (by_status.error / total) * 100 : 0,
   }
@@ -197,13 +210,15 @@ export default function StatusPanel() {
             </div>
             <div>
               <div className="flex justify-between items-center text-sm mb-1">
-                <span className="text-gray-400">Processing</span>
-                <span className="text-purple-400 font-semibold">{by_status.processing}</span>
+                <span className="text-gray-400">Throughput</span>
+                <span className="text-purple-400 font-semibold">
+                  {filesPerMin !== null ? `${filesPerMin} files/min` : '—'}
+                </span>
               </div>
               <div className="h-2 bg-gray-700 rounded-full overflow-hidden">
                 <div
-                  className="h-full bg-purple-500 animate-pulse transition-all duration-500"
-                  style={{ width: `${percentages.processing}%` }}
+                  className="h-full bg-purple-500 transition-all duration-500"
+                  style={{ width: filesPerMin !== null && filesPerMin > 0 ? `${Math.min(filesPerMin * 5, 100)}%` : '0%' }}
                 />
               </div>
             </div>
