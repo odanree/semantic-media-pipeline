@@ -37,8 +37,32 @@ from ingest.ffmpeg import (
 from ingest.hasher import compute_file_hash, get_existing_hash_record
 from ml.embedder import get_embedder
 from storage import get_storage_backend
+import redis as _redis_sync
 
 log = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Redis pub/sub: publish completion events to WS consumers
+# ---------------------------------------------------------------------------
+
+_redis_client = None
+
+
+def _publish_update(payload: dict) -> None:
+    """Fire-and-forget: publish a JSON update to 'lumen:media_updates' Redis channel.
+    Failures are silently logged — never let a publish error interrupt processing."""
+    global _redis_client
+    try:
+        if _redis_client is None:
+            _redis_client = _redis_sync.from_url(
+                os.getenv("REDIS_URL", "redis://redis:6379"),
+                socket_connect_timeout=1,
+                socket_timeout=1,
+            )
+        import json
+        _redis_client.publish("lumen:media_updates", json.dumps(payload))
+    except Exception as e:
+        log.debug(f"Redis publish failed (non-fatal): {e}")
 
 # Stable identifier for this worker process — used for Mac vs Windows attribution.
 # Set WORKER_ID env var explicitly in docker-compose for cleaner names (e.g. "windows-1", "mac-1").
@@ -329,7 +353,17 @@ def process_image(self, file_path: str, media_record_id: str):
             media_record.processing_status = "done"
             media_record.processed_at = datetime.utcnow()
             media_record.embedding_ms = embedding_ms
+            media_record.model_version = os.getenv("CLIP_MODEL_NAME", "unknown")
             db.commit()
+
+            _publish_update({
+                "channel": "media_processing",
+                "id": str(media_record.id),
+                "file_path": file_path,
+                "file_type": "image",
+                "status": "done",
+                "processed_at": media_record.processed_at.isoformat(),
+            })
 
             print(f"Successfully processed image: {file_path}")
             return {"status": "success", "media_record_id": media_record_id}
@@ -491,7 +525,17 @@ def process_video(self, file_path: str, media_record_id: str):
             media_record.processing_status = "done"
             media_record.processed_at = datetime.utcnow()
             media_record.embedding_ms = embedding_ms
+            media_record.model_version = os.getenv("CLIP_MODEL_NAME", "unknown")
             db.commit()
+
+            _publish_update({
+                "channel": "media_processing",
+                "id": str(media_record.id),
+                "file_path": file_path,
+                "file_type": "video",
+                "status": "done",
+                "processed_at": media_record.processed_at.isoformat(),
+            })
 
             print(f"Successfully processed video: {file_path}")
             return {

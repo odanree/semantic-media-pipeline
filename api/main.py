@@ -18,20 +18,32 @@ from dotenv import load_dotenv
 load_dotenv()
 
 import numpy as np
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from qdrant_client import QdrantClient
 
 # Import routers (these may use sentence_transformers internally)
 from routers import health, ingest, search, updates, stats
+from auth import require_api_key
+from rate_limit import limiter, LIMIT_DEFAULT
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
 
 # Initialize FastAPI app
 app = FastAPI(
     title="Lumen API",
     description="Semantic media indexing and search API",
     version="1.2.0",
+    # Note: auth is applied per-router below (NOT globally) because
+    # APIKeyHeader uses Request scope which is incompatible with WebSocket routes.
 )
+
+# Attach rate limiter — must happen before add_middleware
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+app.add_middleware(SlowAPIMiddleware)
 
 # Add CORS middleware
 # Note: allow_credentials=True is incompatible with allow_origins=["*"]
@@ -45,11 +57,13 @@ app.add_middleware(
 )
 
 # Include routers
-app.include_router(health.router, prefix="/api", tags=["health"])
-app.include_router(ingest.router, prefix="/api", tags=["ingest"])
-app.include_router(search.router, prefix="/api", tags=["search"])
-app.include_router(updates.router, prefix="/api", tags=["realtime"])
-app.include_router(stats.router, prefix="/api", tags=["observability"])
+# WebSocket routes (updates) are excluded from auth: APIKeyHeader uses HTTP Request
+# scope which is incompatible with WebSocket connections. WS routes are internal.
+app.include_router(health.router,   prefix="/api", tags=["health"],        dependencies=[Depends(require_api_key)])
+app.include_router(ingest.router,   prefix="/api", tags=["ingest"],        dependencies=[Depends(require_api_key)])
+app.include_router(search.router,   prefix="/api", tags=["search"],        dependencies=[Depends(require_api_key)])
+app.include_router(updates.router,  prefix="/api", tags=["realtime"])       # WS — no HTTP auth
+app.include_router(stats.router,    prefix="/api", tags=["observability"], dependencies=[Depends(require_api_key)])
 
 
 # ============================================================================
@@ -63,6 +77,15 @@ async def startup_event():
     print("Lumen API starting up...")
     print(f"Qdrant host: {os.getenv('QDRANT_HOST', 'qdrant')}")
     print(f"Database URL: {os.getenv('DATABASE_ASYNC_URL', '***')}")
+    api_key_required = os.getenv("API_KEY_REQUIRED", "false").lower() in ("true", "1", "yes")
+    api_key_set = bool(os.getenv("API_KEY", "").strip())
+    if api_key_required and api_key_set:
+        print("Auth: API key required (X-API-Key header)")
+    elif api_key_required and not api_key_set:
+        print("Auth: API_KEY_REQUIRED=true but API_KEY not set — all requests will be rejected!")
+    else:
+        print("Auth: disabled (API_KEY_REQUIRED=false — set to true for production)")
+    print(f"Rate limits: search={os.getenv('RATE_LIMIT_SEARCH','30/min')}, stream={os.getenv('RATE_LIMIT_STREAM','60/min')}, default={os.getenv('RATE_LIMIT_DEFAULT','200/min')} [Redis: {os.getenv('REDIS_URL','redis://redis:6379')}]")
 
     # Preload CLIP model so first search request is instant
     import asyncio

@@ -116,6 +116,7 @@ services:
       - CELERY_WORKER_PREFETCH_MULTIPLIER=${CELERY_WORKER_PREFETCH_MULTIPLIER:-1}
       - CELERY_MAX_TASKS_PER_CHILD=${CELERY_MAX_TASKS_PER_CHILD:-50}
       - CELERY_MAX_MEMORY_PER_CHILD=${CELERY_MAX_MEMORY_PER_CHILD:-1500000}
+      - REDIS_URL=redis://lumen2-redis:6379
       - KEYFRAME_FPS=${KEYFRAME_FPS:-0.5}
       - KEYFRAME_RESOLUTION=${KEYFRAME_RESOLUTION:-224}
       - CLIP_MODEL_NAME=${CLIP_MODEL_NAME:-clip-ViT-B-32}
@@ -167,6 +168,8 @@ services:
       - QDRANT_COLLECTION_NAME=media_vectors2
       - MEDIA_ROOT=/data/media
       - PROXY_ROOT=/mnt/proxies
+      - REDIS_URL=redis://lumen2-redis:6379
+      - DATABASE_URL=postgresql://lumen2_user:REDACTED_DB_PASSWORD_2@lumen2-postgres:5432/lumen2
     command: uvicorn main:app --host 0.0.0.0 --port 8000
     volumes:
       - media2_data:/data/media
@@ -175,6 +178,7 @@ services:
       - ${MEDIA_SOURCE_PATH_3}:/mnt/source/e:ro
       - ${MEDIA_SOURCE_PATH_4}:/mnt/source/f-storage:ro
       - ${MEDIA_SOURCE_PATH_5}:/mnt/source/f-downloads:ro
+      - hf_cache:/root/.cache/huggingface   # Persist model downloads across rebuilds
     depends_on:
       redis2:
         condition: service_healthy
@@ -254,6 +258,8 @@ volumes:
     driver: local
   proxies2_data:
     driver: local
+  hf_cache:
+    external: true   # Shared with main lumen stack — same model, one download
 
 # ============================================================================
 # Networks

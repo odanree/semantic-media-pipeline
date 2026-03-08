@@ -107,6 +107,8 @@ services:
       - PROXY_MAX_DURATION_SECS=${PROXY_MAX_DURATION_SECS:-3600}
       # Observability: stable worker identifier for Mac vs Windows attribution in stats
       - WORKER_ID=${WORKER_ID:-windows-1}
+      # Frame cache: always /mnt/frame_cache inside container (bind handles host-side path)
+      - FRAME_CACHE_DIR=/mnt/frame_cache
     user: root
     volumes:
       - media_data:/data/media
@@ -169,6 +171,7 @@ services:
       - proxies_data:/mnt/proxies:ro      # Faststart proxy cache (:ro for API)
       - ${MEDIA_SOURCE_PATH}:/mnt/source:ro # Host media library (path set in .env)
       - ./api:/app                          # Development: hot-reload (comment out for production)
+      - hf_cache:/root/.cache/huggingface   # Persist model downloads across rebuilds
     depends_on:
       redis:
         condition: service_healthy
@@ -290,6 +293,8 @@ volumes:
   worker_tmp:
     driver: local
   proxies_data:
+    driver: local
+  hf_cache:
     driver: local
   prometheus_data:
     driver: local

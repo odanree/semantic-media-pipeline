@@ -14,6 +14,7 @@ import logging
 import aiofiles
 from celery import Celery
 from fastapi import APIRouter, HTTPException, Request
+from rate_limit import limiter, LIMIT_STREAM, LIMIT_THUMBNAIL
 from fastapi.responses import Response, StreamingResponse
 from PIL import Image as PILImage
 from pydantic import BaseModel
@@ -200,7 +201,8 @@ STREAM_CHUNK_SIZE = 4 * 1024 * 1024  # 4 MB
 
 
 @router.get("/stream")
-async def stream_media(path: str, request: Request, quality: str = "proxy"):
+@limiter.limit(LIMIT_STREAM)
+async def stream_media(request: Request, path: str, quality: str = "proxy"):
     """
     Stream a media file with full HTTP Range support.
     Uses 4MB read chunks to minimise 9P round-trips on Docker/Windows.
@@ -314,7 +316,8 @@ async def stream_media(path: str, request: Request, quality: str = "proxy"):
 
 
 @router.get("/thumbnail")
-async def get_thumbnail(path: str, t: float = 0.0):
+@limiter.limit(LIMIT_THUMBNAIL)
+async def get_thumbnail(request: Request, path: str, t: float = 0.0):
     """
     Extract a single JPEG frame from a video at timestamp `t` (seconds).
 
