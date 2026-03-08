@@ -14,9 +14,10 @@ export interface SearchFilters {
 interface SearchBarProps {
   onSearch: (query: string, filters: SearchFilters) => void
   isLoading?: boolean
+  suggestions?: string[]
 }
 
-export default function SearchBar({ onSearch, isLoading = false }: SearchBarProps) {
+export default function SearchBar({ onSearch, isLoading = false, suggestions }: SearchBarProps) {
   const [query, setQuery] = useState('')
   const [showFilters, setShowFilters] = useState(false)
   const [showHistory, setShowHistory] = useState(false)
@@ -69,13 +70,15 @@ export default function SearchBar({ onSearch, isLoading = false }: SearchBarProp
     setShowHistory(false)
   }
 
-  const suggestedQueries = [
-    'family time outdoors',
-    'construction progress',
-    'travel and exploration',
-    'pets and animals',
-    'events and celebrations',
-  ]
+  const suggestedQueries = suggestions && suggestions.length > 0
+    ? suggestions
+    : [
+        'family time outdoors',
+        'construction progress',
+        'travel and exploration',
+        'pets and animals',
+        'events and celebrations',
+      ]
 
   const handleQuickFilter = (suggestion: string) => {
     setQuery(suggestion)
