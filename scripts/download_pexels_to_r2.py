@@ -5,14 +5,14 @@ Pexels → Cloudflare R2 Demo Content Downloader
 Downloads sports/action videos from Pexels and uploads them to R2.
 
 Usage:
-    # Download only (inspect before uploading)
-    python scripts/download_pexels_to_r2.py --download-only
-
-    # Download + upload to R2
+    # Download to local folder only (default)
     python scripts/download_pexels_to_r2.py
 
-    # Only upload what's already in the local folder
-    python scripts/download_pexels_to_r2.py --upload-only
+    # Download + upload to R2
+    python scripts/download_pexels_to_r2.py --upload-to-r2
+
+    # Only upload what's already in the local folder to R2
+    python scripts/download_pexels_to_r2.py --upload-only --upload-to-r2
 
     # Dry run (prints what would happen, no downloads/uploads)
     python scripts/download_pexels_to_r2.py --dry-run
@@ -53,17 +53,18 @@ except ImportError:
 # Configuration
 # ---------------------------------------------------------------------------
 PEXELS_API_KEY  = os.getenv("PEXELS_API_KEY", "")
-S3_ENDPOINT_URL = os.getenv("S3_ENDPOINT_URL", "")
-S3_BUCKET       = os.getenv("S3_BUCKET", "")
-S3_ACCESS_KEY   = os.getenv("S3_ACCESS_KEY", "")
-S3_SECRET_KEY   = os.getenv("S3_SECRET_KEY", "")
-S3_REGION       = os.getenv("S3_REGION", "auto")
+# R2_* vars take priority over S3_* so the Docker MinIO config is not disturbed
+S3_ENDPOINT_URL = os.getenv("R2_ENDPOINT_URL") or os.getenv("S3_ENDPOINT_URL", "")
+S3_BUCKET       = os.getenv("R2_BUCKET")       or os.getenv("S3_BUCKET", "")
+S3_ACCESS_KEY   = os.getenv("R2_ACCESS_KEY")   or os.getenv("S3_ACCESS_KEY", "")
+S3_SECRET_KEY   = os.getenv("R2_SECRET_KEY")   or os.getenv("S3_SECRET_KEY", "")
+S3_REGION       = os.getenv("R2_REGION")       or os.getenv("S3_REGION", "auto")
 
 # Where to save locally before uploading
 LOCAL_DIR = Path(__file__).parent.parent / "data" / "pexels_demo"
 
-# Hard cap: stop downloading once we hit this (leave headroom under 5GB)
-MAX_TOTAL_BYTES = 4_500_000_000  # 4.5 GB
+# Hard cap: stop downloading once we hit this (leave headroom under 10GB R2 free tier)
+MAX_TOTAL_BYTES = 8_000_000_000  # 8 GB
 
 # Per-video max — skip anything bigger than this (keeps files manageable)
 MAX_VIDEO_BYTES = 200_000_000  # 200 MB
@@ -71,26 +72,60 @@ MAX_VIDEO_BYTES = 200_000_000  # 200 MB
 # Pexels search queries: (query, per_page, pages)
 # per_page max = 80, pages = how many result pages to fetch per query
 SEARCH_QUERIES = [
-    ("basketball dribbling",    80, 2),
-    ("soccer match",            80, 2),
-    ("tennis player",           80, 2),
-    ("running athlete sprint",  80, 2),
-    ("swimming competition",    80, 1),
-    ("volleyball",              80, 1),
-    ("skateboarding tricks",    80, 1),
-    ("boxing training",         80, 1),
-    ("cycling race",            80, 1),
-    ("gym workout",             80, 1),
-    ("football touchdown",      80, 1),
-    ("golf swing",              80, 1),
-    ("baseball pitch",          80, 1),
-    ("martial arts",            80, 1),
-    ("surfing wave",            80, 1),
-    ("rock climbing",           80, 1),
-    ("parkour",                 80, 1),
-    ("dance performance",       80, 1),
-    ("yoga exercise",           80, 1),
-    ("aerial sports",           80, 1),
+    # --- Sports (original) ---
+    ("basketball dribbling",    50, 2),
+    ("soccer match",            50, 2),
+    ("tennis player",           50, 2),
+    ("running athlete sprint",  50, 2),
+    ("swimming competition",    50, 1),
+    ("volleyball",              50, 1),
+    ("skateboarding tricks",    50, 1),
+    ("boxing training",         50, 1),
+    ("cycling race",            50, 1),
+    ("gym workout",             50, 1),
+    ("football touchdown",      50, 1),
+    ("golf swing",              50, 1),
+    ("baseball pitch",          50, 1),
+    ("martial arts",            50, 1),
+    ("surfing wave",            50, 1),
+    ("rock climbing",           50, 1),
+    ("parkour",                 50, 1),
+    ("dance performance",       50, 1),
+    ("yoga exercise",           50, 1),
+    ("aerial sports",           50, 1),
+    # --- Nature & outdoors ---
+    ("ocean waves",             50, 1),
+    ("waterfall forest",        50, 1),
+    ("mountain landscape",      50, 1),
+    ("sunset timelapse",        50, 1),
+    ("wildlife animals",        50, 1),
+    ("drone aerial nature",     50, 1),
+    ("rain storm lightning",    50, 1),
+    ("snow winter",             50, 1),
+    ("desert sand",             50, 1),
+    ("birds flying",            50, 1),
+    # --- City & urban life ---
+    ("city traffic timelapse",  50, 1),
+    ("people walking street",   50, 1),
+    ("night city lights",       50, 1),
+    ("busy market crowd",       50, 1),
+    ("subway train commute",    50, 1),
+    ("construction building",   50, 1),
+    ("cafe coffee shop",        50, 1),
+    ("rooftop skyline",         50, 1),
+    # --- Technology & work ---
+    ("coding programmer laptop",50, 1),
+    ("drone flight fpv",        50, 1),
+    ("robot automation factory",50, 1),
+    ("3d printing",             50, 1),
+    ("podcast recording studio",50, 1),
+    ("photography camera",      50, 1),
+    # --- Food & lifestyle ---
+    ("cooking chef kitchen",    50, 1),
+    ("coffee latte art",        50, 1),
+    ("food market ingredients", 50, 1),
+    ("travel adventure",        50, 1),
+    ("family outdoor picnic",   50, 1),
 ]
 
 # Preferred video quality (will fall back down the list)
@@ -153,10 +188,41 @@ def safe_filename(video: dict, ext: str = "mp4") -> str:
 
 
 # ---------------------------------------------------------------------------
+# R2 helpers
+# ---------------------------------------------------------------------------
+def fetch_r2_filenames() -> set[str]:
+    """Return the set of bare filenames already stored in R2 under R2_PREFIX/."""
+    if not all([S3_ENDPOINT_URL, S3_BUCKET, S3_ACCESS_KEY, S3_SECRET_KEY]):
+        return set()
+    try:
+        import boto3
+        from botocore.config import Config
+        s3 = boto3.client(
+            "s3",
+            endpoint_url=S3_ENDPOINT_URL,
+            aws_access_key_id=S3_ACCESS_KEY,
+            aws_secret_access_key=S3_SECRET_KEY,
+            region_name=S3_REGION,
+            config=Config(signature_version="s3v4"),
+        )
+        existing: set[str] = set()
+        paginator = s3.get_paginator("list_objects_v2")
+        for page in paginator.paginate(Bucket=S3_BUCKET, Prefix=f"{R2_PREFIX}/"):
+            for obj in page.get("Contents", []):
+                existing.add(obj["Key"].split("/")[-1])
+        return existing
+    except Exception as e:
+        print(f"  WARNING: Could not list R2 objects: {e}")
+        return set()
+
+
+# ---------------------------------------------------------------------------
 # Download
 # ---------------------------------------------------------------------------
-def download_videos(dry_run: bool = False) -> list[Path]:
+def download_videos(dry_run: bool = False, r2_filenames: set[str] | None = None) -> list[Path]:
     """Download all queued videos; return list of local paths."""
+    if r2_filenames is None:
+        r2_filenames = set()
     if not PEXELS_API_KEY:
         print("ERROR: PEXELS_API_KEY not set in .env")
         sys.exit(1)
@@ -170,7 +236,8 @@ def download_videos(dry_run: bool = False) -> list[Path]:
     print(f"  Pexels → R2 Demo Downloader")
     print(f"  Local dir : {LOCAL_DIR}")
     print(f"  Size cap  : {_fmt_bytes(MAX_TOTAL_BYTES)}")
-    print(f"  Already   : {_fmt_bytes(total_bytes)} ({len(downloaded)} files)")
+    print(f"  Local     : {_fmt_bytes(total_bytes)} ({len(downloaded)} files)")
+    print(f"  R2 skip   : {len(r2_filenames)} files already in R2")
     print(f"{'=' * 60}\n")
 
     for query, per_page, pages in SEARCH_QUERIES:
@@ -203,7 +270,12 @@ def download_videos(dry_run: bool = False) -> list[Path]:
             filename = safe_filename(video)
             dest = LOCAL_DIR / filename
 
-            # Skip if already downloaded
+            # Skip if already in R2
+            if filename in r2_filenames:
+                print(f"    R2    {filename} (already in R2, skipping download)")
+                continue
+
+            # Skip if already downloaded locally
             if dest.exists():
                 print(f"    EXIST {filename} ({_fmt_bytes(dest.stat().st_size)})")
                 continue
@@ -322,19 +394,30 @@ def main() -> None:
                         help="Upload already-downloaded files, skip new downloads")
     parser.add_argument("--dry-run",       action="store_true",
                         help="Print what would happen without downloading/uploading")
+    parser.add_argument("--upload-to-r2",  action="store_true",
+                        help="After downloading, also upload to Cloudflare R2 (default: local only)")
     args = parser.parse_args()
 
     if args.dry_run:
         print("\n  [DRY RUN MODE — no files will be written]\n")
 
+    # Pre-fetch R2 contents so we skip re-downloading files already there
+    r2_filenames: set[str] = set()
+    if args.upload_to_r2 and not args.upload_only:
+        print("  Checking R2 for already-uploaded files...")
+        r2_filenames = fetch_r2_filenames()
+        print(f"  {len(r2_filenames)} files already in R2 — will skip downloading those\n")
+
     if not args.upload_only:
-        files = download_videos(dry_run=args.dry_run)
+        files = download_videos(dry_run=args.dry_run, r2_filenames=r2_filenames)
     else:
         files = list(LOCAL_DIR.glob("*.mp4"))
         print(f"  Upload-only: found {len(files)} local files in {LOCAL_DIR}")
 
-    if not args.download_only and not args.dry_run or (args.dry_run and not args.download_only):
+    if args.upload_to_r2 and not args.download_only:
         upload_to_r2(files, dry_run=args.dry_run)
+    elif not args.upload_to_r2 and not args.download_only:
+        print(f"  Skipping R2 upload (pass --upload-to-r2 to enable)")
 
     print("  Done.")
 

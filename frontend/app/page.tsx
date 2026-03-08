@@ -19,6 +19,7 @@ export default function SearchPage() {
   const [error, setError] = useState<string | null>(null)
   const [query, setQuery] = useState('')
   const [appliedFilters, setAppliedFilters] = useState<SearchFilters>({})
+  const [tagQuery, setTagQuery] = useState<string | undefined>(undefined)
   const [collectionInfo, setCollectionInfo] = useState<CollectionInfo | null>(null)
 
   useEffect(() => {
@@ -112,7 +113,10 @@ export default function SearchPage() {
             {collectionInfo.topic_tags.map(tag => (
               <button
                 key={tag}
-                onClick={() => handleSearch(tag, {})}
+                onClick={() => {
+                  setTagQuery(tag)
+                  handleSearch(tag, appliedFilters)
+                }}
                 className="bg-blue-950 border border-blue-800 text-blue-300 px-3 py-1 rounded-full hover:bg-blue-900 transition-colors cursor-pointer"
               >
                 {tag}
@@ -134,7 +138,7 @@ export default function SearchPage() {
         </p>
       </div>
 
-      <SearchBar onSearch={handleSearch} isLoading={loading} suggestions={collectionInfo?.topic_tags} />
+      <SearchBar onSearch={handleSearch} isLoading={loading} suggestions={collectionInfo?.topic_tags} externalQuery={tagQuery} />
 
       {error && (
         <div className="mt-6 p-4 bg-red-900 border border-red-700 rounded-lg text-red-100 flex justify-between items-center" role="alert">
