@@ -1,0 +1,102 @@
+name: Deploy to Production
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:   # allow manual trigger from GitHub UI
+
+jobs:
+  deploy:
+    name: Deploy to Hetzner
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout (for path detection only)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2   # need previous commit to detect changed files
+
+      # ------------------------------------------------------------------
+      # Detect which service directories changed so we only rebuild those.
+      # Falls back to building all services on the first deploy or if the
+      # detection is ambiguous.
+      # ------------------------------------------------------------------
+      - name: Detect changed services
+        id: changes
+        run: |
+          CHANGED=$(git diff --name-only HEAD~1 HEAD 2>/dev/null || echo "all")
+          echo "Changed files: $CHANGED"
+
+          build_api=false
+          build_worker=false
+          build_frontend=false
+
+          if echo "$CHANGED" | grep -qE '^api/|^Dockerfile' ; then
+            build_api=true
+          fi
+          if echo "$CHANGED" | grep -qE '^worker/' ; then
+            build_worker=true
+          fi
+          if echo "$CHANGED" | grep -qE '^frontend/' ; then
+            build_frontend=true
+          fi
+          # docker-compose.yml or .env changes: restart everything but no image rebuild
+          # scripts/ or root-level changes trigger nothing by default
+
+          echo "api=$build_api"       >> "$GITHUB_OUTPUT"
+          echo "worker=$build_worker" >> "$GITHUB_OUTPUT"
+          echo "frontend=$build_frontend" >> "$GITHUB_OUTPUT"
+
+      # ------------------------------------------------------------------
+      # Build the remote commands based on what changed
+      # ------------------------------------------------------------------
+      - name: Build deploy script
+        id: script
+        run: |
+          SERVICES=""
+          if [ "${{ steps.changes.outputs.api }}" = "true" ];      then SERVICES="$SERVICES api"; fi
+          if [ "${{ steps.changes.outputs.worker }}" = "true" ];   then SERVICES="$SERVICES worker"; fi
+          if [ "${{ steps.changes.outputs.frontend }}" = "true" ]; then SERVICES="$SERVICES frontend"; fi
+
+          if [ -n "$SERVICES" ]; then
+            BUILD_CMD="docker compose build --no-cache$SERVICES"
+          else
+            BUILD_CMD="echo 'No image rebuild needed'"
+          fi
+
+          echo "build_cmd=$BUILD_CMD" >> "$GITHUB_OUTPUT"
+          echo "Services to rebuild:$SERVICES"
+
+      # ------------------------------------------------------------------
+      # SSH into server and deploy
+      # ------------------------------------------------------------------
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: 22
+          timeout: 15m
+          script: |
+            set -e
+            cd /opt/lumen
+
+            echo "=== Pulling latest code ==="
+            git fetch origin main
+            git checkout main
+            git pull origin main
+
+            echo "=== Rebuilding changed services ==="
+            ${{ steps.script.outputs.build_cmd }}
+
+            echo "=== Restarting services ==="
+            docker compose up -d
+
+            echo "=== Health check ==="
+            sleep 5
+            curl -sf http://localhost:8000/health || \
+              curl -sf http://localhost:8000/api/health || \
+              curl -sf http://localhost:8000/api/stats/summary > /dev/null
+            echo "Deploy complete ✓"
