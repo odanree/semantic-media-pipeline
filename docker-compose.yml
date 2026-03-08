@@ -54,7 +54,11 @@ services:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
     volumes:
-      - minio_data:/data
+      # J:\ is MinIO's data directory directly — zero copy, no duplication.
+      # MinIO writes only a small .minio.sys metadata folder to J:\.
+      # All media files are served in-place from J:\.
+      # Requires J:\ to be shared in Docker Desktop → Resources → File Sharing.
+      - ${MEDIA_SOURCE_PATH:-J:/}:/data
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
       interval: 15s
@@ -319,8 +323,6 @@ volumes:
   proxies_data:
     driver: local
   hf_cache:
-    driver: local
-  minio_data:
     driver: local
   prometheus_data:
     driver: local
