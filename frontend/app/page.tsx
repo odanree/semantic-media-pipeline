@@ -118,7 +118,7 @@ export default function SearchPage() {
         )}
       </div>
 
-      <SearchBar onSearch={handleSearch} isLoading={loading} />
+      <SearchBar onSearch={handleSearch} isLoading={loading} suggestions={collectionInfo?.topic_tags} />
 
       {error && (
         <div className="mt-6 p-4 bg-red-900 border border-red-700 rounded-lg text-red-100 flex justify-between items-center" role="alert">
