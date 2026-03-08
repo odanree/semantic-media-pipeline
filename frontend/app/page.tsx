@@ -43,7 +43,7 @@ export default function SearchPage() {
     setError(null)
 
     try {
-      const payload: any = {
+      const payload: Record<string, unknown> = {
         query: searchQuery,
         limit: filters.maxResults ?? 20,
       }
