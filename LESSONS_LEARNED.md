@@ -1146,12 +1146,34 @@ Fixed by logging `path` (always present) instead of `resolved`.
     S3 keys. For read-serving, issue presigned-URL redirects; for tools like
     ffmpeg, pass the presigned URL as the input argument.
 
-21. **Every variable referenced in an `except` block must be assigned on all
-    code paths leading into it.** When adding a new branch (e.g. S3 path
-    alongside local FS path), shared exception handlers silently inherit
-    assumptions from the original path — audit them explicitly.
+22. **GitHub Actions environment secrets require `environment: <name>` on the job — without it they are silently empty.**
+    Repository secrets (`Settings → Secrets → Actions`) are available to all jobs. Environment secrets
+    (`Settings → Environments → production`) are only injected when the job declares `environment: production`.
+    Missing this key produces no error — the secret value is just an empty string, causing downstream
+    failures like "missing server host" that look like a secrets configuration problem.
 
-## Debuging Commands:
+23. **SSH private key secrets must include both the header and footer PEM lines.**
+    `appleboy/ssh-action` produces `ssh: no key found` when the secret is missing
+    `-----END OPENSSH PRIVATE KEY-----`. This commonly happens when copying from a terminal
+    that truncates output. Always verify by checking `tail -1` of the pasted value.
+
+24. **Adding a public key to GitHub secrets only configures the client. The server must also have
+    the corresponding public key in `~/.ssh/authorized_keys`.**
+    The error changes from `no key found` (bad key format) to `attempted methods [none publickey]`
+    (key rejected by server). These are two distinct failures with different fixes.
+
+25. **`docker compose up -d` restarts containers but does not resume in-flight work.**
+    Pending tasks remain safely in PostgreSQL but the worker will idle until the task queue
+    is re-triggered. After any deploy that restarts the worker, explicitly re-trigger via
+    `POST /api/ingest` (or equivalent) if jobs were in progress.
+
+26. **Running a linter on CI will surface real bugs that local development didn't catch.**
+    `ruff` found duplicate WebSocket handler definitions (F811) in `updates.py` — the second
+    definitions silently shadowed the first, meaning Redis pub/sub and DB polling were both
+    dead in production. The bug had no runtime error, no test failure, and no visible symptom
+    until the linter flagged it. Linting is not style enforcement; it is bug detection.
+
+
 
 # 1. Are all containers actually running?
 docker ps
