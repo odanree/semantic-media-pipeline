@@ -858,6 +858,168 @@ docker builder prune --keep-storage 5GB
 
 ---
 
+## 16. Qdrant Collection Not Pre-Created — `VectorParams(size=None)` Silent Retry Loop (2 commits)
+
+**Branch:** `feat/cloud-deploy`
+
+**Symptom**
+All 396 tasks stuck in `processing` with no errors and `celery inspect active`
+showing workers busy. `done: 0` after several minutes. No errors in `top_errors`.
+
+**What happened**
+`ensure_qdrant_collection()` is called at the start of every `process_video`
+task. It tries `qdrant_client.get_collection()` first; on failure it calls
+`get_embedder().get_embedding_dimension()` to get the vector size and creates
+the collection. On a fresh cloud deploy the collection had never been created.
+
+The race condition: `get_embedder()` is lazy-loaded. In a freshly-forked Celery
+child process the embedder may not be loaded yet when `ensure_qdrant_collection()`
+runs. If `embedding_dim` is `None` at that moment, `VectorParams(size=None)`
+raises a Pydantic `ValidationError` which `autoretry_for=(Exception,)` catches
+— so every task retried on 1s backoff indefinitely:
+```
+Retry in 1s: 1 validation error for VectorParams
+size
+  Input should be a valid integer [type=int_type, input_value=None]
+```
+
+**Root cause**
+Two compounding issues:
+1. Collection was never seeded on the fresh server.
+2. `ensure_qdrant_collection()` calls `get_embedder()` inside the task hot path
+   where the embedder may not be initialised yet. `None` dimension → Pydantic
+   error → infinite retry.
+
+**The fix (immediate)**
+Create the collection manually before triggering ingest:
+```bash
+curl -X PUT http://localhost:6333/collections/media_vectors \
+  -H "Content-Type: application/json" \
+  -d '{"vectors": {"size": 768, "distance": "Cosine"}}'
+```
+
+**The fix (permanent)**
+Move collection creation to the Celery worker startup hook, after the embedder
+is fully loaded — not inside a task that runs thousands of times:
+```python
+@app.on_after_configure.connect
+def setup_qdrant(sender, **kwargs):
+    embedder = get_embedder()  # fully loaded — embedding_dim guaranteed non-None
+    try:
+        qdrant_client.get_collection(QDRANT_COLLECTION_NAME)
+    except Exception:
+        qdrant_client.create_collection(
+            collection_name=QDRANT_COLLECTION_NAME,
+            vectors_config=VectorParams(size=embedder.embedding_dim, distance=Distance.COSINE),
+        )
+```
+
+**Interview talking point**
+> "A lazy-loaded global and a retry-on-all-exceptions loop are individually fine
+> patterns. Combined, they create a silent infinite-retry: the lazy load isn't
+> ready, the operation fails validation, the retry fires into the same race
+> condition — forever. Infrastructure setup belongs in the worker startup hook,
+> not the task hot path. By the time tasks run, the collection must already exist."
+
+---
+
+## 17. DB Schema Drift Between `init-db.sql` and Migration Scripts (3 commits)
+
+**Branch:** `feat/cloud-deploy`
+
+**Symptom**
+After fixing the Qdrant issue, workers crashed immediately on every task:
+```
+sqlalchemy.exc.ProgrammingError: column media_files.embedding_started_at
+does not exist
+```
+Stats showed `processing: 396`, `done: 0`. The retry loop masked this as
+`error: 0` — only visible via `docker compose logs worker`.
+
+**What happened**
+`init-db.sql` is the PostgreSQL init script executed on first container boot.
+It was written at project start and never updated as observability columns were
+added in later PRs (#10+). Missing columns: `embedding_started_at`, `worker_id`,
+`frame_cache_hit`, `embedding_ms`, `model_version`. On the dev machine these
+existed because they were added via migrations and manual `ALTER TABLE` commands.
+The cloud server had a fresh Postgres container that only ran `init-db.sql`.
+
+**Root cause**
+Migration scripts and `init-db.sql` diverged. There is one migration script
+(`migrate_add_model_version.sql`) for `model_version` but nothing for the
+other four columns — and `init-db.sql` had none of them. Fresh deploys are
+silently broken whenever the schema is extended without keeping `init-db.sql`
+in sync.
+
+**The fix**
+1. Manual `ALTER TABLE … ADD COLUMN IF NOT EXISTS` on the running container.
+2. Added all 5 columns to `init-db.sql` so future fresh deploys need no manual step.
+3. Created `scripts/migrate_add_observability_columns.sql` for upgrading
+   existing DBs that predate these columns.
+
+**Interview talking point**
+> "Migration scripts and the init script are two separate code paths that must
+> stay in sync. The discipline: every `ALTER TABLE` that adds a column also gets
+> a matching change to `init-db.sql`. The smell-check before merging any schema
+> PR: 'if someone clones this repo today and runs docker compose up for the first
+> time, will init-db.sql produce the same schema as a fully-migrated dev DB?'"
+
+---
+
+## 18. API Media Endpoints Were Filesystem-Only — S3 Path Produced Gray Placeholders (2 commits)
+
+**Branch:** `feat/cloud-deploy`
+
+**Symptom**
+Search results showed gray placeholder images. Clicking a result showed a black
+placeholder video. API returned HTTP 200 `image/jpeg` / `video/mp4` — no 4xx,
+no server errors. Completely silent failure.
+
+**What happened — two overlapping causes**
+
+*Cause 1 — Wrong base URL baked into the frontend bundle:*
+`NEXT_PUBLIC_STREAM_URL` was absent from the server `.env`. The frontend fell
+back to `http://localhost:8000`. The site runs on `https://lumen.danhle.net`;
+browsers block HTTP subresource requests from HTTPS pages (mixed content). Both
+`<img>` and `<video>` tags silently received placeholder bytes.
+
+*Cause 2 — Both endpoints called `os.path.isfile()` on S3 keys:*
+Even after fixing the URL, `/api/thumbnail` and `/api/stream` called
+`os.path.isfile(path)` before doing anything. S3 keys are not filesystem paths
+— the check always returned `False` and the endpoint returned the placeholder
+immediately. The `STORAGE_BACKEND=s3` check existed in the worker but was never
+wired into the API media-serving layer. The API had no boto3 dependency.
+
+**Root cause**
+The media-serving endpoints were written when the project only supported local
+volume storage. Adding S3 support to the worker didn't automatically apply to
+the API — it was a separate code path that nobody audited.
+
+**The fix**
+- `/api/stream` (S3): 302 redirect to a presigned R2 URL. Browser downloads
+  direct from R2 with full HTTP Range support — zero API proxying overhead.
+- `/api/thumbnail` (S3): presigned URL passed as ffmpeg `-i`. ffmpeg issues its
+  own HTTP range request to fetch only the bytes it needs for one frame.
+- Added `boto3` to `api/requirements.txt` (was only in `worker/requirements.txt`).
+
+**Second commit required — `UnboundLocalError` in shared `except` block:**
+After adding the S3 branch, the `except` blocks in the thumbnail endpoint still
+logged `resolved` — a variable only assigned in the local-filesystem branch. In
+the S3 path `resolved` is never assigned → `UnboundLocalError` → HTTP 500.
+Fixed by logging `path` (always present) instead of `resolved`.
+
+**Interview talking point**
+> "When you add a second code path alongside an existing one, audit every
+> variable referenced in shared code below the branch point — especially
+> exception handlers. They're supposed to be safe fallbacks but they
+> silently inherit assumptions from the original path. The symptom (500 on
+> every request) looked completely unrelated to the new S3 branch. I now
+> treat exception handlers as a second function body: every variable they
+> reference must be defined on all paths leading into them, not just the
+> happy path."
+
+---
+
 ## Cross-Cutting Themes
 
 | Theme | Issues |
@@ -882,6 +1044,10 @@ docker builder prune --keep-storage 5GB
 | **Third-party SDK attributes renamed across minor versions; use `getattr` fallbacks at call sites** | #14, #1 (Qdrant `vectors_count` → `points_count`) |
 | **Container writable layer bloat is invisible — `/tmp` and model caches must be named volumes** | #15 (HF model cache, orphaned tmp mp4) |
 | **Multi-stack compose files must hardcode stack-local service hostnames — missing env vars silently cross-connect stacks** | #15 (lumen2 REDIS_URL → lumen1) |
+| **Qdrant collection must exist before any task runs — create in worker startup hook, not inside the task** | #16 (VectorParams(size=None) retry loop) |
+| **`init-db.sql` and migration scripts must stay in sync — fresh deploys break silently if init script predates schema changes** | #17 (observability columns missing on cloud) |
+| **`STORAGE_BACKEND=s3` must be checked in every layer that serves files — API endpoints are not exempt** | #18 (stream/thumbnail filesystem-only) |
+| **Variables only assigned in one branch must not be referenced in shared `except` blocks** | #18 (UnboundLocalError in S3 error handler) |
 
 ---
 
@@ -963,6 +1129,27 @@ docker builder prune --keep-storage 5GB
     accessed with `getattr(obj, 'new_name', None) or getattr(obj, 'old_name', None)`.**
     Qdrant renamed `CollectionInfo.vectors_count` → `points_count` without a
     deprecation warning, breaking the stats endpoint silently.
+
+18. **Infrastructure setup (collection creation, schema validation) belongs in
+    the worker startup hook, not inside a task.** Tasks run thousands of times;
+    startup hooks run once. A lazy-init race inside a task that retries on all
+    exceptions will spin forever rather than fail fast.
+
+19. **Every `ALTER TABLE` must also update `init-db.sql`.** Fresh deploys only
+    run the init script — migration scripts are never applied automatically.
+    Before merging any schema PR, verify: 'does `docker compose up` from a clean
+    state produce the same schema as a fully-migrated dev database?'
+
+20. **`STORAGE_BACKEND=s3` must be handled in every layer that reads or serves
+    files.** Adding S3 support to the worker doesn't update the API. Audit all
+    code paths that call `os.path.isfile()`, `open()`, or filesystem stat for
+    S3 keys. For read-serving, issue presigned-URL redirects; for tools like
+    ffmpeg, pass the presigned URL as the input argument.
+
+21. **Every variable referenced in an `except` block must be assigned on all
+    code paths leading into it.** When adding a new branch (e.g. S3 path
+    alongside local FS path), shared exception handlers silently inherit
+    assumptions from the original path — audit them explicitly.
 
 ## Debuging Commands:
 

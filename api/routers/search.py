@@ -43,35 +43,35 @@ def _get_device() -> str:
         return "cpu"  # DirectML not available in API container, use CPU
     except Exception:
         pass
-    
+
     if torch.cuda.is_available():
         return "cuda"
-    
+
     return "cpu"
 
 
 def get_clip_model():
     """Get or create the CLIP model instance (lazy loading)."""
     global _clip_model, EMBEDDER_AVAILABLE
-    
+
     if _clip_model is None:
         try:
             # Import SentenceTransformer (should work now that accelerate.py is patched)
             from sentence_transformers import SentenceTransformer
-            
+
             model_name = os.getenv("CLIP_MODEL_NAME", "clip-ViT-L-14")
             device = _get_device()
             print(f"Loading {model_name} on device: {device}")
             _clip_model = SentenceTransformer(model_name, device=device)
             EMBEDDER_AVAILABLE = True
-            print(f"✓ CLIP embedder loaded successfully")
+            print("✓ CLIP embedder loaded successfully")
         except Exception as e:
             print(f"✗ Failed to load CLIP embedder: {e}")
             import traceback
             traceback.print_exc()
             EMBEDDER_AVAILABLE = False
             raise
-    
+
     return _clip_model
 
 
@@ -111,7 +111,7 @@ async def search_status():
         collections = qdrant_client.get_collections()
         collection_count = len(collections.collections)
         collection_names = [c.name for c in collections.collections]
-        
+
         return {
             "status": "healthy",
             "qdrant_host": QDRANT_HOST,
@@ -143,10 +143,10 @@ async def search_media(request: Request, body: SearchRequest):
     """
     if not body.query or not body.query.strip():
         raise HTTPException(status_code=400, detail="Query cannot be empty")
-    
+
     try:
         start_time = time.time()
-        
+
         # Load CLIP model (lazy-loaded on first use)
         try:
             model = get_clip_model()
@@ -155,14 +155,14 @@ async def search_media(request: Request, body: SearchRequest):
                 status_code=503,
                 detail=f"CLIP embedder failed to load: {str(e)}"
             )
-        
+
         # Embed the text query using CLIP
         query_embedding = model.encode(body.query, convert_to_tensor=False)
         if isinstance(query_embedding, np.ndarray):
             query_vector = query_embedding.tolist()
         else:
             query_vector = query_embedding
-        
+
         # Search Qdrant using query_points (qdrant-client v1.7+ API)
         search_result = qdrant_client.query_points(
             collection_name=QDRANT_COLLECTION_NAME,
@@ -194,7 +194,7 @@ async def search_media(request: Request, body: SearchRequest):
             count=len(results),
             execution_time_ms=execution_time_ms,
         )
-    
+
     except HTTPException:
         raise
     except Exception as e:
@@ -214,24 +214,24 @@ async def search_by_vector(
 ):
     """
     Search Qdrant using a pre-computed embedding vector.
-    
+
     This endpoint is useful when you already have a vector embedding
     and just need to search Qdrant.
-    
+
     Args:
         vector: Pre-computed embedding vector
         limit: Maximum number of results
         threshold: Minimum similarity threshold
-    
+
     Returns:
         List of matching media with similarity scores
     """
     try:
         start_time = time.time()
-        
+
         if not vector:
             raise ValueError("Vector cannot be empty")
-        
+
         # Search Qdrant using query_points (qdrant-client v1.7+ API)
         search_result = qdrant_client.query_points(
             collection_name=QDRANT_COLLECTION_NAME,
@@ -240,7 +240,7 @@ async def search_by_vector(
             with_payload=True,
             score_threshold=threshold,
         ).points
-        
+
         # Process results
         results = []
         for point in search_result:
@@ -254,15 +254,15 @@ async def search_by_vector(
                 "timestamp": payload.get("timestamp"),
             }
             results.append(result)
-        
+
         execution_time_ms = (time.time() - start_time) * 1000
-        
+
         return {
             "vector_dimension": len(vector),
             "results": results,
             "count": len(results),
             "execution_time_ms": execution_time_ms,
         }
-    
+
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

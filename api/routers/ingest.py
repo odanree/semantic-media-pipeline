@@ -12,14 +12,47 @@ import io
 import logging
 
 import aiofiles
+import boto3
+from botocore.exceptions import ClientError
 from celery import Celery
 from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import RedirectResponse, Response, StreamingResponse
 from rate_limit import limiter, LIMIT_STREAM, LIMIT_THUMBNAIL
-from fastapi.responses import Response, StreamingResponse
 from PIL import Image as PILImage
 from pydantic import BaseModel
 
 log = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# S3 / storage backend helpers
+# ---------------------------------------------------------------------------
+IS_S3 = os.getenv("STORAGE_BACKEND", "local").lower() == "s3"
+S3_BUCKET = os.getenv("S3_BUCKET", "")
+
+_s3_client = None
+
+
+def _get_s3_client():
+    """Lazy-init boto3 S3 client using env vars (same as worker)."""
+    global _s3_client
+    if _s3_client is None:
+        _s3_client = boto3.client(
+            "s3",
+            endpoint_url=os.getenv("S3_ENDPOINT_URL") or None,
+            region_name=os.getenv("S3_REGION", "auto"),
+            aws_access_key_id=os.getenv("S3_ACCESS_KEY"),
+            aws_secret_access_key=os.getenv("S3_SECRET_KEY"),
+        )
+    return _s3_client
+
+
+def _s3_presign(key: str, expires: int = 3600) -> str:
+    """Generate a presigned GET URL for an S3/R2 object."""
+    return _get_s3_client().generate_presigned_url(
+        "get_object",
+        Params={"Bucket": S3_BUCKET, "Key": key},
+        ExpiresIn=expires,
+    )
 
 # ---------------------------------------------------------------------------
 # Thumbnail helpers
@@ -211,11 +244,30 @@ async def stream_media(request: Request, path: str, quality: str = "proxy"):
     quality=proxy    (default) transparently serves the 720p faststart proxy
                      if one exists, falling back to the original source.
     quality=original bypasses the proxy lookup and always serves the raw file.
-    
-    CRITICAL: Returns placeholder video on ANY error to prevent Chrome ORB 
-    (Opaque Response Blocking) from blocking <video> tag loads. Errors are 
+
+    S3/R2: returns a presigned-URL redirect so the browser downloads directly
+    from the object store with full Range support — no proxying through the API.
+
+    CRITICAL: Returns placeholder video on ANY error to prevent Chrome ORB
+    (Opaque Response Blocking) from blocking <video> tag loads. Errors are
     logged server-side, not returned to client.
     """
+    # ------------------------------------------------------------------
+    # S3 path: redirect to a short-lived presigned URL
+    # ------------------------------------------------------------------
+    if IS_S3:
+        try:
+            url = _s3_presign(path, expires=3600)
+            return RedirectResponse(url=url, status_code=302)
+        except ClientError as e:
+            log.warning("[Stream/S3] presign failed for %s: %s", path, e)
+            return Response(
+                content=_placeholder_video_stub(),
+                status_code=200,
+                media_type="video/mp4",
+                headers={"Cache-Control": "no-store"},
+            )
+
     try:
         resolved = os.path.realpath(path)
 
@@ -337,23 +389,40 @@ async def get_thumbnail(request: Request, path: str, t: float = 0.0):
     fires (ORB triggers when a no-cors image request gets a non-image MIME
     type such as the application/json that HTTPException would produce).
     """
-    resolved = os.path.realpath(path)
+    # ------------------------------------------------------------------
+    # Resolve the input source: presigned URL (S3) or local path
+    # ------------------------------------------------------------------
+    if IS_S3:
+        try:
+            # 120 s is enough for ffmpeg to open the URL and grab one frame.
+            ffmpeg_input = _s3_presign(path, expires=120)
+        except ClientError as e:
+            log.warning("thumbnail: S3 presign failed for %s: %s", path, e)
+            return Response(
+                content=_placeholder_jpeg(),
+                media_type="image/jpeg",
+                headers={"Cache-Control": "no-store"},
+            )
+    else:
+        resolved = os.path.realpath(path)
 
-    if not any(resolved.startswith(root) for root in ALLOWED_ROOTS):
-        log.warning("thumbnail: access denied for path %s", path)
-        return Response(
-            content=_placeholder_jpeg(),
-            media_type="image/jpeg",
-            headers={"Cache-Control": "no-store"},
-        )
+        if not any(resolved.startswith(root) for root in ALLOWED_ROOTS):
+            log.warning("thumbnail: access denied for path %s", path)
+            return Response(
+                content=_placeholder_jpeg(),
+                media_type="image/jpeg",
+                headers={"Cache-Control": "no-store"},
+            )
 
-    if not os.path.isfile(resolved):
-        log.warning("thumbnail: file not found %s", resolved)
-        return Response(
-            content=_placeholder_jpeg(),
-            media_type="image/jpeg",
-            headers={"Cache-Control": "no-store"},
-        )
+        if not os.path.isfile(resolved):
+            log.warning("thumbnail: file not found %s", resolved)
+            return Response(
+                content=_placeholder_jpeg(),
+                media_type="image/jpeg",
+                headers={"Cache-Control": "no-store"},
+            )
+
+        ffmpeg_input = resolved
 
     # Clamp timestamp to >= 0
     seek = max(0.0, t)
@@ -365,7 +434,7 @@ async def get_thumbnail(request: Request, path: str, t: float = 0.0):
     cmd = [
         "ffmpeg",
         "-ss", str(seek),
-        "-i", resolved,
+        "-i", ffmpeg_input,
         "-vframes", "1",
         "-vf", "scale=-2:320",
         "-q:v", "4",
@@ -385,13 +454,13 @@ async def get_thumbnail(request: Request, path: str, t: float = 0.0):
         if proc.returncode != 0 or not stdout:
             log.warning(
                 "thumbnail: ffmpeg non-zero exit %s for %s: %s",
-                proc.returncode, resolved,
+                proc.returncode, path,
                 stderr[-300:].decode(errors="replace"),
             )
     except asyncio.TimeoutError:
-        log.warning("thumbnail: ffmpeg timed out for %s at t=%.1f", resolved, seek)
+        log.warning("thumbnail: ffmpeg timed out for %s at t=%.1f", path, seek)
     except Exception as e:
-        log.warning("thumbnail: ffmpeg exec error for %s: %s", resolved, e)
+        log.warning("thumbnail: ffmpeg exec error for %s: %s", path, e)
 
     if not stdout:
         return Response(

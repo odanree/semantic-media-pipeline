@@ -26,8 +26,7 @@ def compute_file_hash(file_path: str, chunk_size: int = 8192) -> str:
         # Header/metadata is unique enough to prevent duplicates
         ext = Path(file_path).suffix.lower()
         is_video = ext in {".mp4", ".mov", ".mkv", ".avi", ".flv", ".wmv", ".webm", ".m4v"}
-        max_bytes = chunk_size if is_video else None  # None = read entire file
-        
+
         bytes_read = 0
         with open(file_path, "rb") as f:
             while True:
