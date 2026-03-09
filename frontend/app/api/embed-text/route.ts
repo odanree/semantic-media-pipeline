@@ -1,9 +1,9 @@
 import { NextResponse } from 'next/server'
 
 const API_URL = process.env.API_URL || 'http://api:8000'
-const BACKEND_API_KEY = process.env.BACKEND_API_KEY || ''
 
 export async function POST(request: Request) {
+  const BACKEND_API_KEY = process.env.BACKEND_API_KEY || ''
   try {
     const body = await request.json()
     const { query } = body
