@@ -355,57 +355,50 @@ def processing_times(
 # (or after expiry).
 _TOPIC_VOCABULARY: list[str] = [
     # Sports
-    "basketball dribbling",
-    "soccer match",
-    "tennis player",
-    "running sprint",
-    "swimming competition",
-    "volleyball",
-    "skateboarding tricks",
-    "boxing training",
-    "cycling race",
-    "gym workout",
-    "football",
-    "golf swing",
-    "baseball pitch",
-    "martial arts",
-    "surfing wave",
-    "rock climbing",
-    "parkour",
-    "dance performance",
-    "yoga exercise",
+    "basketball dribbling on court",
+    "soccer players on field",
+    "tennis match rally",
+    "running sprint on track",
+    "swimming competition in pool",
+    "gym weight training",
+    "yoga stretching outdoors",
+    "skateboard tricks in park",
+    "boxing training punching bag",
+    "cycling on mountain road",
+    "golf swing on course",
+    "martial arts sparring",
+    "surfing ocean waves",
+    "rock climbing wall",
+    "dance performance on stage",
     # Nature
-    "ocean waves",
-    "waterfall forest",
-    "mountain landscape",
-    "sunset timelapse",
-    "wildlife animals",
-    "drone aerial view",
-    "rain storm lightning",
-    "snow winter",
+    "ocean waves crashing shore",
+    "mountain hiking trail",
+    "waterfall in forest",
+    "golden sunset sky",
+    "wildlife animals in nature",
+    "aerial drone landscape",
+    "snow covered winter scene",
     # City & lifestyle
-    "city traffic timelapse",
-    "people walking street",
-    "night city lights",
-    "busy market crowd",
-    "coffee shop",
-    "cooking kitchen",
-    "travel adventure",
-    "coding laptop",
-    "drone flight",
+    "busy city street traffic",
+    "crowd walking downtown",
+    "city lights at night",
+    "outdoor market vendors",
+    "people in coffee shop",
+    "cooking in kitchen",
+    "travel adventure exploration",
     # Office & work
-    "office meeting business team",
+    "team meeting in office",
     "people working at desk",
-    "corporate presentation boardroom",
-    "remote work home office",
-    "coworkers collaborating whiteboard",
-    "call center customer service",
-    "startup modern workspace",
+    "presentation in boardroom",
+    "working from home",
+    "colleagues at whiteboard",
+    "modern coworking space",
+    "coding on laptop",
 ]
 
-# Module-level cache: (topic_vecs np.ndarray, encoded_at monotonic)
+# Module-level cache: vocabulary CLIP vectors only (DB sample is done fresh each call)
 _topic_vecs_cache: "tuple[np.ndarray, float] | None" = None
-_TOPIC_CACHE_TTL = 1800.0  # 30 minutes
+_TOPIC_CACHE_TTL = 600.0  # 10 minutes — vocabulary is static so this is conservative
 
 
 def _compute_topic_tags(k: int = 10) -> list[str]:
@@ -442,29 +435,47 @@ def _compute_topic_tags(k: int = 10) -> list[str]:
 
     topic_vecs, _ = _topic_vecs_cache  # shape [N_topics, D]
 
-    # --- Scroll a random-ish sample from Qdrant ---
-    # UUIDs are random by construction, so the first 200 points in sorted-UUID
-    # order are a uniform sample — no explicit offset required.
+    # --- Sample random point IDs from DB, then retrieve from Qdrant ---
+    # ORDER BY RANDOM() gives a true uniform sample across ALL indexed files,
+    # not just the first N in UUID sort order (which biases toward the earliest
+    # ingested content and ignores newer additions).
+    try:
+        db = _get_session()
+        try:
+            id_rows = db.execute(
+                text(
+                    "SELECT qdrant_point_id FROM media_files "
+                    "WHERE processing_status = 'done' AND qdrant_point_id IS NOT NULL "
+                    "ORDER BY RANDOM() LIMIT 400"
+                )
+            ).fetchall()
+        finally:
+            db.close()
+    except Exception:
+        return _TOPIC_VOCABULARY[:k]
+
+    if not id_rows:
+        return _TOPIC_VOCABULARY[:k]
+
+    point_ids = [str(r[0]) for r in id_rows]
+
     try:
         qdrant = _get_qdrant()
         collection_name = os.getenv("QDRANT_COLLECTION_NAME", "media_vectors")
-
-        scroll_result, _ = qdrant.scroll(
+        retrieved = qdrant.retrieve(
             collection_name=collection_name,
-            limit=200,
-            offset=None,
+            ids=point_ids,
             with_vectors=True,
-            with_payload=False,
         )
     except Exception:
         return _TOPIC_VOCABULARY[:k]
 
-    if not scroll_result:
+    if not retrieved:
         return _TOPIC_VOCABULARY[:k]
 
     # --- Build sample matrix ---
     sample_vecs = np.array(
-        [p.vector for p in scroll_result if p.vector is not None],
+        [p.vector for p in retrieved if p.vector is not None],
         dtype="float32",
     )
     if sample_vecs.ndim != 2 or len(sample_vecs) == 0:
