@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 
 const API_URL = process.env.API_URL || 'http://api:8000'
+const BACKEND_API_KEY = process.env.BACKEND_API_KEY || ''
 
 export async function POST(request: NextRequest) {
   try {
@@ -15,6 +16,7 @@ export async function POST(request: NextRequest) {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
+        ...(BACKEND_API_KEY && { 'X-API-Key': BACKEND_API_KEY }),
       },
       body: JSON.stringify({ query, limit, threshold: effectiveThreshold }),
     })

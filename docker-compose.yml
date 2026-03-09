@@ -52,7 +52,7 @@ services:
       - "9001:9001"   # Web console
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD must be set}
     volumes:
       # J:\ is MinIO's data directory directly — zero copy, no duplication.
       # MinIO writes only a small .minio.sys metadata folder to J:\.
@@ -236,6 +236,8 @@ services:
       - NEXT_PUBLIC_STREAM_URL=${NEXT_PUBLIC_STREAM_URL:-http://localhost:8000}
       - NEXT_PUBLIC_QDRANT_HOST=qdrant
       - NEXT_PUBLIC_QDRANT_PORT=6333
+      # Server-side API key forwarded to FastAPI (set in .env, never exposed to browser)
+      - BACKEND_API_KEY=${BACKEND_API_KEY:-}
     volumes:
       - media_data:/data/media
       - ${MEDIA_SOURCE_PATH}:/mnt/source:ro # Host media library (for video streaming)
@@ -295,7 +297,7 @@ services:
     ports:
       - "3001:3000"
     environment:
-      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_SECURITY_ADMIN_PASSWORD=${GF_SECURITY_ADMIN_PASSWORD:?GF_SECURITY_ADMIN_PASSWORD must be set}
     volumes:
       - grafana_data:/var/lib/grafana
     depends_on:
