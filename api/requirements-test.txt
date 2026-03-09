@@ -1,0 +1,4 @@
+# Test-only deps — install alongside requirements.txt
+# pip install -r requirements.txt -r requirements-test.txt
+pytest>=8.0.0
+httpx>=0.28.0
