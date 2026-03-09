@@ -5,7 +5,10 @@ const API_URL = process.env.API_URL || 'http://api:8000'
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json()
-    const { query, limit = 20, threshold = 0.2 } = body
+    const { query, limit = 20, threshold, min_similarity } = body
+    // page.tsx sends min_similarity; some callers send threshold — accept both.
+    // Default to 0.3 to match the UI slider default.
+    const effectiveThreshold: number = min_similarity ?? threshold ?? 0.3
 
     // Call backend API
     const response = await fetch(`${API_URL}/api/search`, {
@@ -13,7 +16,7 @@ export async function POST(request: NextRequest) {
       headers: {
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ query, limit, threshold }),
+      body: JSON.stringify({ query, limit, threshold: effectiveThreshold }),
     })
 
     if (!response.ok) {

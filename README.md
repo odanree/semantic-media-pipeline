@@ -1,9 +1,37 @@
 # Semantic-Media-Pipeline 📂🤖
 **Internal Codename: Lumen**
 
+![CI](https://github.com/odanree/semantic-media-pipeline/actions/workflows/ci.yml/badge.svg?branch=feat/pytest-setup)
+![Tests](https://img.shields.io/badge/tests-135%20passing-brightgreen)
+![Coverage](https://img.shields.io/badge/coverage-78%25-green)
+
 A distributed, multimodal ingestion engine designed to semantically index and cluster massive personal media archives (500GB+). It unifies photos and videos into a single searchable vector space using **CLIP embeddings**, **Celery**, and **Qdrant**.
 
-[Image of a multimodal machine learning pipeline architecture showing image and video ingestion into a shared vector space]
+```mermaid
+flowchart LR
+    subgraph Ingest["Ingestion (Celery Workers)"]
+        direction TB
+        P[📷 Photos\nJPEG / PNG] --> CE[CLIP Encoder]
+        V[🎬 Videos\nMP4 / MOV] --> FF[ffmpeg\nFrame Extraction] --> CE
+    end
+
+    subgraph Storage["Storage"]
+        direction TB
+        M[MinIO / R2\nRaw Media] 
+        Q[(Qdrant\nVector DB)]
+        PG[(PostgreSQL\nMetadata)]
+    end
+
+    subgraph API["API + Frontend"]
+        direction TB
+        FA[FastAPI] --> NX[Next.js\nSearch UI]
+    end
+
+    CE -->|768-dim float32 vectors| Q
+    CE -->|metadata + file path| PG
+    P & V --> M
+    Q & PG --> FA
+```
 
 ## 🌟 The Vision
 In the era of 4K Pixel cameras and high-capacity storage, manual organization is a bottleneck. **Semantic-Media-Pipeline** treats your 500GB+ backup not as a file tree, but as a **high-dimensional knowledge base**. 
@@ -119,7 +147,51 @@ To maintain senior-level code organization, this project uses **Lumen** as the i
 
 ---
 
-##  Getting Started
+## 🧪 Testing
+
+The API test suite runs in-process with no live services — all Qdrant, PostgreSQL, Redis, and CLIP dependencies are mocked.
+
+### Run tests
+```bash
+# Install test dependencies (no torch/sentence-transformers required)
+pip install -r api/requirements-noml.txt
+pip install -r api/requirements-test.txt
+
+# Run all tests with coverage
+pytest --cov=api --cov-report=term-missing -q
+```
+
+### Coverage summary
+
+| File | Coverage |
+|------|----------|
+| `auth.py` | 94% |
+| `routers/health.py` | 85% |
+| `routers/ingest.py` | 70% |
+| `routers/search.py` | 72% |
+| `routers/stats.py` | 89% |
+| `utils.py` | 100% |
+| **Total** | **78%** |
+
+### Test file breakdown
+
+| File | Tests | What it covers |
+|------|-------|----------------|
+| `test_health.py` | 10 | `/api/health`, `/` root, Qdrant degraded-graceful |
+| `test_search.py` | 20 | Input validation, response schema, result schema, parameter forwarding |
+| `test_search_vector.py` | 14 | `POST /search-vector` body/schema/params, CLIP load failure → 503 |
+| `test_stats.py` | 15 | `/stats/summary`, `/stats/collection`, topic tags fallback |
+| `test_stats_processing.py` | 21 | `/stats/processing`, session detection algorithm, `_compute_topic_tags` CLIP path |
+| `test_ingest.py` | 14 | `POST /ingest`, task status GET, Celery task dispatch |
+| `test_ingest_media.py` | 13 | Stream/thumbnail placeholder safety, S3 redirect, access-denied, ffmpeg-absent |
+| `test_auth.py` | 7 | Auth disabled, correct/wrong/missing key, unconfigured 503 |
+| `test_utils.py` | 11 | `get_env_bool/int/float` all branches |
+
+CI enforces `--cov-fail-under=77`. The deploy workflow only fires when CI passes.
+
+---
+
+## ⚙️ Getting Started
 
 ### Prerequisites
 - Docker Desktop with WSL2 backend (Windows) or Docker Engine (Linux/macOS)
@@ -227,3 +299,20 @@ CELERY_CONCURRENCY=4
 
 ### GitHub Actions auto-deploy
 Pushing to `main` automatically SSH-deploys to the server, rebuilding only the services whose source directories changed (`api/`, `worker/`, `frontend/`).
+
+## ⚡ Real-World Performance
+
+Measured on a **Hetzner CAX21** (4 vCPU ARM64, 8 GB RAM, CPU-only — no GPU), `CELERY_CONCURRENCY=4`.
+
+| Run | Files | Wall-clock | Throughput |
+|---|---|---|---|
+| Session 1 | 498 | 3 h 28 min | ~2.4 files / min |
+| Session 2 | 446 | 2 h 24 min | ~3.1 files / min |
+| **Combined** | **944** | **5 h 52 min** | **~2.7 files / min avg** |
+
+| Metric | Value |
+|---|---|
+| Total vectors in Qdrant | 944 |
+| Monthly server cost | ~€5.39 / mo |
+
+The bottleneck is CLIP inference (`clip-ViT-L-14`) running on CPU with 4 concurrent Celery workers. Each worker independently encodes a file's frames/thumbnail → 768-dim vector → upserts to Qdrant. No batching across workers; throughput scales roughly linearly with `CELERY_CONCURRENCY` up to ~8 on this instance class.

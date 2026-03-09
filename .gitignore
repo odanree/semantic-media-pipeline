@@ -279,4 +279,10 @@ build-log.txt
 # One-time operational scripts (contain real file paths, never commit)
 scripts/retry_*.py
 scripts/*_local.py
+
+# TypeScript build artifacts
+*.tsbuildinfo
+
+# Personal/draft docs
+docs/linkedin-post-draft.txt
 scripts/dispatch_*.py

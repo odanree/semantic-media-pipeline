@@ -264,7 +264,7 @@ export default function SearchBar({ onSearch, isLoading = false, suggestions, ex
                 Minimum Similarity
               </label>
               <span className="text-sm text-blue-400 font-semibold">
-                {Math.round((filters.minSimilarity || 0.3) * 100)}%
+                {Math.round((filters.minSimilarity ?? 0.3) * 100)}%
               </span>
             </div>
             <input
@@ -272,7 +272,7 @@ export default function SearchBar({ onSearch, isLoading = false, suggestions, ex
               min="0"
               max="1"
               step="0.05"
-              value={filters.minSimilarity || 0.3}
+              value={filters.minSimilarity ?? 0.3}
               onChange={(e) =>
                 setFilters({ ...filters, minSimilarity: parseFloat(e.target.value) })
               }
@@ -280,7 +280,7 @@ export default function SearchBar({ onSearch, isLoading = false, suggestions, ex
               aria-label="Minimum similarity threshold"
             />
             <p className="text-xs text-gray-500 mt-2">
-              Only show results matching {Math.round((filters.minSimilarity || 0.3) * 100)}% or higher
+              Only show results matching {Math.round((filters.minSimilarity ?? 0.3) * 100)}% or higher
             </p>
           </div>
 

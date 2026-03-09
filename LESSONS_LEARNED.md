@@ -1020,6 +1020,163 @@ Fixed by logging `path` (always present) instead of `resolved`.
 
 ---
 
+## 18. FastAPI `List[float]` on a POST Endpoint Is a Body Param, Not a Query Param
+
+**Commits:** `715aaf9` (test fix in feat/pytest-setup)
+
+**Symptom**
+14 new tests for `POST /api/search-vector` all returned 422 Unprocessable
+Entity. The vector was being sent as repeated query params
+(`?vector=0.1&vector=0.2&…`) following the same pattern used for primitives
+like `limit` and `threshold`.
+
+**What happened**
+```python
+# endpoint signature
+async def search_by_vector(request: Request, vector: List[float], limit: int = 20):
+```
+FastAPI's parameter resolution rules for POST endpoints:
+- Scalar types (`int`, `str`, `float`) without a `Body()` annotation → **query param**
+- Collection types (`List[float]`, `List[str]`) → **body param** (FastAPI
+  assumes repeated scalar query params can't represent an arbitrary-length
+  list reliably)
+
+The framework silently promoted `vector` to a body parameter. The correct call
+is `client.post("/api/search-vector", json=[0.1, 0.2, …])` — a raw JSON array
+body, not query params.
+
+**Root cause**
+FastAPI has a nuanced rule: the binding location of a parameter depends on its
+*type*, not just the presence/absence of `Body()`. Scalar types are query
+params by default on POST; collection types become body params. This is
+documented but easy to miss when writing tests against existing endpoints.
+
+**The fix**
+```python
+# Wrong — 422 on every call
+client.post("/api/search-vector", params=[("vector", 0.1), ("vector", 0.2)])
+
+# Correct — raw JSON array body
+client.post("/api/search-vector", json=[0.1, 0.2, 0.3])
+
+# Scalar query params still work alongside the JSON body
+client.post("/api/search-vector", json=[0.1, 0.2], params={"limit": 5})
+```
+
+**Interview talking point**
+> "FastAPI's implicit parameter binding is powerful but has non-obvious rules
+> for collection types. When a test returns 422 and I know the data is
+> correct, I reach for the OpenAPI schema first — FastAPI generates it
+> automatically and will tell me exactly what it expects where. In this case,
+> `/docs` showed `vector` under `requestBody`, not `parameters`, which
+> immediately explained the 422. I now treat the auto-generated schema as
+> the authoritative contract when writing tests against a FastAPI service."
+
+---
+
+## 19. Rate Limiter Redis Connection Kills All Tests in CI (109 failures)
+
+**Commits:** `b7309ca` (fix in feat/semantic-topic-tags)
+
+**Symptom**
+109 out of 135 tests failed in CI with `redis.exceptions.ConnectionError:
+Error 111 connecting to localhost:6379. Connection refused`. The same suite
+passed locally in ~3 seconds.
+
+**What happened**
+`rate_limit.py` initialises a `slowapi.Limiter` at module import time with
+`storage_uri = os.getenv("REDIS_URL", "redis://redis:6379")`. The `conftest.py`
+overrode this to `redis://localhost:6379` for local dev. On the GitHub Actions
+`ubuntu-latest` runner there is no Redis service — every request that hit a
+rate-limited endpoint tried to check the counter and immediately raised.
+
+The `rate_limit.py` module docstring even said *"falls back gracefully to
+in-memory if Redis is unreachable"* — this was **incorrect**. `slowapi` does
+not silently fall back; it raises on every request.
+
+**Root cause**
+Two compounding mistakes:
+1. `conftest.py` defaulted `REDIS_URL` to a real Redis address, importing a
+   live-service dependency into a supposedly self-contained test suite.
+2. A misleading code comment implied automatic fallback that doesn't exist.
+
+**The fix**
+```python
+# conftest.py — use in-memory backend, zero external dependencies
+os.environ.setdefault("REDIS_URL", "memory://")
+
+# ci.yml — belt-and-suspenders in case env is already set
+- name: Run pytest
+  env:
+    REDIS_URL: memory://
+  run: pytest ...
+```
+`limits` (the backend library used by `slowapi`) supports `memory://` as a
+fully functional in-process counter store. Tests are isolated per process and
+don't need Redis.
+
+**Interview talking point**
+> "This is a classic test environment parity trap. 'Passes locally' is not
+> evidence that a test is self-contained — it may just mean the developer
+> machine happens to have a Redis process running. The rule I apply now: every
+> external service a test touches either needs to be in a `docker-compose` for
+> the test runner, or needs to be mocked. A rate limiter providing no business
+> logic is a perfect mock candidate. I also learned to audit every
+> `os.getenv()` default in `conftest.py` and ask: 'does this URL actually
+> exist on a clean CI runner, or am I importing a hidden dependency?'"
+
+---
+
+## 20. One-Character YAML Indentation Error Silently Disabled All CI Jobs
+
+**Commits:** `6095da9` (fix in feat/semantic-topic-tags)
+
+**Symptom**
+After merging the pytest branch, no CI jobs appeared to run — not lint, not
+typecheck, not docker-compose validation, not the new test job. The PR showed
+no checks at all.
+
+**What happened**
+The `run:` key of the pytest step was written at column 0 (root level of the
+file) instead of 8 spaces (indented under `- name: Run pytest`):
+
+```yaml
+# Broken — run: at root level
+      - name: Run pytest
+run: pytest --cov=api ...
+
+# Correct
+      - name: Run pytest
+        run: pytest --cov=api ...
+```
+
+A YAML file with a root-level `run:` key alongside top-level `jobs:` and
+`on:` keys is syntactically valid YAML but semantically invalid as a GitHub
+Actions workflow. GitHub's workflow parser rejected the file silently — it
+didn't write an error to the UI, it simply didn't schedule any of the jobs.
+The result was indistinguishable from "CI hasn't run yet."
+
+**Root cause**
+The error was introduced when the `run:` line was written directly (not through
+an editor with YAML indentation support), and the symptoms made it look like a
+GitHub delay rather than a parse failure. There was no red ✗ on the PR — just
+absence of checks, which is easy to misread as "pending."
+
+**The fix**
+Corrected indentation to 8 spaces. All 5 jobs (typecheck, lint, validate-compose,
+test-api, check-requirements) immediately appeared and ran on the next push.
+
+**Interview talking point**
+> "GitHub Actions silently drops an entire workflow if the YAML is
+> structurally invalid — there's no parsing error surfaced in the UI, just
+> no jobs. I now validate workflow files with `actionlint` before pushing,
+> or at minimum run `python -c 'import yaml; yaml.safe_load(open(\".github/workflows/ci.yml\"))'`
+> to catch structural errors locally. The broader lesson: a missing check in
+> CI is not the same as a passing check — absence of failure is not evidence
+> of success."
+
+---
+
 ## Cross-Cutting Themes
 
 | Theme | Issues |
@@ -1038,6 +1195,9 @@ Fixed by logging `path` (always present) instead of `resolved`.
 | **Placeholder media must be real bytes — crafted hex is almost never correct** | #12 (invalid MP4 stub) |
 | **Symptom convergence: multiple independent bugs → identical error** | #12 (video player layers) |
 | **Docker bind-mount falls back to read-only parent when target dir is missing** | #13 (SMB frame cache) |
+| **FastAPI collection-type params on POST are body params, not query params** | #18 (search-vector tests) |
+| **Test env that "passes locally" may have hidden live-service dependencies** | #19 (Redis in CI) |
+| **YAML parse failure in CI silently drops all jobs with no error shown** | #20 (workflow indentation) |
 | **Per-worker local caches belong in Docker named volumes, not shared network mounts** | #13 (SMB frame cache) |
 | **SMB stale mount produces two distinct exceptions: `OSError(EIO)` and `FFmpegError(ffprobe failed:)` — both need fast-fail** | #13 (stale mount signatures) |
 | **Changing a vector store's dimension requires updating all producers atomically — add a startup dimension assertion** | #14 (CLIP/Qdrant dim mismatch) |

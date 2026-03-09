@@ -1,0 +1,10 @@
+[run]
+source = api
+omit =
+    api/routers/updates.py
+    api/utils/notifications.py
+    api/tests/*
+
+[report]
+show_missing = true
+skip_covered = false
