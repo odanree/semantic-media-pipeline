@@ -67,7 +67,9 @@ os.environ.setdefault("DATABASE_URL",     "postgresql://test:test@localhost:5432
 os.environ.setdefault("QDRANT_HOST",      "localhost")
 os.environ.setdefault("QDRANT_PORT",      "6333")
 os.environ.setdefault("API_KEY_REQUIRED", "false")
-os.environ.setdefault("REDIS_URL",        "redis://localhost:6379")
+# Use in-memory rate limiter — no Redis required in the test environment.
+# slowapi/limits supports memory:// as a zero-dependency in-process backend.
+os.environ.setdefault("REDIS_URL",        "memory://")
 os.environ.setdefault("CLIP_MODEL_NAME",  "clip-ViT-L-14")
 os.environ.setdefault("QDRANT_COLLECTION_NAME", "media_vectors")
 

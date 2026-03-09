@@ -39,7 +39,10 @@ def _make_slow_row(path="pexels-demo/clip.mp4", ftype="video", dur=1.5, ts=None)
     ts = ts or datetime(2026, 3, 9, 10, 0, 0)
     row = MagicMock()
     row.__getitem__ = lambda s, i: [path, ftype, dur, ts][i]
-    row[0] = path; row[1] = ftype; row[2] = dur; row[3] = ts
+    row[0] = path
+    row[1] = ftype
+    row[2] = dur
+    row[3] = ts
     return (path, ftype, dur, ts)
 
 
