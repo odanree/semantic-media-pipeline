@@ -88,6 +88,28 @@ jobs:
           DATABASE_NAME: lumen
 
   # -------------------------------------------------------------------------
+  # API tests — FastAPI TestClient (no live services required)
+  # -------------------------------------------------------------------------
+  test-api:
+    name: Test API
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install runtime deps (no ML libs)
+        run: pip install -r api/requirements-noml.txt
+
+      - name: Install test deps
+        run: pip install -r api/requirements-test.txt
+
+      - name: Run pytest
+run: pytest --cov=api --cov-report=term-missing --cov-fail-under=77 -q
+
+  # -------------------------------------------------------------------------
   # Check requirements files are pip-installable (syntax + version conflicts)
   # -------------------------------------------------------------------------
   check-requirements:

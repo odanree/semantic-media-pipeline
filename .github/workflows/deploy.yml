@@ -1,9 +1,13 @@
 name: Deploy to Production
 
 on:
-  push:
+  # Run after CI completes on main so we never deploy code that failed tests.
+  # workflow_dispatch retains a manual escape hatch for hotfixes.
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
     branches: [main]
-  workflow_dispatch:   # allow manual trigger from GitHub UI
+  workflow_dispatch:
 
 jobs:
   deploy:
@@ -11,6 +15,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     environment: production
+    # Skip if triggered by workflow_run that failed (manual dispatch always runs)
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
 
     steps:
       - name: Checkout (for path detection only)

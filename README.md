@@ -1,6 +1,10 @@
 # Semantic-Media-Pipeline 📂🤖
 **Internal Codename: Lumen**
 
+![CI](https://github.com/odanree/semantic-media-pipeline/actions/workflows/ci.yml/badge.svg?branch=feat/pytest-setup)
+![Tests](https://img.shields.io/badge/tests-135%20passing-brightgreen)
+![Coverage](https://img.shields.io/badge/coverage-78%25-green)
+
 A distributed, multimodal ingestion engine designed to semantically index and cluster massive personal media archives (500GB+). It unifies photos and videos into a single searchable vector space using **CLIP embeddings**, **Celery**, and **Qdrant**.
 
 ```mermaid
@@ -143,7 +147,51 @@ To maintain senior-level code organization, this project uses **Lumen** as the i
 
 ---
 
-##  Getting Started
+## 🧪 Testing
+
+The API test suite runs in-process with no live services — all Qdrant, PostgreSQL, Redis, and CLIP dependencies are mocked.
+
+### Run tests
+```bash
+# Install test dependencies (no torch/sentence-transformers required)
+pip install -r api/requirements-noml.txt
+pip install -r api/requirements-test.txt
+
+# Run all tests with coverage
+pytest --cov=api --cov-report=term-missing -q
+```
+
+### Coverage summary
+
+| File | Coverage |
+|------|----------|
+| `auth.py` | 94% |
+| `routers/health.py` | 85% |
+| `routers/ingest.py` | 70% |
+| `routers/search.py` | 72% |
+| `routers/stats.py` | 89% |
+| `utils.py` | 100% |
+| **Total** | **78%** |
+
+### Test file breakdown
+
+| File | Tests | What it covers |
+|------|-------|----------------|
+| `test_health.py` | 10 | `/api/health`, `/` root, Qdrant degraded-graceful |
+| `test_search.py` | 20 | Input validation, response schema, result schema, parameter forwarding |
+| `test_search_vector.py` | 14 | `POST /search-vector` body/schema/params, CLIP load failure → 503 |
+| `test_stats.py` | 15 | `/stats/summary`, `/stats/collection`, topic tags fallback |
+| `test_stats_processing.py` | 21 | `/stats/processing`, session detection algorithm, `_compute_topic_tags` CLIP path |
+| `test_ingest.py` | 14 | `POST /ingest`, task status GET, Celery task dispatch |
+| `test_ingest_media.py` | 13 | Stream/thumbnail placeholder safety, S3 redirect, access-denied, ffmpeg-absent |
+| `test_auth.py` | 7 | Auth disabled, correct/wrong/missing key, unconfigured 503 |
+| `test_utils.py` | 11 | `get_env_bool/int/float` all branches |
+
+CI enforces `--cov-fail-under=77`. The deploy workflow only fires when CI passes.
+
+---
+
+## ⚙️ Getting Started
 
 ### Prerequisites
 - Docker Desktop with WSL2 backend (Windows) or Docker Engine (Linux/macOS)
