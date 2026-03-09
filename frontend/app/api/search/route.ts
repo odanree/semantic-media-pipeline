@@ -7,6 +7,11 @@ export async function POST(request: NextRequest) {
   try {
     const body = await request.json()
     const { query, limit = 20, threshold, min_similarity } = body
+
+    if (!query) {
+      return NextResponse.json({ error: 'Query is required' }, { status: 400 })
+    }
+
     // page.tsx sends min_similarity; some callers send threshold — accept both.
     // Default to 0.2 to match the API default.
     const effectiveThreshold: number = min_similarity ?? threshold ?? 0.2
