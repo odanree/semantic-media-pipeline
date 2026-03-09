@@ -406,6 +406,15 @@ describe('GET /api/stream/[id]', () => {
     expect(res.status).toBe(416)
   })
 
+  it('returns 206 for range request with no end byte (bytes=START-)', async () => {
+    fsMock.existsSync.mockReturnValue(true)
+    fsMock.statSync.mockReturnValue({ size: 1000 })
+    fsMock.createReadStream.mockReturnValue(new ReadableStream())
+    const res = await handler('video.mp4', 'bytes=0-')  // open-ended range
+    expect(res.status).toBe(206)
+    expect(res.headers.get('content-range')).toBe('bytes 0-999/1000')
+  })
+
   it('returns 206 for valid range request', async () => {
     fsMock.existsSync.mockReturnValue(true)
     fsMock.statSync.mockReturnValue({ size: 1000 })
@@ -507,5 +516,30 @@ describe('server actions (actions/search.ts)', () => {
       const [, , config] = (axiosMock.default.post as ReturnType<typeof vi.fn>).mock.calls[0]
       expect(config.headers['X-API-Key']).toBeUndefined()
     })
+  })
+})
+
+// ---------------------------------------------------------------------------
+// app/api/debug/route.ts
+// ---------------------------------------------------------------------------
+
+describe('GET /api/debug', () => {
+  it('returns json with apiUrl and timestamp', async () => {
+    process.env.API_URL = 'http://custom-api:9000'
+    const { GET } = await import('../debug/route')
+    const res = await GET()
+    const body = await res.json()
+    expect(res.status).toBe(200)
+    expect(body.apiUrl).toBe('http://custom-api:9000')
+    expect(typeof body.timestamp).toBe('string')
+    expect(body.nodeEnv).toBeDefined()
+  })
+
+  it('falls back to default api url when env var is unset', async () => {
+    delete process.env.API_URL
+    const { GET } = await import('../debug/route')
+    const res = await GET()
+    const body = await res.json()
+    expect(body.apiUrl).toBe('http://api:8000')
   })
 })
