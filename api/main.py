@@ -46,14 +46,20 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 app.add_middleware(SlowAPIMiddleware)
 
 # Add CORS middleware
-# Note: allow_credentials=True is incompatible with allow_origins=["*"]
-# Using explicit origins list to allow both localhost variants
+# ALLOWED_ORIGINS env var: comma-separated list of allowed origins.
+# Defaults to production origin + localhost dev variants.
+_raw_origins = os.getenv(
+    "ALLOWED_ORIGINS",
+    "https://lumen.danhle.net,http://localhost:3000,http://localhost:3001"
+)
+ALLOWED_ORIGINS = [o.strip() for o in _raw_origins.split(",") if o.strip()]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=False,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST"],
+    allow_headers=["Content-Type", "X-API-Key"],
 )
 
 # Include routers
@@ -75,8 +81,15 @@ app.include_router(stats.router,    prefix="/api", tags=["observability"], depen
 async def startup_event():
     """Initialize on startup"""
     print("Lumen API starting up...")
+
+    # Fail fast: DATABASE_URL is non-negotiable
+    if not os.getenv("DATABASE_URL"):
+        print("FATAL: DATABASE_URL is not set. Refusing to start.")
+        sys.exit(1)
+
     print(f"Qdrant host: {os.getenv('QDRANT_HOST', 'qdrant')}")
     print(f"Database URL: {os.getenv('DATABASE_ASYNC_URL', '***')}")
+    print(f"CORS origins: {ALLOWED_ORIGINS}")
     api_key_required = os.getenv("API_KEY_REQUIRED", "false").lower() in ("true", "1", "yes")
     api_key_set = bool(os.getenv("API_KEY", "").strip())
     if api_key_required and api_key_set:
