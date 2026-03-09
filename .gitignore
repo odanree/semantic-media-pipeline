@@ -42,6 +42,8 @@ target/
 
 # Jupyter Notebook
 .ipynb_checkpoints
+# Analysis notebooks (outputs may contain server paths / query results)
+docs/pipeline_analysis.ipynb
 
 # pyenv
 .python-version
