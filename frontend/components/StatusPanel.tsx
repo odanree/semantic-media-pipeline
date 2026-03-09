@@ -23,21 +23,25 @@ export default function StatusPanel() {
   const [error, setError] = useState<string | null>(null)
   const [retrying, setRetrying] = useState(false)
   const [filesPerMin, setFilesPerMin] = useState<number | null>(null)
-  const prevDoneRef = useRef<{ count: number; time: number } | null>(null)
+  const ingestStartRef = useRef<{ count: number; time: number } | null>(null)
 
   const { status: wsStatus, isConnected, error: wsError } = useStatusUpdates({
     onUpdate: (newStatus) => {
       setStatus(prev => {
-        // Compute files/min from delta between updates
+        // Compute sustained avg files/min from when ingest first started producing done files
         const now = Date.now()
-        if (prevDoneRef.current) {
-          const deltaDone = newStatus.by_status.done - prevDoneRef.current.count
-          const deltaMinutes = (now - prevDoneRef.current.time) / 60000
-          if (deltaMinutes > 0 && deltaDone >= 0) {
-            setFilesPerMin(Math.round(deltaDone / deltaMinutes))
+        const done = newStatus.by_status.done
+        if (!ingestStartRef.current && done > 0) {
+          // Anchor the start when we first see completed files
+          ingestStartRef.current = { count: done, time: now }
+        }
+        if (ingestStartRef.current && done > ingestStartRef.current.count) {
+          const elapsedMinutes = (now - ingestStartRef.current.time) / 60000
+          const filesCompleted = done - ingestStartRef.current.count
+          if (elapsedMinutes >= 1) {
+            setFilesPerMin(Math.round(filesCompleted / elapsedMinutes))
           }
         }
-        prevDoneRef.current = { count: newStatus.by_status.done, time: now }
         return newStatus
       })
       setLoading(false)
