@@ -93,7 +93,7 @@ jobs:
             echo "=== Pulling latest code ==="
             git fetch origin main
             git checkout main
-            git pull origin main
+            git reset --hard origin/main
 
             echo "=== Rebuilding changed services ==="
             ${{ steps.script.outputs.build_cmd }}
