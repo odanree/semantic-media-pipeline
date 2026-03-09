@@ -304,12 +304,15 @@ Pushing to `main` automatically SSH-deploys to the server, rebuilding only the s
 
 Measured on a **Hetzner CAX21** (4 vCPU ARM64, 8 GB RAM, CPU-only — no GPU), `CELERY_CONCURRENCY=4`.
 
+| Run | Files | Wall-clock | Throughput |
+|---|---|---|---|
+| Session 1 | 498 | 3 h 28 min | ~2.4 files / min |
+| Session 2 | 446 | 2 h 24 min | ~3.1 files / min |
+| **Combined** | **944** | **5 h 52 min** | **~2.7 files / min avg** |
+
 | Metric | Value |
 |---|---|
-| Files processed | 446 |
-| Total vectors in Qdrant | 942 |
-| Wall-clock time | 2 h 24 min (2:24:24) |
-| Throughput | ~3.1 files / min · ~185 files / hr |
+| Total vectors in Qdrant | 944 |
 | Monthly server cost | ~€5.39 / mo |
 
 The bottleneck is CLIP inference (`clip-ViT-L-14`) running on CPU with 4 concurrent Celery workers. Each worker independently encodes a file's frames/thumbnail → 768-dim vector → upserts to Qdrant. No batching across workers; throughput scales roughly linearly with `CELERY_CONCURRENCY` up to ~8 on this instance class.
