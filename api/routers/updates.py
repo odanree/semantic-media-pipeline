@@ -16,6 +16,22 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 
+# Allowed WebSocket origins — mirrors ALLOWED_ORIGINS in main.py
+_raw_ws_origins = os.getenv(
+    "ALLOWED_ORIGINS",
+    "https://lumen.example.com,http://localhost:3000,http://localhost:3001"
+)
+_ALLOWED_WS_ORIGINS = {o.strip() for o in _raw_ws_origins.split(",") if o.strip()}
+
+
+def _check_ws_origin(websocket: WebSocket) -> bool:
+    """Return True if the WS Origin header is in the allowed list."""
+    origin = websocket.headers.get("origin", "")
+    # Allow no-origin (server-side / curl connections in dev)
+    if not origin:
+        return True
+    return origin in _ALLOWED_WS_ORIGINS
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["realtime"])
@@ -164,6 +180,10 @@ async def websocket_processing_status(websocket: WebSocket):
             if (msg.files) setStatus(msg.files);  // StatusPanel logic
         };
     """
+    if not _check_ws_origin(websocket):
+        await websocket.close(code=1008)
+        logger.warning(f"WS/processing-status rejected: origin={websocket.headers.get('origin')}")
+        return
     await websocket.accept()
     active_connections["processing_status"].append(websocket)
     logger.info(f"WS/processing-status connected (total: {len(active_connections['processing_status'])})")
@@ -224,6 +244,10 @@ async def websocket_media_updates(websocket: WebSocket):
             if (update.channel === 'media_processing') { ... }
         };
     """
+    if not _check_ws_origin(websocket):
+        await websocket.close(code=1008)
+        logger.warning(f"WS/media-updates rejected: origin={websocket.headers.get('origin')}")
+        return
     await websocket.accept()
     active_connections["media_updates"].append(websocket)
     logger.info(f"WS/media-updates connected (total: {len(active_connections['media_updates'])})")

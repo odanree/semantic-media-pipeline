@@ -1,11 +1,15 @@
 import { NextResponse } from 'next/server'
 
 const API_URL = process.env.API_URL || 'http://api:8000'
+const BACKEND_API_KEY = process.env.BACKEND_API_KEY || ''
 
 export async function GET() {
   try {
     const response = await fetch(`${API_URL}/api/stats/collection`, {
       next: { revalidate: 60 }, // cache for 60s — collection changes slowly
+      headers: {
+        ...(BACKEND_API_KEY && { 'X-API-Key': BACKEND_API_KEY }),
+      },
     })
 
     if (!response.ok) {
