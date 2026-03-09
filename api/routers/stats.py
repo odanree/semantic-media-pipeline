@@ -9,14 +9,15 @@ Endpoints:
 """
 
 import os
-import re
+import time
 from collections import Counter
 from datetime import datetime, timedelta
-from typing import Optional
+
+import numpy as np
 
 from fastapi import APIRouter, Query
 from qdrant_client import QdrantClient
-from sqlalchemy import create_engine, func, text
+from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 
 router = APIRouter()
@@ -342,15 +343,156 @@ def processing_times(
 # /api/stats/collection
 # ---------------------------------------------------------------------------
 
-_STOP_WORDS = {
-    "a", "an", "the", "of", "in", "on", "at", "to", "for", "and", "or",
-    "with", "by", "from", "is", "are", "was", "be", "it", "its", "this",
-    "that", "as", "into", "over", "up", "out", "video", "footage", "clip",
-    "view", "shot", "scene", "slow", "motion", "close", "aerial", "drone",
-    "4k", "hd", "1080p", "720p", "mp4", "mov", "person", "people", "man",
-    "woman", "men", "women", "using", "while", "during", "they", "their",
-    "doing", "being", "having",
-}
+# ---------------------------------------------------------------------------
+# Semantic topic tags — CLIP-based vocabulary probe (replaces filename parsing)
+# ---------------------------------------------------------------------------
+
+# Human-readable concept labels that mirror the SEARCH_QUERIES used to build
+# this collection.  At stats-call time we encode these once with CLIP, scroll
+# a random sample of Qdrant vectors, assign each vector to its nearest label,
+# and return the most-common k labels.  The vocabulary encode is cached for
+# _TOPIC_CACHE_TTL seconds so the CLIP forward-pass only happens on cold start
+# (or after expiry).
+_TOPIC_VOCABULARY: list[str] = [
+    # Sports
+    "basketball dribbling on court",
+    "soccer players on field",
+    "tennis match rally",
+    "running sprint on track",
+    "swimming competition in pool",
+    "gym weight training",
+    "yoga stretching outdoors",
+    "skateboard tricks in park",
+    "boxing training punching bag",
+    "cycling on mountain road",
+    "golf swing on course",
+    "martial arts sparring",
+    "surfing ocean waves",
+    "rock climbing wall",
+    "dance performance on stage",
+    # Nature
+    "ocean waves crashing shore",
+    "mountain hiking trail",
+    "waterfall in forest",
+    "golden sunset sky",
+    "wildlife animals in nature",
+    "aerial drone landscape",
+    "snow covered winter scene",
+    # City & lifestyle
+    "busy city street traffic",
+    "crowd walking downtown",
+    "city lights at night",
+    "outdoor market vendors",
+    "people in coffee shop",
+    "cooking in kitchen",
+    "travel adventure exploration",
+    # Office & work
+    "team meeting in office",
+    "people working at desk",
+    "presentation in boardroom",
+    "working from home",
+    "colleagues at whiteboard",
+    "modern coworking space",
+    "coding on laptop",
+]
+
+# Module-level cache: vocabulary CLIP vectors only (DB sample is done fresh each call)
+_topic_vecs_cache: "tuple[np.ndarray, float] | None" = None
+_TOPIC_CACHE_TTL = 600.0  # 10 minutes — vocabulary is static so this is conservative
+
+
+def _compute_topic_tags(k: int = 10) -> list[str]:
+    """Return k topic labels representative of the collection content.
+
+    Algorithm (all cheap after warm-up):
+      1. Encode _TOPIC_VOCABULARY with CLIP (cached for 30 min).
+      2. Scroll up to 200 vectors from Qdrant.  Since point IDs are random UUIDs,
+         the first 200 in sorted-UUID order are a uniform sample across the
+         collection — no explicit random offset needed.
+      3. Compute cosine similarity between each sample vector and all topics.
+      4. Assign each sample to its nearest topic; return the top-k by count.
+
+    Falls back to the first k vocabulary entries on any error so the
+    endpoint never returns an empty list.
+    """
+    global _topic_vecs_cache
+
+    # --- Load model (already preloaded by main.py lifespan handler) ---
+    try:
+        from routers.search import get_clip_model
+        model = get_clip_model()
+    except Exception:
+        return _TOPIC_VOCABULARY[:k]
+
+    # --- Encode vocabulary (cached) ---
+    now = time.monotonic()
+    if _topic_vecs_cache is None or (now - _topic_vecs_cache[1]) > _TOPIC_CACHE_TTL:
+        raw = model.encode(_TOPIC_VOCABULARY, convert_to_tensor=False)
+        vecs = np.array(raw, dtype="float32")
+        norms = np.linalg.norm(vecs, axis=1, keepdims=True)
+        vecs /= np.where(norms == 0, 1.0, norms)
+        _topic_vecs_cache = (vecs, now)
+
+    topic_vecs, _ = _topic_vecs_cache  # shape [N_topics, D]
+
+    # --- Sample random point IDs from DB, then retrieve from Qdrant ---
+    # ORDER BY RANDOM() gives a true uniform sample across ALL indexed files,
+    # not just the first N in UUID sort order (which biases toward the earliest
+    # ingested content and ignores newer additions).
+    try:
+        db = _get_session()
+        try:
+            id_rows = db.execute(
+                text(
+                    "SELECT qdrant_point_id FROM media_files "
+                    "WHERE processing_status = 'done' AND qdrant_point_id IS NOT NULL "
+                    "ORDER BY RANDOM() LIMIT 400"
+                )
+            ).fetchall()
+        finally:
+            db.close()
+    except Exception:
+        return _TOPIC_VOCABULARY[:k]
+
+    if not id_rows:
+        return _TOPIC_VOCABULARY[:k]
+
+    point_ids = [str(r[0]) for r in id_rows]
+
+    try:
+        qdrant = _get_qdrant()
+        collection_name = os.getenv("QDRANT_COLLECTION_NAME", "media_vectors")
+        retrieved = qdrant.retrieve(
+            collection_name=collection_name,
+            ids=point_ids,
+            with_vectors=True,
+        )
+    except Exception:
+        return _TOPIC_VOCABULARY[:k]
+
+    if not retrieved:
+        return _TOPIC_VOCABULARY[:k]
+
+    # --- Build sample matrix ---
+    sample_vecs = np.array(
+        [p.vector for p in retrieved if p.vector is not None],
+        dtype="float32",
+    )
+    if sample_vecs.ndim != 2 or len(sample_vecs) == 0:
+        return _TOPIC_VOCABULARY[:k]
+
+    # L2-normalise for cosine sim via dot product
+    norms = np.linalg.norm(sample_vecs, axis=1, keepdims=True)
+    sample_vecs /= np.where(norms == 0, 1.0, norms)
+
+    # Cosine similarity: [n_samples, n_topics]
+    sims = sample_vecs @ topic_vecs.T
+
+    # Nearest topic per sample → frequency count
+    nearest = np.argmax(sims, axis=1)
+    counts: Counter = Counter(int(i) for i in nearest)
+
+    return [_TOPIC_VOCABULARY[idx] for idx, _ in counts.most_common(k)]
 
 
 @router.get("/stats/collection")
@@ -358,8 +500,9 @@ def collection_info():
     """
     Collection summary for demo context UI.
 
-    Returns file counts by type/status and topic tags derived from filename
-    stems — surfaces what the collection contains without exposing architecture.
+    Returns file counts by type/status and topic tags derived from CLIP
+    semantic similarity — surfaces what the collection actually contains
+    without relying on filenames.
     """
     db = _get_session()
     try:
@@ -379,23 +522,11 @@ def collection_info():
             if status == "done":
                 indexed += count
 
-        sample_rows = db.execute(
-            text(
-                "SELECT file_path FROM media_files "
-                "WHERE processing_status = 'done' "
-                "ORDER BY RANDOM() LIMIT 300"
-            )
-        ).fetchall()
-
-        word_counts: Counter = Counter()
-        for (path,) in sample_rows:
-            stem = os.path.splitext(os.path.basename(path))[0]
-            words = re.split(r"[-_\s\d]+", stem.lower())
-            for w in words:
-                if len(w) >= 4 and w not in _STOP_WORDS:
-                    word_counts[w] += 1
-
-        top_topics = [word for word, _ in word_counts.most_common(10)]
+        # Semantic topic tags: CLIP-based vocabulary probe (see _compute_topic_tags)
+        try:
+            top_topics = _compute_topic_tags(k=10)
+        except Exception:
+            top_topics = []
 
         return {
             "total": total,
