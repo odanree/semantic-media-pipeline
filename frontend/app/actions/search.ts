@@ -22,7 +22,7 @@ export async function embedQuery(query: string): Promise<number[]> {
 export async function searchMedia(
   query: string,
   limit: number = 20,
-  threshold: number = 0.3
+  threshold: number = 0.2
 ) {
   const apiKey = process.env.BACKEND_API_KEY || ''
   try {
