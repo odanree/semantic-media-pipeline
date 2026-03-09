@@ -154,8 +154,7 @@ jobs:
         run: pip install pip-audit
 
       - name: Audit api/requirements.txt
-        run: pip-audit -r api/requirements.txt --ignore-vuln GHSA-r9hx-vwmv-q579
-        # GHSA-r9hx-vwmv-q579: onnx low-severity advisory not applicable to inference-only use
+        run: pip-audit -r api/requirements.txt
 
   # -------------------------------------------------------------------------
   # Secret scanning (trufflehog — detects leaked credentials in git history)
