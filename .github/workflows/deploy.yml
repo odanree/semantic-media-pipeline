@@ -103,7 +103,7 @@ jobs:
 
             echo "=== Health check ==="
             for i in $(seq 1 18); do
-              if curl -sf http://localhost:8000/api/stats/summary > /dev/null 2>&1; then
+              if curl -sf http://localhost:8000/api/ping > /dev/null 2>&1; then
                 echo "API healthy ✓"
                 break
               fi
