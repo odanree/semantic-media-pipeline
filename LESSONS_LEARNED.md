@@ -1177,6 +1177,63 @@ test-api, check-requirements) immediately appeared and ran on the next push.
 
 ---
 
+## 21. Next.js Module-Level `process.env` Reads Are Captured at Build Time
+
+**PR:** #35 (fix/backend-api-key-runtime-read)
+
+**Symptom**
+After enabling `API_KEY_REQUIRED=true` and setting `BACKEND_API_KEY` in `.env`,
+all API requests from the frontend still returned `401 Unauthorized`. The env
+var was confirmed present inside the running container, the source code had the
+`X-API-Key` header forwarding, and the image had been rebuilt — yet FastAPI
+never received the key.
+
+**What happened**
+The `BACKEND_API_KEY` read was placed at module level in all 4 Next.js API
+route handlers:
+
+```typescript
+// ❌ WRONG — evaluated once at build time
+const BACKEND_API_KEY = process.env.BACKEND_API_KEY || ''
+
+export async function POST(request: NextRequest) {
+  headers: { ...(BACKEND_API_KEY && { 'X-API-Key': BACKEND_API_KEY }) }
+}
+```
+
+The Docker image was built without `BACKEND_API_KEY` set in the build
+environment. Next.js evaluated the module-level expression during the build
+and inlined `''`. Every container started from that image sent an empty string
+regardless of what `.env` contained at runtime.
+
+**Root cause**
+Next.js API route modules are compiled — module-scope expressions that can be
+statically resolved (including `process.env` reads without a `NEXT_PUBLIC_`
+prefix) may be captured at build time depending on how the bundler tree-shakes
+the output. Variables needed at runtime must be read inside the handler
+function to guarantee a fresh `process.env` lookup per request.
+
+**The fix**
+```typescript
+// ✅ CORRECT — evaluated on every request
+export async function POST(request: NextRequest) {
+  const BACKEND_API_KEY = process.env.BACKEND_API_KEY || ''
+  headers: { ...(BACKEND_API_KEY && { 'X-API-Key': BACKEND_API_KEY }) }
+}
+```
+
+**Interview talking point**
+> "This was a build-time vs. runtime capture trap. The container had the
+> correct env var, the code looked right, and the image was freshly built —
+> three things that should mean it works. The clue was that `docker compose
+> exec frontend node -e 'console.log(process.env.BACKEND_API_KEY)'` printed
+> the key correctly, but requests still 401'd. That ruled out the container
+> env and pointed to the compiled output. Module-level `process.env` reads
+> in Next.js API routes are a footgun: move secrets inside the handler where
+> they're evaluated at request time, not build time."
+
+---
+
 ## Cross-Cutting Themes
 
 | Theme | Issues |
@@ -1198,6 +1255,7 @@ test-api, check-requirements) immediately appeared and ran on the next push.
 | **FastAPI collection-type params on POST are body params, not query params** | #18 (search-vector tests) |
 | **Test env that "passes locally" may have hidden live-service dependencies** | #19 (Redis in CI) |
 | **YAML parse failure in CI silently drops all jobs with no error shown** | #20 (workflow indentation) |
+| **Next.js API route module-level `process.env` reads are captured at build time — read secrets inside the handler function** | #21 (BACKEND_API_KEY build-time capture) |
 | **Per-worker local caches belong in Docker named volumes, not shared network mounts** | #13 (SMB frame cache) |
 | **SMB stale mount produces two distinct exceptions: `OSError(EIO)` and `FFmpegError(ffprobe failed:)` — both need fast-fail** | #13 (stale mount signatures) |
 | **Changing a vector store's dimension requires updating all producers atomically — add a startup dimension assertion** | #14 (CLIP/Qdrant dim mismatch) |
@@ -1208,180 +1266,3 @@ test-api, check-requirements) immediately appeared and ran on the next push.
 | **`init-db.sql` and migration scripts must stay in sync — fresh deploys break silently if init script predates schema changes** | #17 (observability columns missing on cloud) |
 | **`STORAGE_BACKEND=s3` must be checked in every layer that serves files — API endpoints are not exempt** | #18 (stream/thumbnail filesystem-only) |
 | **Variables only assigned in one branch must not be referenced in shared `except` blocks** | #18 (UnboundLocalError in S3 error handler) |
-
----
-
-## General Debugging Heuristics Extracted
-
-1. **Silence is not success.** A non-fatal handler that logs nothing is a
-   production blindspot. Every suppressed exception should emit at minimum
-   a `WARNING` with the exception type and the affected resource path.
-
-2. **Check the installed version, not the latest docs.** Pin all SDK
-   dependencies and link the pinned tag in comments at the call site.
-
-3. **Streaming ≠ regular HTTP.** Any proxy, middleware, or server that
-   accumulates a response body before forwarding it will destroy streaming.
-   Validate streaming end-to-end with `curl --no-buffer` before trusting
-   the browser network tab.
-
-4. **Latency × call_count, not bandwidth, limits virtual filesystem I/O.**
-   Increase chunk size before investigating bandwidth.
-
-5. **Concurrency for ML workers = floor(RAM / model_footprint), not CPU count.**
-   Add `max_tasks_per_child` to any worker running ML inference.
-
-6. **Timeouts that don't scale with input size will fail on real data.**
-   Always derive timeout from a measurable property of the work unit.
-
-7. **`<img>` endpoints must always return an image MIME type — ORB operates
-   below CORS and cannot be overridden with headers.**
-   Return a placeholder image on error; log server-side.
-
-8. **After changing `apt-get install` in an existing `RUN` block, rebuild
-   with `--no-cache` and verify with `docker exec`.**
-   BuildKit's layer cache can serve the pre-change image silently.
-
-9. **Order pipeline steps by cost: cheap invariants first, variable-cost
-   optionals last (or async).** A best-effort step with unbounded cost placed
-   before mandatory fast steps will starve the pipeline under real-world data.
-   Use `/proc` inspection to verify workers are doing the right work, not just
-   any work.
-
-10. **`os.replace()` is `rename(2)` — use `shutil.move()` whenever source and
-    destination may be on different mount points.** Docker volume mounts are
-    always separate filesystems. Also include `OSError` in `autoretry_for` for
-    any task that performs I/O between mounts.
-
-11. **`os.getenv('VAR', 'default')` returns `''` when the variable is set but
-    empty — use `os.getenv('VAR') or 'default'` for any cast to `int`/`float`.**
-    An empty-string env var causes `int('')` → `ValueError`, which with
-    `autoretry_for=(Exception,)` results in infinite retries with no progress.
-
-12. **`NEXT_PUBLIC_*` in a Next.js production Docker image is baked at `next build`
-    time — `docker-compose` `environment:` vars arrive too late.**
-    Pass values as `ARG`/`ENV` before the `RUN npm run build` step and supply
-    them under `build.args:` in compose, not `environment:`. When multiple stacks
-    share the same image with different ports/endpoints, each compose file needs
-    its own `build.args` block to produce a distinct image.
-
-13. **A Docker bind-mount whose host path doesn't exist will silently fall back
-    to mounting the parent — with whatever permissions the parent carries.**
-    Always pre-create bind-mount targets, or use Docker named volumes for
-    anything that only needs to be local to one container.
-
-14. **Per-worker caches (frame cache, model cache) belong in Docker named
-    volumes, not shared network mounts.** A cache that doesn't need cross-
-    worker sharing shouldn't carry a network I/O dependency.
-
-15. **An SMB share mounted read-only on the remote client cannot be made
-    writable by `mkdir` — permission is controlled by the share's ACL on the
-    server.** Create missing directories from the machine that *hosts* the
-    share, or use a local volume instead of fighting the ACL.
-
-16. **When changing a vector store's collection dimension, update all producer
-    `.env` files atomically and add a startup assertion comparing
-    `embedder.embedding_dim` to `collection.vector_size`.** A mismatch fails
-    silently per-task (INVALID_ARGUMENT retried 5×) rather than loudly at
-    startup, accumulating hundreds of wasted errors before detection.
-
-17. **Third-party SDK attributes renamed across minor versions should be
-    accessed with `getattr(obj, 'new_name', None) or getattr(obj, 'old_name', None)`.**
-    Qdrant renamed `CollectionInfo.vectors_count` → `points_count` without a
-    deprecation warning, breaking the stats endpoint silently.
-
-18. **Infrastructure setup (collection creation, schema validation) belongs in
-    the worker startup hook, not inside a task.** Tasks run thousands of times;
-    startup hooks run once. A lazy-init race inside a task that retries on all
-    exceptions will spin forever rather than fail fast.
-
-19. **Every `ALTER TABLE` must also update `init-db.sql`.** Fresh deploys only
-    run the init script — migration scripts are never applied automatically.
-    Before merging any schema PR, verify: 'does `docker compose up` from a clean
-    state produce the same schema as a fully-migrated dev database?'
-
-20. **`STORAGE_BACKEND=s3` must be handled in every layer that reads or serves
-    files.** Adding S3 support to the worker doesn't update the API. Audit all
-    code paths that call `os.path.isfile()`, `open()`, or filesystem stat for
-    S3 keys. For read-serving, issue presigned-URL redirects; for tools like
-    ffmpeg, pass the presigned URL as the input argument.
-
-22. **GitHub Actions environment secrets require `environment: <name>` on the job — without it they are silently empty.**
-    Repository secrets (`Settings → Secrets → Actions`) are available to all jobs. Environment secrets
-    (`Settings → Environments → production`) are only injected when the job declares `environment: production`.
-    Missing this key produces no error — the secret value is just an empty string, causing downstream
-    failures like "missing server host" that look like a secrets configuration problem.
-
-23. **SSH private key secrets must include both the header and footer PEM lines.**
-    `appleboy/ssh-action` produces `ssh: no key found` when the secret is missing
-    `-----END OPENSSH PRIVATE KEY-----`. This commonly happens when copying from a terminal
-    that truncates output. Always verify by checking `tail -1` of the pasted value.
-
-24. **Adding a public key to GitHub secrets only configures the client. The server must also have
-    the corresponding public key in `~/.ssh/authorized_keys`.**
-    The error changes from `no key found` (bad key format) to `attempted methods [none publickey]`
-    (key rejected by server). These are two distinct failures with different fixes.
-
-25. **`docker compose up -d` restarts containers but does not resume in-flight work.**
-    Pending tasks remain safely in PostgreSQL but the worker will idle until the task queue
-    is re-triggered. After any deploy that restarts the worker, explicitly re-trigger via
-    `POST /api/ingest` (or equivalent) if jobs were in progress.
-
-26. **Running a linter on CI will surface real bugs that local development didn't catch.**
-    `ruff` found duplicate WebSocket handler definitions (F811) in `updates.py` — the second
-    definitions shadowed the first, meaning the Redis pub/sub path was never reached. Status
-    updates still worked via the DB-polling fallback, so there was no visible symptom.
-    The practical cost was unnecessary DB polling on every connected client instead of
-    event-driven Redis fanout. No runtime error, no test failure — only the linter flagged it.
-    Linting is not style enforcement; it is bug detection.
-
-
-
-# 1. Are all containers actually running?
-docker ps
-
-# 2. See recent logs for every container (last 50 lines each)
-docker compose logs --tail=50
-
-# 3. Zoom into a specific container
-docker compose logs --tail=100 lumen-worker
-
-# 4. Follow logs live
-docker compose logs -f lumen-worker
-
-# 5. Is the container restarting / crashing?
-docker ps -a  # look at STATUS and RESTARTS column
-
-# 6. What's the exit code / last event?
-docker inspect lumen-worker --format '{{.State.ExitCode}} {{.State.Error}}'
-
-# 7. Get a shell inside the container
-docker exec -it lumen-worker bash
-
-# 8. Is the process actually running inside?
-docker exec lumen-worker ps aux
-
-# 9. Check environment variables are set correctly
-docker exec lumen-worker env | sort
-
-# 10. Is the network reachable between containers?
-docker exec lumen-worker curl -s http://lumen-postgres:5432 || echo "unreachable"
-docker exec lumen-worker curl -s http://lumen-redis:6379 || echo "unreachable"
-docker exec lumen-worker curl -s http://lumen-qdrant:6333/healthz
-
-# 11. Disk / memory pressure?
-docker stats --no-stream
-
-# 12. Any OOM kills or resource events?
-docker inspect lumen-worker --format '{{.State.OOMKilled}}'
-
-# 13. Celery specifically — are workers alive and what are they doing?
-docker exec lumen-worker celery -A celery_app inspect ping
-docker exec lumen-worker celery -A celery_app inspect active
-docker exec lumen-worker celery -A celery_app inspect reserved
-
-# 14. Postgres reachable and correct db exists?
-docker exec lumen-postgres psql -U lumen_user -d lumen -c "\l"
-
-# 15. Nuclear — full event log for a container
-docker events --filter container=lumen-worker --since 1h

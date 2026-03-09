@@ -72,6 +72,12 @@ app.include_router(updates.router,  prefix="/api", tags=["realtime"])       # WS
 app.include_router(stats.router,    prefix="/api", tags=["observability"], dependencies=[Depends(require_api_key)])
 
 
+@app.get("/api/ping", tags=["health"], include_in_schema=False)
+async def ping() -> dict:
+    """Unauthenticated liveness probe — used by deploy health check and uptime monitors."""
+    return {"status": "ok"}
+
+
 # ============================================================================
 # Global initialization
 # ============================================================================
