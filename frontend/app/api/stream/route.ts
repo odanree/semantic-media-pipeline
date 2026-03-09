@@ -3,19 +3,28 @@ import { NextRequest, NextResponse } from 'next/server'
 const API_URL = process.env.API_URL || 'http://api:8000'
 
 export async function GET(request: NextRequest) {
+  const BACKEND_API_KEY = process.env.BACKEND_API_KEY || ''
+
   try {
-    const filePath = request.nextUrl.searchParams.get('path')
+    const { searchParams } = request.nextUrl
+    const filePath = searchParams.get('path')
     if (!filePath) {
       return new NextResponse('Missing path parameter', { status: 400 })
     }
 
+    // Forward optional quality param
+    const quality = searchParams.get('quality')
+    const qs = new URLSearchParams({ path: filePath })
+    if (quality) qs.set('quality', quality)
+
     // Proxy to FastAPI which handles security, Range requests, and async I/O
     const upstream = await fetch(
-      `${API_URL}/api/stream?path=${encodeURIComponent(filePath)}`,
+      `${API_URL}/api/stream?${qs.toString()}`,
       {
         headers: {
           // Forward Range header for video seeking
           ...(request.headers.get('range') ? { range: request.headers.get('range')! } : {}),
+          ...(BACKEND_API_KEY && { 'X-API-Key': BACKEND_API_KEY }),
         },
       }
     )
