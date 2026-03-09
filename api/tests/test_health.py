@@ -92,3 +92,17 @@ def test_root_status_running(client):
 def test_root_has_timestamp(client):
     data = client.get("/").json()
     assert "timestamp" in data
+
+
+# ---------------------------------------------------------------------------
+# /api/ping — unauthenticated liveness probe
+# ---------------------------------------------------------------------------
+
+def test_ping_returns_200(client):
+    resp = client.get("/api/ping")
+    assert resp.status_code == 200
+
+
+def test_ping_returns_ok_status(client):
+    resp = client.get("/api/ping")
+    assert resp.json() == {"status": "ok"}
