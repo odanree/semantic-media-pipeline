@@ -8,8 +8,8 @@ export async function POST(request: NextRequest) {
     const body = await request.json()
     const { query, limit = 20, threshold, min_similarity } = body
     // page.tsx sends min_similarity; some callers send threshold — accept both.
-    // Default to 0.3 to match the UI slider default.
-    const effectiveThreshold: number = min_similarity ?? threshold ?? 0.3
+    // Default to 0.2 to match the API default.
+    const effectiveThreshold: number = min_similarity ?? threshold ?? 0.2
 
     // Call backend API
     const response = await fetch(`${API_URL}/api/search`, {
