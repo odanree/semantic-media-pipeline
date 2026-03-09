@@ -102,8 +102,17 @@ jobs:
             docker compose up -d
 
             echo "=== Health check ==="
-            sleep 8
-            curl -sf http://localhost:8000/api/stats/summary > /dev/null
+            for i in $(seq 1 18); do
+              if curl -sf http://localhost:8000/api/stats/summary > /dev/null 2>&1; then
+                echo "API healthy ✓"
+                break
+              fi
+              if [ "$i" -eq 18 ]; then
+                echo "Health check failed after 90s" && exit 1
+              fi
+              echo "Waiting for API... ($i/18)"
+              sleep 5
+            done
 
             echo "=== Resume ingest ==="
             curl -sf -X POST http://localhost:8000/api/ingest \
