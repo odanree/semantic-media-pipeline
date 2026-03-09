@@ -6,8 +6,7 @@ services:
   redis:
     image: redis:7.4.8-alpine
     container_name: lumen-redis
-    ports:
-      - "6379:6379"
+    # No host port — internal Docker network only
     volumes:
       - redis_data:/data
     healthcheck:
@@ -26,8 +25,7 @@ services:
       POSTGRES_USER: ${DATABASE_USER:-lumen_user}
       POSTGRES_PASSWORD: ${DATABASE_PASSWORD:-secure_password_here}
       POSTGRES_DB: ${DATABASE_NAME:-lumen}
-    ports:
-      - "5432:5432"
+    # No host port — internal Docker network only
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./scripts/init-db.sql:/docker-entrypoint-initdb.d/init.sql
@@ -48,8 +46,8 @@ services:
     container_name: lumen-minio
     command: server /data --console-address ":9001"
     ports:
-      - "9000:9000"   # S3 API (workers + mc CLI)
-      - "9001:9001"   # Web console
+      - "127.0.0.1:9000:9000"   # S3 API (mc CLI admin — localhost only)
+      - "127.0.0.1:9001:9001"  # Web console — localhost only
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD must be set}
@@ -74,9 +72,7 @@ services:
   qdrant:
     image: qdrant/qdrant:v1.17.0
     container_name: lumen-qdrant
-    ports:
-      - "6333:6333"
-      - "6334:6334"
+    # No host port — internal Docker network only
     volumes:
       - qdrant_data:/qdrant/storage
     environment:
@@ -181,7 +177,7 @@ services:
       dockerfile: Dockerfile
     container_name: lumen-api
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"  # Caddy reverse proxy only
     env_file:
       - .env
     environment:
@@ -224,7 +220,7 @@ services:
         NEXT_PUBLIC_STREAM_URL: ${NEXT_PUBLIC_STREAM_URL:-http://localhost:8000}
     container_name: lumen-frontend
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"  # Caddy reverse proxy only
     env_file:
       - .env
     environment:
@@ -258,7 +254,7 @@ services:
       --broker=${CELERY_BROKER_URL:-redis://lumen-redis:6379/0}
       --purge_offline_workers=30
     ports:
-      - "5555:5555"
+      - "127.0.0.1:5555:5555"  # SSH tunnel for admin access
     environment:
       - CELERY_BROKER_URL=${CELERY_BROKER_URL:-redis://redis:6379/0}
       - CELERY_RESULT_BACKEND=${CELERY_RESULT_BACKEND:-redis://redis:6379/0}
@@ -276,7 +272,7 @@ services:
     image: prom/prometheus:latest
     container_name: lumen-prometheus
     ports:
-      - "9090:9090"
+      - "127.0.0.1:9090:9090"  # SSH tunnel for admin access
     volumes:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml
       - prometheus_data:/prometheus
@@ -295,7 +291,7 @@ services:
     image: grafana/grafana:latest
     container_name: lumen-grafana
     ports:
-      - "3001:3000"
+      - "127.0.0.1:3001:3000"  # SSH tunnel for admin access
     environment:
       - GF_SECURITY_ADMIN_PASSWORD=${GF_SECURITY_ADMIN_PASSWORD:?GF_SECURITY_ADMIN_PASSWORD must be set}
     volumes:
