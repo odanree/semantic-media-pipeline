@@ -68,6 +68,7 @@ app.add_middleware(
 app.include_router(health.router,   prefix="/api", tags=["health"],        dependencies=[Depends(require_api_key)])
 app.include_router(ingest.router,   prefix="/api", tags=["ingest"],        dependencies=[Depends(require_api_key)])
 app.include_router(search.router,   prefix="/api", tags=["search"],        dependencies=[Depends(require_api_key)])
+app.include_router(ask.router,      prefix="/api", tags=["rag"],           dependencies=[Depends(require_api_key)])
 app.include_router(updates.router,  prefix="/api", tags=["realtime"])       # WS — no HTTP auth
 app.include_router(stats.router,    prefix="/api", tags=["observability"], dependencies=[Depends(require_api_key)])
 app.include_router(ask.router,      prefix="/api", tags=["rag"],           dependencies=[Depends(require_api_key)])
