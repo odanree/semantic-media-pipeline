@@ -299,3 +299,17 @@ CELERY_CONCURRENCY=4
 
 ### GitHub Actions auto-deploy
 Pushing to `main` automatically SSH-deploys to the server, rebuilding only the services whose source directories changed (`api/`, `worker/`, `frontend/`).
+
+## ⚡ Real-World Performance
+
+Measured on a **Hetzner CAX21** (4 vCPU ARM64, 8 GB RAM, CPU-only — no GPU), `CELERY_CONCURRENCY=4`.
+
+| Metric | Value |
+|---|---|
+| Files processed | 446 |
+| Total vectors in Qdrant | 942 |
+| Wall-clock time | 2 h 24 min (2:24:24) |
+| Throughput | ~3.1 files / min · ~185 files / hr |
+| Monthly server cost | ~€5.39 / mo |
+
+The bottleneck is CLIP inference (`clip-ViT-L-14`) running on CPU with 4 concurrent Celery workers. Each worker independently encodes a file's frames/thumbnail → 768-dim vector → upserts to Qdrant. No batching across workers; throughput scales roughly linearly with `CELERY_CONCURRENCY` up to ~8 on this instance class.
