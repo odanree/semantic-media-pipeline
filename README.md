@@ -1,7 +1,7 @@
 # Semantic-Media-Pipeline 📂🤖
 **Internal Codename: Lumen**
 
-![CI](https://github.com/odanree/semantic-media-pipeline/actions/workflows/ci.yml/badge.svg?branch=feat/pytest-setup)
+![CI](https://github.com/odanree/semantic-media-pipeline/actions/workflows/ci.yml/badge.svg?branch=main)
 ![Version](https://img.shields.io/badge/version-v1.5.0-blue)
 ![Tests](https://img.shields.io/badge/tests-135%20passing-brightgreen)
 ![Coverage](https://img.shields.io/badge/coverage-78%25-green)
