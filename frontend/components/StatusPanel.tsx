@@ -25,6 +25,14 @@ export default function StatusPanel() {
   const [filesPerMin, setFilesPerMin] = useState<number | null>(null)
   const ingestStartRef = useRef<{ count: number; time: number } | null>(null)
 
+  // Restore anchor from localStorage so throughput survives a page refresh
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem('ingestStartAnchor')
+      if (saved) ingestStartRef.current = JSON.parse(saved)
+    } catch { /* ignore */ }
+  }, [])
+
   const { status: wsStatus, isConnected, error: wsError } = useStatusUpdates({
     onUpdate: (newStatus) => {
       setStatus(prev => {
@@ -34,6 +42,11 @@ export default function StatusPanel() {
         if (!ingestStartRef.current && done > 0) {
           // Anchor the start when we first see completed files
           ingestStartRef.current = { count: done, time: now }
+          try { localStorage.setItem('ingestStartAnchor', JSON.stringify(ingestStartRef.current)) } catch { /* ignore */ }
+        } else if (ingestStartRef.current && done < ingestStartRef.current.count) {
+          // done count went backwards — new ingest run started, clear old anchor
+          ingestStartRef.current = null
+          try { localStorage.removeItem('ingestStartAnchor') } catch { /* ignore */ }
         }
         if (ingestStartRef.current && done > ingestStartRef.current.count) {
           const elapsedMinutes = (now - ingestStartRef.current.time) / 60000
