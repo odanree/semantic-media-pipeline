@@ -91,3 +91,26 @@ def test_auth_key_required_but_not_configured_returns_503(client):
     with _auth_on_no_key():
         resp = client.get("/api/health", headers={"X-API-Key": "anything"})
     assert resp.status_code == 503
+
+
+# ---------------------------------------------------------------------------
+# /api/ping — must be accessible even when auth is enabled
+# ---------------------------------------------------------------------------
+
+def test_ping_accessible_when_auth_disabled(client):
+    resp = client.get("/api/ping")
+    assert resp.status_code == 200
+
+
+def test_ping_accessible_when_auth_enabled_no_key(client):
+    """Health check probe must succeed even with auth on and no X-API-Key header."""
+    with _auth_on("my-secret"):
+        resp = client.get("/api/ping")
+    assert resp.status_code == 200
+
+
+def test_ping_accessible_when_api_key_not_configured(client):
+    """Even the 503 edge case should not apply to /api/ping."""
+    with _auth_on_no_key():
+        resp = client.get("/api/ping")
+    assert resp.status_code == 200
