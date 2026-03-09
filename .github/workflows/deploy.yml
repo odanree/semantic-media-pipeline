@@ -115,7 +115,9 @@ jobs:
             done
 
             echo "=== Resume ingest ==="
+            API_KEY=$(grep -E '^API_KEY=' /opt/lumen/.env | cut -d= -f2-)
             curl -sf -X POST http://localhost:8000/api/ingest \
               -H "Content-Type: application/json" \
+              -H "X-API-Key: $API_KEY" \
               -d '{"media_root": ""}' || echo "Ingest trigger skipped (no pending files or API unavailable)"
             echo "Deploy complete ✓"
