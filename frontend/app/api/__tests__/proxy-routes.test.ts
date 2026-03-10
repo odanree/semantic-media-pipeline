@@ -346,6 +346,30 @@ describe('POST /api/ask', () => {
     expect(sent.dedup).toBe(false)
   })
 
+  it('does not send X-API-Key when BACKEND_API_KEY is unset', async () => {
+    delete process.env.BACKEND_API_KEY
+    vi.mocked(fetch).mockResolvedValue(mockResponse({ answer: 'test', sources: [] }))
+    await handler({ question: 'test' })
+    expect(capturedApiKey()).toBeUndefined()
+  })
+
+  it('uses default API_URL when env var is absent', async () => {
+    const saved = process.env.API_URL
+    delete process.env.API_URL
+    // route module is cached — reimport a fresh instance
+    vi.resetModules()
+    const { POST } = await import('../ask/route')
+    vi.mocked(fetch).mockResolvedValue(mockResponse({ answer: 'ok', sources: [] }))
+    await POST(new NextRequest('http://localhost/api/ask', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ question: 'test' }),
+    }))
+    const [url] = (fetch as ReturnType<typeof vi.fn>).mock.calls[0] as [string]
+    expect(url).toContain('http://api:8000')
+    process.env.API_URL = saved
+  })
+
   it('forwards upstream error status', async () => {
     vi.mocked(fetch).mockResolvedValue(mockResponse('error', 503))
     const res = await handler({ question: 'dogs' })

@@ -53,6 +53,7 @@ import SearchPage from '@/app/page'
 import ResultGrid from '@/components/ResultGrid'
 import VideoPlayer from '@/components/VideoPlayer'
 import SearchBar from '@/components/SearchBar'
+import AskPanel from '@/components/AskPanel'
 import StatusPanel from '@/components/StatusPanel'
 import * as statusHookModule from '@/hooks/useStatusUpdates'
 
@@ -350,5 +351,171 @@ describe('SearchPage', () => {
       fireEvent.submit(input.closest('form')!)
     }
     await act(async () => { await Promise.resolve() })
+  })
+
+  it('shows Search tab by default and hides Ask panel', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve(collectionResponse),
+    }))
+    await act(async () => {
+      render(<SearchPage />)
+      await Promise.resolve()
+    })
+    // Search tab should be active; Ask panel placeholder text should not exist
+    expect(screen.getAllByRole('button', { name: /Search/i }).length).toBeGreaterThan(0)
+    expect(screen.getByRole('button', { name: /Ask/i })).toBeTruthy()
+    expect(screen.queryByPlaceholderText(/Ask anything/i)).toBeNull()
+  })
+
+  it('switches to Ask mode and renders AskPanel input', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve(collectionResponse),
+    }))
+    await act(async () => {
+      render(<SearchPage />)
+      await Promise.resolve()
+    })
+    fireEvent.click(screen.getByRole('button', { name: /Ask/i }))
+    expect(screen.getByPlaceholderText(/Ask anything/i)).toBeTruthy()
+  })
+
+  it('switches back to Search mode from Ask mode', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve(collectionResponse),
+    }))
+    await act(async () => {
+      render(<SearchPage />)
+      await Promise.resolve()
+    })
+    fireEvent.click(screen.getByRole('button', { name: /Ask/i }))
+    fireEvent.click(screen.getByRole('button', { name: /Search/i }))
+    expect(screen.queryByPlaceholderText(/Ask anything/i)).toBeNull()
+  })
+})
+
+// ── AskPanel ──────────────────────────────────────────────────────────────────
+
+describe('AskPanel', () => {
+  it('renders the question input and Ask button', () => {
+    render(<AskPanel />)
+    expect(screen.getByRole('textbox', { name: /question/i })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /Ask/i })).toBeTruthy()
+  })
+
+  it('Ask button is disabled when input is empty', () => {
+    render(<AskPanel />)
+    expect((screen.getByRole('button', { name: /Ask/i }) as HTMLButtonElement).disabled).toBe(true)
+  })
+
+  it('enables Ask button when question is filled', () => {
+    render(<AskPanel />)
+    fireEvent.change(screen.getByRole('textbox', { name: /question/i }), {
+      target: { value: 'What videos do I have from Vietnam?' },
+    })
+    expect((screen.getByRole('button', { name: /Ask/i }) as HTMLButtonElement).disabled).toBe(false)
+  })
+
+  it('shows loading spinner while waiting for response', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockReturnValue(new Promise(() => {}))) // never resolves
+    render(<AskPanel />)
+    fireEvent.change(screen.getByRole('textbox', { name: /question/i }), {
+      target: { value: 'What do I have?' },
+    })
+    await act(async () => {
+      fireEvent.submit(screen.getByRole('textbox', { name: /question/i }).closest('form')!)
+      await Promise.resolve()
+    })
+    expect(document.querySelector('.animate-spin')).toBeTruthy()
+  })
+
+  it('renders answer and sources on successful response', async () => {
+    const mockResult = {
+      question: 'What do I have?',
+      answer: 'You have footage from Vietnam.',
+      sources: [
+        { file_path: '/media/vietnam/clip.mp4', file_type: 'video', similarity: 0.91, timestamp: 12.5 },
+      ],
+      model_used: 'gpt-4o-mini',
+      retrieval_count: 1,
+      execution_time_ms: 450,
+      scenes_collapsed: 0,
+    }
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve(mockResult),
+    }))
+    render(<AskPanel />)
+    fireEvent.change(screen.getByRole('textbox', { name: /question/i }), {
+      target: { value: 'What do I have?' },
+    })
+    await act(async () => {
+      fireEvent.submit(screen.getByRole('textbox', { name: /question/i }).closest('form')!)
+      await new Promise(r => setTimeout(r, 10))
+    })
+    expect(screen.getByText(/footage from Vietnam/i)).toBeTruthy()
+    expect(screen.getByText(/vietnam\/clip\.mp4/i)).toBeTruthy()
+    expect(screen.getByText(/gpt-4o-mini/i)).toBeTruthy()
+  })
+
+  it('shows error message when fetch fails', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: false,
+      json: () => Promise.resolve({ error: 'LLM unavailable' }),
+    }))
+    render(<AskPanel />)
+    fireEvent.change(screen.getByRole('textbox', { name: /question/i }), {
+      target: { value: 'test' },
+    })
+    await act(async () => {
+      fireEvent.submit(screen.getByRole('textbox', { name: /question/i }).closest('form')!)
+      await new Promise(r => setTimeout(r, 10))
+    })
+    expect(screen.getByRole('alert')).toBeTruthy()
+    expect(screen.getByText(/LLM unavailable/i)).toBeTruthy()
+  })
+
+  it('shows scenes_collapsed count when dedup collapsed frames', async () => {
+    const mockResult = {
+      question: 'test',
+      answer: 'Some answer.',
+      sources: [],
+      model_used: 'gpt-4o-mini',
+      retrieval_count: 5,
+      execution_time_ms: 300,
+      scenes_collapsed: 3,
+    }
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve(mockResult),
+    }))
+    render(<AskPanel />)
+    fireEvent.change(screen.getByRole('textbox', { name: /question/i }), {
+      target: { value: 'test' },
+    })
+    await act(async () => {
+      fireEvent.submit(screen.getByRole('textbox', { name: /question/i }).closest('form')!)
+      await new Promise(r => setTimeout(r, 10))
+    })
+    expect(screen.getByText(/3 duplicate frames collapsed/i)).toBeTruthy()
+  })
+
+  it('dismisses error when Dismiss is clicked', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: false,
+      json: () => Promise.resolve({ error: 'LLM unavailable' }),
+    }))
+    render(<AskPanel />)
+    fireEvent.change(screen.getByRole('textbox', { name: /question/i }), {
+      target: { value: 'test' },
+    })
+    await act(async () => {
+      fireEvent.submit(screen.getByRole('textbox', { name: /question/i }).closest('form')!)
+      await new Promise(r => setTimeout(r, 10))
+    })
+    fireEvent.click(screen.getByText(/Dismiss/i))
+    expect(screen.queryByRole('alert')).toBeNull()
   })
 })
