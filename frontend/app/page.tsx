@@ -67,6 +67,10 @@ export default function SearchPage() {
       if (filters.minSimilarity !== undefined && filters.minSimilarity !== 0.3) {
         payload.min_similarity = filters.minSimilarity
       }
+      // Only send dedup when explicitly set to false (true is server default)
+      if (filters.dedup === false) {
+        payload.dedup = false
+      }
 
       const response = await fetch('/api/search', {
         method: 'POST',

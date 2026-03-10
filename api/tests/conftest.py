@@ -73,7 +73,8 @@ os.environ.setdefault("REDIS_URL",        "memory://")
 os.environ.setdefault("CLIP_MODEL_NAME",  "clip-ViT-L-14")
 os.environ.setdefault("QDRANT_COLLECTION_NAME", "media_vectors")
 # Raise ask rate-limit ceiling so the full test suite never hits 429.
-os.environ.setdefault("RATE_LIMIT_ASK",   "1000/minute")
+os.environ.setdefault("RATE_LIMIT_ASK",    "1000/minute")
+os.environ.setdefault("RATE_LIMIT_SEARCH", "1000/minute")
 # Provide a dummy key so ask.py's OpenAI client init doesn't raise RuntimeError.
 os.environ.setdefault("OPENAI_API_KEY",   "test-key")
 

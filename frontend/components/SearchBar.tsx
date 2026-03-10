@@ -9,6 +9,7 @@ export interface SearchFilters {
   toDate?: string
   minSimilarity?: number
   maxResults?: number
+  dedup?: boolean
 }
 
 interface SearchBarProps {
@@ -26,6 +27,7 @@ export default function SearchBar({ onSearch, isLoading = false, suggestions, ex
     fileType: 'all',
     minSimilarity: 0.3,
     maxResults: 20,
+    dedup: true,
   })
   const { history, addToHistory } = useSearchHistory()
   const historyRef = useRef<HTMLDivElement>(null)
@@ -315,6 +317,31 @@ export default function SearchBar({ onSearch, isLoading = false, suggestions, ex
             </p>
           </div>
 
+          {/* Scene Dedup Toggle */}
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm font-semibold text-gray-300">Scene Deduplication</p>
+              <p className="text-xs text-gray-500 mt-0.5">
+                Collapse near-identical frames from the same scene into one result
+              </p>
+            </div>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={filters.dedup ?? true}
+              onClick={() => setFilters({ ...filters, dedup: !(filters.dedup ?? true) })}
+              className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
+                (filters.dedup ?? true) ? 'bg-blue-600' : 'bg-gray-600'
+              }`}
+            >
+              <span
+                className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                  (filters.dedup ?? true) ? 'translate-x-6' : 'translate-x-1'
+                }`}
+              />
+            </button>
+          </div>
+
           {/* Reset Filters */}
           <button
             type="button"
@@ -323,6 +350,7 @@ export default function SearchBar({ onSearch, isLoading = false, suggestions, ex
                 fileType: 'all',
                 minSimilarity: 0.3,
                 maxResults: 20,
+                dedup: true,
               })
             }
             className="w-full px-4 py-2 bg-gray-700 hover:bg-gray-600 text-gray-300 hover:text-white rounded transition text-sm font-semibold"
