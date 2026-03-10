@@ -6,6 +6,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/). Version
 
 ---
 
+## [v1.7.0] — 2026-03-10
+
+### Added
+- **Caption backfill task** — `backfill_captions` Celery task iterates all existing Qdrant video-frame points and writes a `caption` field via moondream VLM; idempotent, restartable, dry-run supported
+- **Admin trigger endpoint** — `POST /api/admin/backfill-captions` dispatches the backfill and returns a Celery task ID; `GET /api/admin/task/{task_id}` polls progress
+
+### Fixed
+- Duplicate `ask.router` include in `api/main.py` removed
+
+---
+
 ## [v1.6.0] — 2026-03-10
 
 ### Added
