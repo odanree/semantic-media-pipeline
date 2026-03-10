@@ -1,0 +1,79 @@
+# Changelog
+
+All notable changes to Semantic-Media-Pipeline (Lumen) are documented here.
+
+Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/). Versions follow [Semantic Versioning](https://semver.org/).
+
+---
+
+## [v1.6.0] — 2026-03-10
+
+### Added
+- **RAG `/api/ask` endpoint** — natural language Q&A over indexed media; retrieves relevant frames via CLIP then summarises with an LLM (PR #47)
+- **Greedy NMS temporal dedup** — Non-Maximum Suppression over 5-second scene windows eliminates near-duplicate video frames from search results (PR #48)
+- **Timelapse flood cap** — hard limit on frames returned from a single media file prevents time-lapses from dominating result sets (PR #48)
+- **Dedup A/B toggle** — `dedup=false` query param returns raw pre-dedup frames for debugging and comparison (PR #47, #48)
+- **Comprehensive frontend test suite** — vitest coverage for all Next.js proxy routes, search logic, and pipeline analysis notebook (PR #44, #45)
+
+### Fixed
+- Proxy route `frontend/app/api/search/route.ts` was silently dropping the `dedup` field before forwarding to FastAPI
+- API key (`X-API-Key`) missing from several server-side Next.js proxy calls (PR #38, #39, #43)
+- Missing `/api/thumbnail` Next.js proxy route (PR #42)
+- Default similarity threshold lowered from 0.3 → 0.2 for better recall (PR #41)
+- Internal services bound to `127.0.0.1` — removed unintentional public port exposure (PR #40)
+
+---
+
+## [v1.5.0] — 2025-12-01
+
+### Added
+- **Semantic topic tag extraction** — CLIP-based tag suggestions surfaced in search UI (PR #27)
+- **Tag pill search injection** — click a tag to inject it as a search query; filter state persisted in `localStorage` (PR #26)
+- **Cloud deploy (CI/CD)** — GitHub Actions SSH deploy to Hetzner CAX21; rebuilds only changed service directories (`api/`, `worker/`, `frontend/`) (PR #19)
+- **Cloudflare R2 / S3 object storage** — dual backend: `local` volume for dev, S3-compatible presigned-URL redirect for cloud; zero proxying cost (PR #19)
+- **Dual-worker support** — simultaneous Mac + Windows workers over SMB; fast-skip for already-indexed files (PR #18)
+- **Proxy sidecar generation decoupled** — 720p H.264/AAC faststart proxy files generated asynchronously, not blocking ingest (PR #12)
+- **ViT-L-14 upgrade** — switched from ViT-B-32 (512-dim) to ViT-L-14 (768-dim) on lumen1 stack for higher-quality embeddings (PR #16)
+- **Observability columns** — `embedding_started_at`, `worker_id`, `frame_cache_hit`, `embedding_ms`, `model_version` on `media_files` table
+
+### Fixed
+- Deploy health check used wrong endpoint; replaced `sleep 8` with 90-second retry loop (PR #25, #30)
+- Deploy used `git pull` (fails on dirty worktree); switched to `git reset --hard` (PR #29)
+- Thumbnail ORB algorithm fix + worker concurrency tuning (PR #10)
+- Container path regression for frame cache (PR #17)
+- `shutil.move` for cross-device temp → proxies writes (PR #13)
+
+### Performance
+- Validated 944 files indexed across two production runs on Hetzner CAX21 (ARM64, CPU-only): ~2.7 files/min average
+- Worker pool optimisations (PR #2)
+
+---
+
+## [v1.1.0] — 2025-08-15
+
+### Added
+- **Real-time WebSocket dashboard** — PostgreSQL `LISTEN/NOTIFY` trigger system with two broadcast channels:
+  - `media_processing` — status transitions (pending → completed/failed)
+  - `vector_indexed` — vector embedding completions
+- FastAPI WebSocket endpoints for live streaming to frontend
+- React hooks for live dashboard updates with automatic reconnection
+- Zero-polling architecture replacing previous polling approach
+
+---
+
+## [v1.0.0] — 2025-07-01
+
+### Added
+- **Media ingestion pipeline** — discovers and indexes photos (JPEG/PNG) and videos (MP4/MOV) across nested directories
+- **CLIP ViT-B-32 embeddings** — 512-dim vectors stored in Qdrant HNSW index; CPU + DirectML fallback
+- **Distributed processing** — Celery + Redis task queue, `concurrency=4`, `max_tasks_per_child=50`
+- **Dual storage** — PostgreSQL for metadata/tracking, Qdrant for vector search
+- **Video frame extraction** — FFmpeg temporal sampling with adaptive timeout
+- **Semantic search API** — FastAPI backend with natural language query support
+- **Docker Compose orchestration** — `api`, `worker`, `frontend` containers with shared Redis/PostgreSQL/Qdrant
+- Validated against 2,271+ media items
+
+[v1.6.0]: https://github.com/odanree/semantic-media-pipeline/releases/tag/v1.6.0
+[v1.5.0]: https://github.com/odanree/semantic-media-pipeline/releases/tag/v1.5.0
+[v1.1.0]: https://github.com/odanree/semantic-media-pipeline/releases/tag/v1.1.0
+[v1.0.0]: https://github.com/odanree/semantic-media-pipeline/releases/tag/v1.0.0
