@@ -22,6 +22,12 @@ QDRANT_GRPC_PORT = int(os.getenv("QDRANT_GRPC_PORT", "6334"))
 QDRANT_PREFER_GRPC = os.getenv("QDRANT_PREFER_GRPC", "true").lower() == "true"
 QDRANT_COLLECTION_NAME = os.getenv("QDRANT_COLLECTION_NAME", "media_vectors")
 
+# ---------------------------------------------------------------------------
+# Temporal deduplication config
+# ---------------------------------------------------------------------------
+SEARCH_GROUP_SIZE = int(os.getenv("SEARCH_GROUP_SIZE", "3"))
+EVENT_WINDOW_SECONDS = float(os.getenv("EVENT_WINDOW_SECONDS", "5"))
+
 qdrant_client = QdrantClient(
     host=QDRANT_HOST,
     port=QDRANT_PORT,
@@ -81,6 +87,7 @@ class SearchRequest(BaseModel):
     query: str
     limit: int = 20
     threshold: float = 0.2
+    dedup: bool = True  # False = raw frames (A/B comparison / debug mode)
 
 
 class SearchResult(BaseModel):
@@ -91,6 +98,8 @@ class SearchResult(BaseModel):
     similarity: float
     frame_index: int = None
     timestamp: float = None
+    scene_window_start: Optional[float] = None  # start of the 5s dedup bucket
+    scene_window_end: Optional[float] = None    # end of the 5s dedup bucket
 
 
 class SearchResponse(BaseModel):
@@ -100,6 +109,40 @@ class SearchResponse(BaseModel):
     results: list
     count: int
     execution_time_ms: float
+    scenes_collapsed: int = 0   # frames dropped by temporal windowing
+    raw_frame_count: int = 0    # total frames Qdrant returned before dedup
+
+
+# ---------------------------------------------------------------------------
+# Temporal deduplication helpers
+# ---------------------------------------------------------------------------
+
+def _event_deduplicate(hits: list, window_s: float = EVENT_WINDOW_SECONDS) -> list:
+    """
+    From a single file's candidate frames, keep only one frame per window_s bucket.
+    The representative for each bucket is the highest-scoring frame in that window.
+
+    Hits are explicitly sorted by score descending before the bucket walk so that
+    the first frame to claim a bucket is always the AI's most confident match —
+    regardless of whether Qdrant already sorted the group internally.
+    Images (timestamp=None) are always kept — they have no temporal axis.
+    """
+    # Explicit sort: highest-confidence frame wins each bucket.
+    hits = sorted(hits, key=lambda h: h.score, reverse=True)
+
+    seen_buckets: set[int] = set()
+    results = []
+    for hit in hits:
+        ts = hit.payload.get("timestamp")
+        if ts is None:              # image — no temporal axis, always keep
+            results.append(hit)
+            continue
+        bucket = int(ts // window_s)
+        if bucket in seen_buckets:
+            continue
+        seen_buckets.add(bucket)
+        results.append(hit)
+    return results
 
 
 @router.get("/search-status")
@@ -132,11 +175,14 @@ async def search_media(request: Request, body: SearchRequest):
     Search for media using text query.
 
     Embeds the text query using CLIP and searches Qdrant for similar embeddings.
+    By default (dedup=true) applies two-layer temporal deduplication so that
+    `limit` means distinct scenes, not individual frames.
 
     Args:
         query: Text search query
-        limit: Maximum number of results (default: 20)
-        threshold: Minimum similarity threshold 0-1 (default: 0.3)
+        limit: Maximum number of results / distinct scenes (default: 20)
+        threshold: Minimum similarity threshold 0-1 (default: 0.2)
+        dedup: Enable scene deduplication (default: true). Set false for raw frames.
 
     Returns:
         List of matching media with similarity scores
@@ -163,28 +209,70 @@ async def search_media(request: Request, body: SearchRequest):
         else:
             query_vector = query_embedding
 
-        # Search Qdrant using query_points (qdrant-client v1.7+ API)
-        search_result = qdrant_client.query_points(
-            collection_name=QDRANT_COLLECTION_NAME,
-            query=query_vector,
-            limit=body.limit,
-            with_payload=True,
-            score_threshold=body.threshold,
-        ).points
+        if body.dedup:
+            # ------------------------------------------------------------------
+            # Layer 1: Qdrant search_groups — one group per file, GROUP_SIZE
+            # candidate frames per group returned from the DB.
+            # ------------------------------------------------------------------
+            groups_result = qdrant_client.query_points_groups(
+                collection_name=QDRANT_COLLECTION_NAME,
+                query=query_vector,
+                group_by="file_path",
+                limit=body.limit,
+                group_size=SEARCH_GROUP_SIZE,
+                score_threshold=body.threshold,
+                with_payload=True,
+            )
 
-        # Process results
+            raw_frame_count = sum(len(g.hits) for g in groups_result.groups)
+
+            # ------------------------------------------------------------------
+            # Layer 2: Python 5s event windowing — collapse near-identical
+            # adjacent frames within each group down to one per bucket.
+            # ------------------------------------------------------------------
+            all_hits = []
+            for group in groups_result.groups:
+                best_frames = _event_deduplicate(group.hits, window_s=EVENT_WINDOW_SECONDS)
+                all_hits.extend(best_frames)
+
+            # Re-sort across files by score, honour limit
+            all_hits.sort(key=lambda p: p.score, reverse=True)
+            final_hits = all_hits[:body.limit]
+            scenes_collapsed = raw_frame_count - len(final_hits)
+
+        else:
+            # dedup=false — raw frame mode (A/B comparison)
+            raw_points = qdrant_client.query_points(
+                collection_name=QDRANT_COLLECTION_NAME,
+                query=query_vector,
+                limit=body.limit,
+                with_payload=True,
+                score_threshold=body.threshold,
+            ).points
+            final_hits = raw_points
+            raw_frame_count = len(final_hits)
+            scenes_collapsed = 0
+
+        # Build response dicts from whichever path was taken
         results = []
-        for point in search_result:
+        for point in final_hits:
             payload = point.payload
-            result = {
+            ts = payload.get("timestamp")
+            window_start = (
+                float(int(ts // EVENT_WINDOW_SECONDS) * EVENT_WINDOW_SECONDS)
+                if ts is not None and body.dedup else None
+            )
+            window_end = (window_start + EVENT_WINDOW_SECONDS) if window_start is not None else None
+            results.append({
                 "id": point.id,
                 "file_path": payload.get("file_path"),
                 "file_type": payload.get("file_type"),
                 "similarity": float(point.score),
                 "frame_index": payload.get("frame_index"),
-                "timestamp": payload.get("timestamp"),
-            }
-            results.append(result)
+                "timestamp": ts,
+                "scene_window_start": window_start,
+                "scene_window_end": window_end,
+            })
 
         execution_time_ms = (time.time() - start_time) * 1000
 
@@ -193,6 +281,8 @@ async def search_media(request: Request, body: SearchRequest):
             results=results,
             count=len(results),
             execution_time_ms=execution_time_ms,
+            scenes_collapsed=scenes_collapsed,
+            raw_frame_count=raw_frame_count,
         )
 
     except HTTPException:
