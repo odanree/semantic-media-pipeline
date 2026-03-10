@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server'
 
-const API_URL = process.env.API_URL || 'http://api:8000'
+const API_URL = process.env.API_URL || process.env.NEXT_PUBLIC_API_URL || 'http://api:8000'
 
 export async function GET() {
   const BACKEND_API_KEY = process.env.BACKEND_API_KEY || ''
