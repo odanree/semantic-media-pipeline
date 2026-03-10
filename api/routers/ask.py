@@ -108,7 +108,7 @@ def _get_llm_client() -> OpenAI:
 class AskRequest(BaseModel):
     question: str
     limit: int = 10        # how many media items to retrieve from Qdrant
-    threshold: float = 0.25  # minimum CLIP similarity to include in context
+    threshold: float = 0.2  # minimum CLIP similarity to include in context
     dedup: bool = True     # apply temporal scene dedup before building context
 
 
