@@ -6,6 +6,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/). Version
 
 ---
 
+## [v1.7.1] — 2026-03-10
+
+### Fixed
+- **Ask panel thumbnails missing in production** — Thumbnail proxy was using `NEXT_PUBLIC_STREAM_URL` (video streaming endpoint) instead of frontend's `/api/thumbnail` proxy, causing broken images in Ask results (PR #55)
+- **API route endpoint fallbacks** — Added fallback chain `API_URL || NEXT_PUBLIC_API_URL || 'http://api:8000'` to all 7 Next.js proxy routes for robustness in various deployment contexts (PR #55)
+
+### Changed
+- **Frontend test coverage threshold maintained** — Branch coverage increased from 72.97% → 73.24% via comprehensive thumbnail and caption rendering tests (PR #55)
+
+---
+
 ## [v1.7.0] — 2026-03-10
 
 ### Added
