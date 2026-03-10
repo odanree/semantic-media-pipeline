@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, FormEvent } from 'react'
+import VideoPlayer from './VideoPlayer'
 
 interface Source {
   file_path: string
@@ -21,12 +22,19 @@ interface AskResult {
   scenes_collapsed: number
 }
 
+/** Parse all [N] citation numbers from the LLM answer text. */
+function parseCitedIndices(answer: string): Set<number> {
+  const matches = answer.matchAll(/\[(\d+)\]/g)
+  return new Set([...matches].map(m => parseInt(m[1], 10)))
+}
+
 export default function AskPanel() {
   const [question, setQuestion] = useState('')
   const [dedup, setDedup] = useState(true)
   const [result, setResult] = useState<AskResult | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [selectedVideo, setSelectedVideo] = useState<Source | null>(null)
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault()
@@ -136,34 +144,70 @@ export default function AskPanel() {
           </div>
 
           {/* Sources */}
-          {result.sources.length > 0 && (
-            <div>
-              <h4 className="text-sm font-semibold text-gray-400 uppercase tracking-wide mb-3">
-                Retrieved Sources
-              </h4>
-              <div className="space-y-2">
-                {result.sources.map((src, i) => (
-                  <div
-                    key={i}
-                    className="bg-gray-800 border border-gray-700 rounded-lg px-4 py-3 flex items-center gap-4 text-sm"
-                  >
-                    <span className="text-gray-500 font-mono w-6 shrink-0">[{i + 1}]</span>
-                    <span className="text-blue-400 truncate flex-1 font-mono text-xs">
-                      {src.file_path}
-                    </span>
-                    <span className="text-gray-500 shrink-0 capitalize">{src.file_type}</span>
-                    {src.timestamp !== undefined && (
-                      <span className="text-gray-500 shrink-0">{src.timestamp.toFixed(1)}s</span>
-                    )}
-                    <span className="text-green-400 shrink-0 font-medium">
-                      {(src.similarity * 100).toFixed(0)}%
-                    </span>
-                  </div>
-                ))}
+          {result.sources.length > 0 && (() => {
+            const citedIndices = parseCitedIndices(result.answer)
+            return (
+              <div>
+                <h4 className="text-sm font-semibold text-gray-400 uppercase tracking-wide mb-3">
+                  Retrieved Sources
+                </h4>
+                <div className="space-y-2">
+                  {result.sources.map((src, i) => {
+                    const isCited = citedIndices.has(i + 1)
+                    const isVideo = src.file_type === 'video'
+                    const filename = src.file_path.split('/').pop() ?? src.file_path
+                    return (
+                      <div
+                        key={i}
+                        onClick={isVideo ? () => setSelectedVideo(src) : undefined}
+                        role={isVideo ? 'button' : undefined}
+                        tabIndex={isVideo ? 0 : undefined}
+                        onKeyDown={isVideo ? (e) => { if (e.key === 'Enter' || e.key === ' ') setSelectedVideo(src) } : undefined}
+                        aria-label={isVideo ? `Play ${filename}` : undefined}
+                        className={[
+                          'rounded-lg px-4 py-3 flex items-center gap-3 text-sm transition-colors',
+                          isCited
+                            ? 'bg-blue-900/30 border border-blue-500'
+                            : 'bg-gray-800 border border-gray-700',
+                          isVideo
+                            ? 'cursor-pointer hover:bg-gray-700'
+                            : '',
+                        ].join(' ')}
+                      >
+                        <span className={`font-mono w-6 shrink-0 ${isCited ? 'text-blue-400 font-bold' : 'text-gray-500'}`}>
+                          [{i + 1}]
+                        </span>
+                        {isVideo && (
+                          <span className="text-blue-400 shrink-0 text-base" aria-hidden>▶</span>
+                        )}
+                        <span className="text-blue-400 truncate flex-1 font-mono text-xs">
+                          {filename}
+                        </span>
+                        <span className="text-gray-500 shrink-0 capitalize">{src.file_type}</span>
+                        {src.timestamp !== undefined && (
+                          <span className="text-gray-500 shrink-0">{src.timestamp.toFixed(1)}s</span>
+                        )}
+                        <span className="text-green-400 shrink-0 font-medium">
+                          {(src.similarity * 100).toFixed(0)}%
+                        </span>
+                        {isCited && (
+                          <span className="text-blue-400 shrink-0 text-xs font-semibold">cited</span>
+                        )}
+                      </div>
+                    )
+                  })}
+                </div>
               </div>
-            </div>
-          )}
+            )
+          })()}
         </div>
+      )}
+
+      {selectedVideo && (
+        <VideoPlayer
+          result={selectedVideo}
+          onClose={() => setSelectedVideo(null)}
+        />
       )}
     </div>
   )
