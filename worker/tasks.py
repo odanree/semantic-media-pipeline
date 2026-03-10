@@ -700,6 +700,129 @@ def generate_proxy(self, file_path: str, proxy_path: str, duration: float, codec
 
 @app.task(
     bind=True,
+    max_retries=0,
+    time_limit=86400,       # 24 h hard limit
+    soft_time_limit=82800,  # 23 h soft — gives task time to flush final stats
+)
+def backfill_captions(self, dry_run: bool = False):
+    """
+    Backfill captions for all Qdrant video-frame points using moondream VLM.
+
+    - Reads frames from the local frame cache (FRAME_CACHE_DIR env var).
+    - Calls moondream via the native Ollama /api/generate endpoint.
+    - Updates each Qdrant point in-place with set_payload — no re-indexing.
+    - Idempotent: points that already have a caption are skipped.
+    - Safe to re-run after a partial failure — progress is committed per frame.
+
+    Returns a summary dict: {total, processed, skipped, failed}.
+    """
+    import base64
+    import requests as _requests
+
+    fps = float(os.getenv("KEYFRAME_FPS", "0.5"))
+    resolution = int(os.getenv("KEYFRAME_RESOLUTION", "224"))
+    frame_cache_base = Path(os.getenv("FRAME_CACHE_DIR", "/mnt/frame_cache"))
+    caption_model = os.getenv("CAPTION_MODEL", "moondream")
+
+    # Derive native Ollama base from the OpenAI-compat LLM_BASE_URL
+    llm_base = os.getenv("LLM_BASE_URL", "http://172.18.0.1:11434/v1")
+    ollama_base = llm_base.replace("/v1", "").rstrip("/")
+    generate_url = f"{ollama_base}/api/generate"
+
+    total = processed = skipped = failed = 0
+    offset = None
+    scroll_batch = 100
+
+    log.info("[Backfill] Starting caption backfill — model=%s dry_run=%s", caption_model, dry_run)
+
+    while True:
+        records, next_offset = qdrant_client.scroll(
+            collection_name=QDRANT_COLLECTION_NAME,
+            limit=scroll_batch,
+            offset=offset,
+            with_payload=True,
+            with_vectors=False,
+        )
+
+        if not records:
+            break
+
+        for point in records:
+            total += 1
+            payload = point.payload or {}
+
+            # Skip non-video points and already-captioned points
+            if payload.get("file_type") != "video" or payload.get("caption"):
+                skipped += 1
+                continue
+
+            file_hash = payload.get("file_hash")
+            frame_index = payload.get("frame_index")
+            if file_hash is None or frame_index is None:
+                skipped += 1
+                continue
+
+            # Locate the cached frame image
+            cache_dir = frame_cache_base / _frame_cache_key(file_hash, fps, resolution)
+            sorted_frames = sorted(cache_dir.glob("frame_*.jpg"))
+            if not sorted_frames or frame_index >= len(sorted_frames):
+                log.warning("[Backfill] Frame not in cache: hash=%s idx=%s dir=%s", file_hash, frame_index, cache_dir)
+                failed += 1
+                continue
+
+            frame_path = sorted_frames[frame_index]
+
+            if dry_run:
+                processed += 1
+                continue
+
+            # Call moondream
+            try:
+                with open(frame_path, "rb") as fh:
+                    img_b64 = base64.b64encode(fh.read()).decode()
+
+                resp = _requests.post(
+                    generate_url,
+                    json={
+                        "model": caption_model,
+                        "prompt": "Describe what you see in this image in one concise sentence.",
+                        "images": [img_b64],
+                        "stream": False,
+                    },
+                    timeout=60,
+                )
+                resp.raise_for_status()
+                caption = resp.json().get("response", "").strip()
+
+                if caption:
+                    qdrant_client.set_payload(
+                        collection_name=QDRANT_COLLECTION_NAME,
+                        payload={"caption": caption},
+                        points=[point.id],
+                    )
+                    processed += 1
+                else:
+                    log.warning("[Backfill] Empty caption for point %s", point.id)
+                    failed += 1
+
+            except Exception as exc:
+                log.warning("[Backfill] Caption failed for point %s (%s): %s", point.id, frame_path, exc)
+                failed += 1
+
+        if (processed + failed) > 0 and (processed + failed) % 500 == 0:
+            log.info("[Backfill] Progress — processed=%d skipped=%d failed=%d total_seen=%d", processed, skipped, failed, total)
+
+        if next_offset is None:
+            break
+        offset = next_offset
+
+    summary = {"status": "complete", "total": total, "processed": processed, "skipped": skipped, "failed": failed}
+    log.info("[Backfill] Done: %s", summary)
+    return summary
+
+
+@app.task(
+    bind=True,
 )
 def health_check(self):
     """
