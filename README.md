@@ -3,9 +3,11 @@
 
 ![CI](https://github.com/odanree/semantic-media-pipeline/actions/workflows/ci.yml/badge.svg?branch=main)
 ![Version](https://img.shields.io/badge/version-v1.6.0-blue)
-> See [CHANGELOG.md](CHANGELOG.md) for full release history.![Tests](https://img.shields.io/badge/tests-140%20passing-brightgreen)
+![Tests](https://img.shields.io/badge/tests-140%20passing-brightgreen)
 ![Backend Coverage](https://img.shields.io/badge/backend%20coverage-78%25-green)
 ![Frontend Coverage](https://img.shields.io/badge/frontend%20coverage-70%25-green)
+
+> See [CHANGELOG.md](CHANGELOG.md) for full release history.
 
 A distributed, multimodal ingestion engine designed to semantically index and cluster massive personal media archives (500GB+). It unifies photos and videos into a single searchable vector space using **CLIP embeddings**, **Celery**, and **Qdrant**.
 
