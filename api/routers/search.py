@@ -27,6 +27,13 @@ QDRANT_COLLECTION_NAME = os.getenv("QDRANT_COLLECTION_NAME", "media_vectors")
 # ---------------------------------------------------------------------------
 SEARCH_GROUP_SIZE = int(os.getenv("SEARCH_GROUP_SIZE", "3"))
 EVENT_WINDOW_SECONDS = float(os.getenv("EVENT_WINDOW_SECONDS", "5"))
+# Max images returned from the same parent directory (prevents timelapse JPG floods).
+# Set MAX_IMAGES_PER_DIR=0 to disable.
+MAX_IMAGES_PER_DIR = int(os.getenv("MAX_IMAGES_PER_DIR", "2"))
+# Minimum number of images from the same dir before the cap activates.
+# Dirs contributing fewer images than this are never capped — regular photo
+# series (e.g. 3 vacation shots in the same folder) pass through untouched.
+TIMELAPSE_FLOOD_THRESHOLD = int(os.getenv("TIMELAPSE_FLOOD_THRESHOLD", "4"))
 
 qdrant_client = QdrantClient(
     host=QDRANT_HOST,
@@ -119,28 +126,82 @@ class SearchResponse(BaseModel):
 
 def _event_deduplicate(hits: list, window_s: float = EVENT_WINDOW_SECONDS) -> list:
     """
-    From a single file's candidate frames, keep only one frame per window_s bucket.
-    The representative for each bucket is the highest-scoring frame in that window.
+    From a single file's candidate frames, keep only one frame per temporal window
+    using greedy non-maximum suppression (NMS).
 
-    Hits are explicitly sorted by score descending before the bucket walk so that
-    the first frame to claim a bucket is always the AI's most confident match —
-    regardless of whether Qdrant already sorted the group internally.
+    The highest-scoring frame is kept first, then any frame within window_s seconds
+    of an already-kept frame is suppressed — regardless of fixed-grid bucket boundaries.
+    This avoids the boundary artifact where frames at t=744s and t=748s land in adjacent
+    5-second buckets and are both kept despite being only 4 seconds apart.
+
     Images (timestamp=None) are always kept — they have no temporal axis.
     """
-    # Explicit sort: highest-confidence frame wins each bucket.
     hits = sorted(hits, key=lambda h: h.score, reverse=True)
 
-    seen_buckets: set[int] = set()
+    kept_timestamps: list[float] = []
     results = []
     for hit in hits:
         ts = hit.payload.get("timestamp")
         if ts is None:              # image — no temporal axis, always keep
             results.append(hit)
             continue
-        bucket = int(ts // window_s)
-        if bucket in seen_buckets:
+        if any(abs(ts - kept_ts) < window_s for kept_ts in kept_timestamps):
             continue
-        seen_buckets.add(bucket)
+        kept_timestamps.append(float(ts))
+        results.append(hit)
+    return results
+
+
+def _dir_cap_images(
+    hits: list,
+    max_per_dir: int = MAX_IMAGES_PER_DIR,
+    flood_threshold: int = TIMELAPSE_FLOOD_THRESHOLD,
+) -> list:
+    """
+    Cap images from the same parent directory, but ONLY when that directory
+    contributes >= flood_threshold images to the result set.
+
+    This targets timelapse/burst-shot floods (DJI TIMELAPSE_0688.JPG …
+    TIMELAPSE_0750.JPG all in the same folder) without accidentally suppressing
+    a normal photo series where a user took 2-3 different shots in one album.
+
+    Algorithm (two-pass):
+      Pass 1 — count how many images each directory contributes.
+      Pass 2 — if a dir's count >= flood_threshold, cap it at max_per_dir
+               (keeping the best-scoring frames, since hits are score-sorted).
+               Dirs below the threshold pass through entirely.
+
+    Video frames are never touched — temporal dedup handles them.
+    Set max_per_dir=0 to disable entirely.
+    """
+    if max_per_dir <= 0:
+        return hits
+
+    # Pass 1: count images per directory
+    dir_total: dict[str, int] = {}
+    for hit in hits:
+        if hit.payload.get("timestamp") is not None:
+            continue  # video
+        parent = os.path.dirname(hit.payload.get("file_path", ""))
+        dir_total[parent] = dir_total.get(parent, 0) + 1
+
+    # Pass 2: apply cap only to flooded directories
+    dir_kept: dict[str, int] = {}
+    results = []
+    for hit in hits:
+        ts = hit.payload.get("timestamp")
+        if ts is not None:          # video frame — pass through
+            results.append(hit)
+            continue
+        parent = os.path.dirname(hit.payload.get("file_path", ""))
+        if dir_total.get(parent, 0) < flood_threshold:
+            # Normal photo series — never cap
+            results.append(hit)
+            continue
+        # Timelapse/burst flood — apply cap
+        if dir_kept.get(parent, 0) >= max_per_dir:
+            continue
+        dir_kept[parent] = dir_kept.get(parent, 0) + 1
         results.append(hit)
     return results
 
@@ -237,6 +298,8 @@ async def search_media(request: Request, body: SearchRequest):
 
             # Re-sort across files by score, honour limit
             all_hits.sort(key=lambda p: p.score, reverse=True)
+            # Layer 3: per-directory cap for images (prevents timelapse floods)
+            all_hits = _dir_cap_images(all_hits)
             final_hits = all_hits[:body.limit]
             scenes_collapsed = raw_frame_count - len(final_hits)
 
