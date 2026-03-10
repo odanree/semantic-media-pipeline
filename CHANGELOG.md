@@ -6,6 +6,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/). Version
 
 ---
 
+## [v1.7.2] — 2026-03-10
+
+### Fixed
+- **Ask endpoint similarity threshold** — Lowered default CLIP similarity threshold from 0.25 → 0.2 to improve recall for marginal semantic matches; aligns Ask with Search endpoint for consistency (PR #56)
+- Users can still override with custom `threshold` parameter in request
+
+---
+
 ## [v1.7.1] — 2026-03-10
 
 ### Fixed
