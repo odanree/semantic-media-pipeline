@@ -295,6 +295,65 @@ describe('POST /api/embed-text', () => {
 })
 
 // ---------------------------------------------------------------------------
+// /api/ask
+// ---------------------------------------------------------------------------
+
+describe('POST /api/ask', () => {
+  async function handler(body: unknown) {
+    const { POST } = await import('../ask/route')
+    return POST(
+      new NextRequest('http://localhost/api/ask', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+    )
+  }
+
+  it('returns 400 when question is missing', async () => {
+    const res = await handler({})
+    expect(res.status).toBe(400)
+  })
+
+  it('forwards X-API-Key to upstream', async () => {
+    vi.mocked(fetch).mockResolvedValue(mockResponse({ answer: 'test', sources: [] }))
+    await handler({ question: 'What videos do I have?' })
+    expect(capturedApiKey()).toBe('test-secret')
+  })
+
+  it('forwards optional limit and threshold', async () => {
+    vi.mocked(fetch).mockResolvedValue(mockResponse({ answer: 'test', sources: [] }))
+    await handler({ question: 'dogs', limit: 5, threshold: 0.3 })
+    const [, init] = (fetch as ReturnType<typeof vi.fn>).mock.calls[0] as [string, RequestInit]
+    const sent = JSON.parse(init.body as string)
+    expect(sent.limit).toBe(5)
+    expect(sent.threshold).toBe(0.3)
+  })
+
+  it('omits dedup when not false', async () => {
+    vi.mocked(fetch).mockResolvedValue(mockResponse({ answer: 'test', sources: [] }))
+    await handler({ question: 'dogs' })
+    const [, init] = (fetch as ReturnType<typeof vi.fn>).mock.calls[0] as [string, RequestInit]
+    const sent = JSON.parse(init.body as string)
+    expect('dedup' in sent).toBe(false)
+  })
+
+  it('forwards dedup=false when explicitly set', async () => {
+    vi.mocked(fetch).mockResolvedValue(mockResponse({ answer: 'test', sources: [] }))
+    await handler({ question: 'dogs', dedup: false })
+    const [, init] = (fetch as ReturnType<typeof vi.fn>).mock.calls[0] as [string, RequestInit]
+    const sent = JSON.parse(init.body as string)
+    expect(sent.dedup).toBe(false)
+  })
+
+  it('forwards upstream error status', async () => {
+    vi.mocked(fetch).mockResolvedValue(mockResponse('error', 503))
+    const res = await handler({ question: 'dogs' })
+    expect(res.status).toBe(503)
+  })
+})
+
+// ---------------------------------------------------------------------------
 // Catch branch — fetch throws (network failure) for all proxy routes
 // ---------------------------------------------------------------------------
 
@@ -347,6 +406,17 @@ describe('network failures return 500', () => {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ query: 'sunset' }),
+    }))
+    expect(res.status).toBe(500)
+  })
+
+  it('POST /api/ask — fetch throws', async () => {
+    vi.mocked(fetch).mockRejectedValue(new Error('ECONNREFUSED'))
+    const { POST } = await import('../ask/route')
+    const res = await POST(new NextRequest('http://localhost/api/ask', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ question: 'What do I have?' }),
     }))
     expect(res.status).toBe(500)
   })
