@@ -35,7 +35,7 @@ from slowapi.middleware import SlowAPIMiddleware
 app = FastAPI(
     title="Lumen API",
     description="Semantic media indexing and search API",
-    version="1.2.0",
+    version="1.6.0",
     # Note: auth is applied per-router below (NOT globally) because
     # APIKeyHeader uses Request scope which is incompatible with WebSocket routes.
 )
