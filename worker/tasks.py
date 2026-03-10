@@ -789,7 +789,7 @@ def backfill_captions(self, dry_run: bool = False):
                         "images": [img_b64],
                         "stream": False,
                     },
-                    timeout=60,
+                    timeout=180,
                 )
                 resp.raise_for_status()
                 caption = resp.json().get("response", "").strip()
