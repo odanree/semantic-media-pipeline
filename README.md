@@ -3,9 +3,9 @@
 
 ![CI](https://github.com/odanree/semantic-media-pipeline/actions/workflows/ci.yml/badge.svg?branch=main)
 ![Version](https://img.shields.io/badge/version-v1.6.0-blue)
-![Tests](https://img.shields.io/badge/tests-140%20passing-brightgreen)
+![Tests](https://img.shields.io/badge/tests-301%20passing-brightgreen)
 ![Backend Coverage](https://img.shields.io/badge/backend%20coverage-78%25-green)
-![Frontend Coverage](https://img.shields.io/badge/frontend%20coverage-70%25-green)
+![Frontend Coverage](https://img.shields.io/badge/frontend%20coverage-72%25-green)
 
 > See [CHANGELOG.md](CHANGELOG.md) for full release history.
 

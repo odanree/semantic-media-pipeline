@@ -29,10 +29,10 @@ export default defineConfig({
       ],
       // CI fails if coverage drops below these thresholds (mirrors backend --cov-fail-under=77)
       thresholds: {
-        statements: 65,
-        lines: 65,
-        branches: 65,
-        functions: 50,
+        statements: 70,
+        lines: 70,
+        branches: 73,
+        functions: 56,
       },
     },
   },
