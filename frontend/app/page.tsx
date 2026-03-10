@@ -4,6 +4,7 @@ import { useState, useEffect, useMemo } from 'react'
 import SearchBar, { SearchFilters } from '@/components/SearchBar'
 import ResultGrid from '@/components/ResultGrid'
 import StatusPanel from '@/components/StatusPanel'
+import AskPanel from '@/components/AskPanel'
 
 interface CollectionInfo {
   total: number
@@ -14,6 +15,7 @@ interface CollectionInfo {
 }
 
 export default function SearchPage() {
+  const [mode, setMode] = useState<'search' | 'ask'>('search')
   const [results, setResults] = useState([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -142,6 +144,34 @@ export default function SearchPage() {
         </p>
       </div>
 
+      {/* Mode toggle */}
+      <div className="flex gap-1 mb-6 bg-gray-800 border border-gray-700 rounded-lg p-1 w-fit">
+        <button
+          onClick={() => setMode('search')}
+          className={`px-5 py-2 rounded-md text-sm font-medium transition-colors ${
+            mode === 'search'
+              ? 'bg-blue-600 text-white'
+              : 'text-gray-400 hover:text-white'
+          }`}
+        >
+          🔍 Search
+        </button>
+        <button
+          onClick={() => setMode('ask')}
+          className={`px-5 py-2 rounded-md text-sm font-medium transition-colors ${
+            mode === 'ask'
+              ? 'bg-blue-600 text-white'
+              : 'text-gray-400 hover:text-white'
+          }`}
+        >
+          🤖 Ask
+        </button>
+      </div>
+
+      {mode === 'ask' ? (
+        <AskPanel />
+      ) : (
+        <>
       <SearchBar onSearch={handleSearch} isLoading={loading} suggestions={collectionInfo?.topic_tags} externalQuery={tagQuery} />
 
       {error && (
@@ -207,6 +237,8 @@ export default function SearchPage() {
         <div className="mt-12">
           <StatusPanel />
         </div>
+      )}
+        </>
       )}
     </div>
   )
