@@ -122,6 +122,7 @@ export default function SearchPage() {
                 onClick={() => {
                   setTagQuery(tag)
                   handleSearch(tag, appliedFilters)
+                  setMode('search')
                 }}
                 className="bg-blue-950 border border-blue-800 text-blue-300 px-3 py-1 rounded-full hover:bg-blue-900 transition-colors cursor-pointer"
               >
