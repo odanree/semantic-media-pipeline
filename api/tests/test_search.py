@@ -211,28 +211,28 @@ def _make_group(hits):
     return g
 
 
-def test_search_dedup_default_uses_search_groups(client, mock_qdrant):
-    """dedup=true (default) must route through search_groups, not query_points."""
-    mock_qdrant.search_groups.return_value = MagicMock(groups=[])
+def test_search_dedup_default_uses_query_points_groups(client, mock_qdrant):
+    """dedup=true (default) must route through query_points_groups, not query_points."""
+    mock_qdrant.query_points_groups.return_value = MagicMock(groups=[])
     mock_qdrant.query_points.reset_mock()
-    mock_qdrant.search_groups.reset_mock()
+    mock_qdrant.query_points_groups.reset_mock()
 
     resp = client.post("/api/search", json={"query": "birthday party"})
     assert resp.status_code == 200
-    mock_qdrant.search_groups.assert_called_once()
+    mock_qdrant.query_points_groups.assert_called_once()
     mock_qdrant.query_points.assert_not_called()
 
 
 def test_search_dedup_false_uses_query_points(client, mock_qdrant):
-    """dedup=false must route through query_points, not search_groups."""
+    """dedup=false must route through query_points, not query_points_groups."""
     mock_qdrant.query_points.return_value = MagicMock(points=[])
     mock_qdrant.query_points.reset_mock()
-    mock_qdrant.search_groups.reset_mock()
+    mock_qdrant.query_points_groups.reset_mock()
 
     resp = client.post("/api/search", json={"query": "sunset", "dedup": False})
     assert resp.status_code == 200
     mock_qdrant.query_points.assert_called_once()
-    mock_qdrant.search_groups.assert_not_called()
+    mock_qdrant.query_points_groups.assert_not_called()
 
 
 def test_search_dedup_collapses_frames_in_same_window(client, mock_qdrant):
@@ -242,7 +242,7 @@ def test_search_dedup_collapses_frames_in_same_window(client, mock_qdrant):
         _make_video_hit("video.mp4", 0.8, timestamp=2.5),
         _make_video_hit("video.mp4", 0.7, timestamp=4.9),
     ]
-    mock_qdrant.search_groups.return_value = MagicMock(groups=[_make_group(hits)])
+    mock_qdrant.query_points_groups.return_value = MagicMock(groups=[_make_group(hits)])
 
     resp = client.post("/api/search", json={"query": "running"})
     data = resp.json()
@@ -257,7 +257,7 @@ def test_search_dedup_keeps_frames_in_different_windows(client, mock_qdrant):
         _make_video_hit("video.mp4", 0.8, timestamp=6.5),
         _make_video_hit("video.mp4", 0.7, timestamp=12.5),
     ]
-    mock_qdrant.search_groups.return_value = MagicMock(groups=[_make_group(hits)])
+    mock_qdrant.query_points_groups.return_value = MagicMock(groups=[_make_group(hits)])
 
     resp = client.post("/api/search", json={"query": "running"})
     data = resp.json()
@@ -271,7 +271,7 @@ def test_search_dedup_images_never_collapsed(client, mock_qdrant):
         _make_video_hit("photo1.jpg", 0.9, timestamp=None),
         _make_video_hit("photo1.jpg", 0.8, timestamp=None),
     ]
-    mock_qdrant.search_groups.return_value = MagicMock(groups=[_make_group(hits)])
+    mock_qdrant.query_points_groups.return_value = MagicMock(groups=[_make_group(hits)])
 
     resp = client.post("/api/search", json={"query": "landscape"})
     data = resp.json()
@@ -281,14 +281,14 @@ def test_search_dedup_images_never_collapsed(client, mock_qdrant):
 
 def test_search_dedup_response_has_scenes_collapsed_field(client, mock_qdrant):
     """SearchResponse must include the scenes_collapsed field."""
-    mock_qdrant.search_groups.return_value = MagicMock(groups=[])
+    mock_qdrant.query_points_groups.return_value = MagicMock(groups=[])
     data = client.post("/api/search", json={"query": "cat"}).json()
     assert "scenes_collapsed" in data
 
 
 def test_search_dedup_response_has_raw_frame_count_field(client, mock_qdrant):
     """SearchResponse must include the raw_frame_count field."""
-    mock_qdrant.search_groups.return_value = MagicMock(groups=[])
+    mock_qdrant.query_points_groups.return_value = MagicMock(groups=[])
     data = client.post("/api/search", json={"query": "dog"}).json()
     assert "raw_frame_count" in data
 
@@ -301,7 +301,7 @@ def test_search_dedup_scenes_collapsed_correct_count(client, mock_qdrant):
         _make_video_hit("clip.mp4", 0.8, timestamp=2.0),
         _make_video_hit("clip.mp4", 0.7, timestamp=3.0),
     ]
-    mock_qdrant.search_groups.return_value = MagicMock(groups=[_make_group(hits)])
+    mock_qdrant.query_points_groups.return_value = MagicMock(groups=[_make_group(hits)])
 
     data = client.post("/api/search", json={"query": "walking"}).json()
     assert data["scenes_collapsed"] == 2
@@ -325,7 +325,7 @@ def test_search_dedup_representative_is_highest_score(client, mock_qdrant):
         _make_video_hit("video.mp4", 0.9, timestamp=1.0),  # high score, same bucket
         _make_video_hit("video.mp4", 0.7, timestamp=2.5),  # mid score, same bucket
     ]
-    mock_qdrant.search_groups.return_value = MagicMock(groups=[_make_group(hits)])
+    mock_qdrant.query_points_groups.return_value = MagicMock(groups=[_make_group(hits)])
 
     data = client.post("/api/search", json={"query": "jump"}).json()
     assert data["count"] == 1
@@ -335,7 +335,7 @@ def test_search_dedup_representative_is_highest_score(client, mock_qdrant):
 def test_search_dedup_scene_window_start_set_on_video(client, mock_qdrant):
     """scene_window_start must be set for video hits when dedup=true."""
     hits = [_make_video_hit("clip.mp4", 0.8, timestamp=7.3)]
-    mock_qdrant.search_groups.return_value = MagicMock(groups=[_make_group(hits)])
+    mock_qdrant.query_points_groups.return_value = MagicMock(groups=[_make_group(hits)])
 
     data = client.post("/api/search", json={"query": "swim"}).json()
     result = data["results"][0]
@@ -346,7 +346,7 @@ def test_search_dedup_scene_window_start_set_on_video(client, mock_qdrant):
 def test_search_dedup_scene_window_end_equals_start_plus_five(client, mock_qdrant):
     """scene_window_end must equal scene_window_start + 5."""
     hits = [_make_video_hit("clip.mp4", 0.8, timestamp=7.3)]
-    mock_qdrant.search_groups.return_value = MagicMock(groups=[_make_group(hits)])
+    mock_qdrant.query_points_groups.return_value = MagicMock(groups=[_make_group(hits)])
 
     data = client.post("/api/search", json={"query": "swim"}).json()
     result = data["results"][0]
@@ -356,7 +356,7 @@ def test_search_dedup_scene_window_end_equals_start_plus_five(client, mock_qdran
 def test_search_dedup_window_start_none_for_images(client, mock_qdrant):
     """scene_window_start and scene_window_end must be None for images (no timestamp)."""
     hits = [_make_video_hit("photo.jpg", 0.8, timestamp=None)]
-    mock_qdrant.search_groups.return_value = MagicMock(groups=[_make_group(hits)])
+    mock_qdrant.query_points_groups.return_value = MagicMock(groups=[_make_group(hits)])
 
     data = client.post("/api/search", json={"query": "portrait"}).json()
     result = data["results"][0]

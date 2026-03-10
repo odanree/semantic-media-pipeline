@@ -218,10 +218,10 @@ async def ask_about_media(request: Request, body: AskRequest):
 
     try:
         if body.dedup:
-            # Layer 1: Qdrant search_groups — one group per file
-            groups_result = qdrant_client.search_groups(
+            # Layer 1: Qdrant query_points_groups — one group per file
+            groups_result = qdrant_client.query_points_groups(
                 collection_name=QDRANT_COLLECTION_NAME,
-                query_vector=query_vec,
+                query=query_vec,
                 group_by="file_path",
                 limit=body.limit,
                 group_size=SEARCH_GROUP_SIZE,

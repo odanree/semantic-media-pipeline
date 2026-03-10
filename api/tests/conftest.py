@@ -111,10 +111,10 @@ def mock_qdrant():
     # query_points() — /api/search with dedup=False
     m.query_points.return_value = MagicMock(points=[])
 
-    # search_groups() — /api/search with dedup=True (default)
+    # query_points_groups() — /api/search with dedup=True (default)
     # Returns a GroupsResult with an empty groups list by default.
     # Individual tests override this for dedup-specific assertions.
-    m.search_groups.return_value = MagicMock(groups=[])
+    m.query_points_groups.return_value = MagicMock(groups=[])
 
     # retrieve() — stats topic_tag sampling
     m.retrieve.return_value = []

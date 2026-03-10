@@ -214,9 +214,9 @@ async def search_media(request: Request, body: SearchRequest):
             # Layer 1: Qdrant search_groups — one group per file, GROUP_SIZE
             # candidate frames per group returned from the DB.
             # ------------------------------------------------------------------
-            groups_result = qdrant_client.search_groups(
+            groups_result = qdrant_client.query_points_groups(
                 collection_name=QDRANT_COLLECTION_NAME,
-                query_vector=query_vector,
+                query=query_vector,
                 group_by="file_path",
                 limit=body.limit,
                 group_size=SEARCH_GROUP_SIZE,
