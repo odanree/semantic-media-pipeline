@@ -24,7 +24,7 @@ from pydantic import BaseModel
 from qdrant_client import QdrantClient
 
 # Import routers (these may use sentence_transformers internally)
-from routers import health, ingest, search, updates, stats, ask
+from routers import health, ingest, search, updates, stats, ask, admin
 from auth import require_api_key
 from rate_limit import limiter, LIMIT_DEFAULT
 from slowapi import _rate_limit_exceeded_handler
@@ -35,7 +35,7 @@ from slowapi.middleware import SlowAPIMiddleware
 app = FastAPI(
     title="Lumen API",
     description="Semantic media indexing and search API",
-    version="1.6.0",
+    version="1.7.0",
     # Note: auth is applied per-router below (NOT globally) because
     # APIKeyHeader uses Request scope which is incompatible with WebSocket routes.
 )
@@ -71,7 +71,7 @@ app.include_router(search.router,   prefix="/api", tags=["search"],        depen
 app.include_router(ask.router,      prefix="/api", tags=["rag"],           dependencies=[Depends(require_api_key)])
 app.include_router(updates.router,  prefix="/api", tags=["realtime"])       # WS — no HTTP auth
 app.include_router(stats.router,    prefix="/api", tags=["observability"], dependencies=[Depends(require_api_key)])
-app.include_router(ask.router,      prefix="/api", tags=["rag"],           dependencies=[Depends(require_api_key)])
+app.include_router(admin.router,    prefix="/api", tags=["admin"],         dependencies=[Depends(require_api_key)])
 
 
 @app.get("/api/ping", tags=["health"], include_in_schema=False)
