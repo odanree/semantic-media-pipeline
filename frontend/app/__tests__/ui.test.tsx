@@ -518,4 +518,55 @@ describe('AskPanel', () => {
     fireEvent.click(screen.getByText(/Dismiss/i))
     expect(screen.queryByRole('alert')).toBeNull()
   })
+
+  it('dedup toggle is checked by default', () => {
+    render(<AskPanel />)
+    const toggle = screen.getByRole('checkbox', { name: /collapse duplicate scenes/i }) as HTMLInputElement
+    expect(toggle.checked).toBe(true)
+  })
+
+  it('sends dedup: false in request body when toggle is unchecked', async () => {
+    const mockResult = {
+      question: 'test', answer: 'ok', sources: [],
+      model_used: 'qwen', retrieval_count: 0, execution_time_ms: 100, scenes_collapsed: 0,
+    }
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve(mockResult),
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    render(<AskPanel />)
+    fireEvent.click(screen.getByRole('checkbox', { name: /collapse duplicate scenes/i }))
+    fireEvent.change(screen.getByRole('textbox', { name: /question/i }), {
+      target: { value: 'test' },
+    })
+    await act(async () => {
+      fireEvent.submit(screen.getByRole('textbox', { name: /question/i }).closest('form')!)
+      await new Promise(r => setTimeout(r, 10))
+    })
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body)
+    expect(body.dedup).toBe(false)
+  })
+
+  it('sends dedup: true in request body when toggle is checked', async () => {
+    const mockResult = {
+      question: 'test', answer: 'ok', sources: [],
+      model_used: 'qwen', retrieval_count: 0, execution_time_ms: 100, scenes_collapsed: 0,
+    }
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve(mockResult),
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    render(<AskPanel />)
+    fireEvent.change(screen.getByRole('textbox', { name: /question/i }), {
+      target: { value: 'test' },
+    })
+    await act(async () => {
+      fireEvent.submit(screen.getByRole('textbox', { name: /question/i }).closest('form')!)
+      await new Promise(r => setTimeout(r, 10))
+    })
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body)
+    expect(body.dedup).toBe(true)
+  })
 })

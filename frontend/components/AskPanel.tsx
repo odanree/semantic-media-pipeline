@@ -23,6 +23,7 @@ interface AskResult {
 
 export default function AskPanel() {
   const [question, setQuestion] = useState('')
+  const [dedup, setDedup] = useState(true)
   const [result, setResult] = useState<AskResult | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -39,7 +40,7 @@ export default function AskPanel() {
       const response = await fetch('/api/ask', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ question: question.trim() }),
+        body: JSON.stringify({ question: question.trim(), dedup }),
       })
 
       if (!response.ok) {
@@ -58,23 +59,35 @@ export default function AskPanel() {
 
   return (
     <div className="space-y-6">
-      <form onSubmit={handleSubmit} className="flex gap-3">
-        <input
-          type="text"
-          value={question}
-          onChange={e => setQuestion(e.target.value)}
-          placeholder='Ask anything — e.g. "What videos do I have from Vietnam?"'
-          className="flex-1 bg-gray-800 border border-gray-700 rounded-lg px-4 py-3 text-white placeholder-gray-500 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
-          disabled={loading}
-          aria-label="Question"
-        />
-        <button
-          type="submit"
-          disabled={loading || !question.trim()}
-          className="bg-blue-600 hover:bg-blue-500 disabled:bg-gray-700 disabled:text-gray-500 text-white font-medium px-6 py-3 rounded-lg transition-colors"
-        >
-          Ask
-        </button>
+      <form onSubmit={handleSubmit} className="space-y-3">
+        <div className="flex gap-3">
+          <input
+            type="text"
+            value={question}
+            onChange={e => setQuestion(e.target.value)}
+            placeholder='Ask anything — e.g. "What videos do I have from Vietnam?"'
+            className="flex-1 bg-gray-800 border border-gray-700 rounded-lg px-4 py-3 text-white placeholder-gray-500 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+            disabled={loading}
+            aria-label="Question"
+          />
+          <button
+            type="submit"
+            disabled={loading || !question.trim()}
+            className="bg-blue-600 hover:bg-blue-500 disabled:bg-gray-700 disabled:text-gray-500 text-white font-medium px-6 py-3 rounded-lg transition-colors"
+          >
+            Ask
+          </button>
+        </div>
+        <label className="flex items-center gap-2 text-sm text-gray-400 cursor-pointer select-none w-fit">
+          <input
+            type="checkbox"
+            checked={dedup}
+            onChange={e => setDedup(e.target.checked)}
+            className="accent-blue-500"
+            aria-label="Collapse duplicate scenes"
+          />
+          Collapse duplicate scenes
+        </label>
       </form>
 
       {loading && (
