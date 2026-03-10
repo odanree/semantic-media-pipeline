@@ -12,8 +12,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/). Version
 - **RAG `/api/ask` endpoint** — natural language Q&A over indexed media; retrieves relevant frames via CLIP then summarises with an LLM (PR #47)
 - **Greedy NMS temporal dedup** — Non-Maximum Suppression over 5-second scene windows eliminates near-duplicate video frames from search results (PR #48)
 - **Timelapse flood cap** — hard limit on frames returned from a single media file prevents time-lapses from dominating result sets (PR #48)
-- **Dedup A/B toggle** — `dedup=false` query param returns raw pre-dedup frames for debugging and comparison (PR #47, #48)
-- **Comprehensive frontend test suite** — vitest coverage for all Next.js proxy routes, search logic, and pipeline analysis notebook (PR #44, #45)
+- **Dedup A/B toggle** — `dedup=false` query param returns raw pre-dedup frames for debugging; dedup checkbox in the Ask UI lets users toggle this at query time (PR #47, #48)
+- **Comprehensive frontend test suite** — vitest coverage for all Next.js proxy routes, AskPanel UI, and search logic; quality gate raised to 70% stmts/lines, 73% branches (PR #44, #45, #47)
 
 ### Fixed
 - Proxy route `frontend/app/api/search/route.ts` was silently dropping the `dedup` field before forwarding to FastAPI
