@@ -72,6 +72,10 @@ os.environ.setdefault("API_KEY_REQUIRED", "false")
 os.environ.setdefault("REDIS_URL",        "memory://")
 os.environ.setdefault("CLIP_MODEL_NAME",  "clip-ViT-L-14")
 os.environ.setdefault("QDRANT_COLLECTION_NAME", "media_vectors")
+# Raise ask rate-limit ceiling so the full test suite never hits 429.
+os.environ.setdefault("RATE_LIMIT_ASK",   "1000/minute")
+# Provide a dummy key so ask.py's OpenAI client init doesn't raise RuntimeError.
+os.environ.setdefault("OPENAI_API_KEY",   "test-key")
 
 # ---------------------------------------------------------------------------
 # 2. Ensure api/ is on sys.path so `from main import app` and `from routers…`
@@ -104,8 +108,13 @@ def mock_qdrant():
     # get_collection() — stats/summary qdrant drift check
     m.get_collection.return_value = MagicMock(points_count=942, vectors_count=942)
 
-    # query_points() — /api/search
+    # query_points() — /api/search with dedup=False
     m.query_points.return_value = MagicMock(points=[])
+
+    # search_groups() — /api/search with dedup=True (default)
+    # Returns a GroupsResult with an empty groups list by default.
+    # Individual tests override this for dedup-specific assertions.
+    m.search_groups.return_value = MagicMock(groups=[])
 
     # retrieve() — stats topic_tag sampling
     m.retrieve.return_value = []
@@ -135,6 +144,22 @@ def mock_clip():
 
 
 @pytest.fixture(scope="session")
+def mock_llm():
+    """
+    Mock OpenAI client returned by ask.py's _get_llm_client().
+
+    chat.completions.create() returns a response with a single choice whose
+    message content is a deterministic string — lets tests assert the answer
+    field without calling any real LLM.
+    """
+    m = MagicMock(name="llm_client")
+    completion = MagicMock()
+    completion.choices[0].message.content = "Mock LLM response for testing."
+    m.chat.completions.create.return_value = completion
+    return m
+
+
+@pytest.fixture(scope="session")
 def mock_db_session():
     """
     Mock SQLAlchemy Session-like object.
@@ -153,7 +178,7 @@ def mock_db_session():
 # ---------------------------------------------------------------------------
 
 @pytest.fixture(scope="session")
-def client(mock_qdrant, mock_clip, mock_db_session):
+def client(mock_qdrant, mock_clip, mock_db_session, mock_llm):
     """
     Session-scoped FastAPI TestClient with every external dependency mocked.
 
@@ -179,16 +204,20 @@ def client(mock_qdrant, mock_clip, mock_db_session):
     import routers.health  # noqa: F401
     import routers.stats   # noqa: F401
     import routers.ingest  # noqa: F401
+    import routers.ask     # noqa: F401
 
     mock_s3 = MagicMock(name="s3_client")
 
     with (
-        patch("routers.search.qdrant_client",  mock_qdrant),
-        patch("routers.health.qdrant_client",  mock_qdrant),
-        patch("routers.search.get_clip_model", return_value=mock_clip),
-        patch("routers.stats._get_session",    return_value=mock_db_session),
-        patch("routers.stats._get_qdrant",     return_value=mock_qdrant),
-        patch("routers.ingest._get_s3_client", return_value=mock_s3),
+        patch("routers.search.qdrant_client",    mock_qdrant),
+        patch("routers.health.qdrant_client",    mock_qdrant),
+        patch("routers.ask.qdrant_client",       mock_qdrant),
+        patch("routers.search.get_clip_model",   return_value=mock_clip),
+        patch("routers.ask._get_clip_model",     return_value=mock_clip),
+        patch("routers.ask._get_llm_client",     return_value=mock_llm),
+        patch("routers.stats._get_session",      return_value=mock_db_session),
+        patch("routers.stats._get_qdrant",       return_value=mock_qdrant),
+        patch("routers.ingest._get_s3_client",   return_value=mock_s3),
     ):
         from main import app  # imported here so patches are in effect
 
