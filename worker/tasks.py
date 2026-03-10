@@ -701,8 +701,8 @@ def generate_proxy(self, file_path: str, proxy_path: str, duration: float, codec
 @app.task(
     bind=True,
     max_retries=0,
-    time_limit=86400,       # 24 h hard limit
-    soft_time_limit=82800,  # 23 h soft — gives task time to flush final stats
+    time_limit=691200,      # 8 days hard limit (backfill ~8.5k frames @ 55s ea ≈ 5.5 days)
+    soft_time_limit=648000, # 7.5 days soft — gives task time to flush final stats
 )
 def backfill_captions(self, dry_run: bool = False):
     """

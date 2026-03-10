@@ -456,8 +456,67 @@ describe('AskPanel', () => {
       await new Promise(r => setTimeout(r, 10))
     })
     expect(screen.getByText(/footage from Vietnam/i)).toBeTruthy()
-    expect(screen.getByText(/vietnam\/clip\.mp4/i)).toBeTruthy()
+    // Shows filename only (not full path)
+    expect(screen.getByText(/clip\.mp4/i)).toBeTruthy()
     expect(screen.getByText(/gpt-4o-mini/i)).toBeTruthy()
+  })
+
+  it('video sources render as clickable buttons', async () => {
+    const mockResult = {
+      question: 'test',
+      answer: 'Some answer.',
+      sources: [
+        { file_path: '/media/clip.mp4', file_type: 'video', similarity: 0.9, timestamp: 5.0 },
+      ],
+      model_used: 'gpt-4o-mini',
+      retrieval_count: 1,
+      execution_time_ms: 300,
+      scenes_collapsed: 0,
+    }
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve(mockResult),
+    }))
+    render(<AskPanel />)
+    fireEvent.change(screen.getByRole('textbox', { name: /question/i }), {
+      target: { value: 'test' },
+    })
+    await act(async () => {
+      fireEvent.submit(screen.getByRole('textbox', { name: /question/i }).closest('form')!)
+      await new Promise(r => setTimeout(r, 10))
+    })
+    expect(screen.getByRole('button', { name: /play clip\.mp4/i })).toBeTruthy()
+  })
+
+  it('sources cited in the answer get a "cited" badge', async () => {
+    const mockResult = {
+      question: 'test',
+      answer: 'The answer references [1] but not source 2.',
+      sources: [
+        { file_path: '/media/a.mp4', file_type: 'video', similarity: 0.9 },
+        { file_path: '/media/b.mp4', file_type: 'video', similarity: 0.8 },
+      ],
+      model_used: 'gpt-4o-mini',
+      retrieval_count: 2,
+      execution_time_ms: 300,
+      scenes_collapsed: 0,
+    }
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve(mockResult),
+    }))
+    render(<AskPanel />)
+    fireEvent.change(screen.getByRole('textbox', { name: /question/i }), {
+      target: { value: 'test' },
+    })
+    await act(async () => {
+      fireEvent.submit(screen.getByRole('textbox', { name: /question/i }).closest('form')!)
+      await new Promise(r => setTimeout(r, 10))
+    })
+    // Exactly one "cited" badge should appear (only source [1])
+    const citedBadges = document.querySelectorAll('span')
+    const citedCount = [...citedBadges].filter(el => el.textContent === 'cited').length
+    expect(citedCount).toBe(1)
   })
 
   it('shows error message when fetch fails', async () => {
