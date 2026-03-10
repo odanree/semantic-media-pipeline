@@ -11,6 +11,7 @@ Coverage
 - Search-status: qdrant reachability endpoint structure
 """
 
+import pytest
 import numpy as np
 from unittest.mock import MagicMock, call
 
@@ -265,6 +266,25 @@ def test_search_dedup_keeps_frames_in_different_windows(client, mock_qdrant):
     assert data["count"] == 3
 
 
+def test_search_dedup_collapses_frames_straddling_bucket_boundary(client, mock_qdrant):
+    """
+    Regression: frames at 744 s, 748 s, 750 s are only 2–6 s apart but straddle
+    fixed-grid 5 s bucket boundaries (748//5=149, 744//5=148, 750//5=150).
+    The old bucket approach kept all three; greedy NMS correctly collapses to 1.
+    """
+    hits = [
+        _make_video_hit("video.mp4", 0.286, timestamp=748.0),  # highest — anchor
+        _make_video_hit("video.mp4", 0.281, timestamp=744.0),  # 4 s away — suppressed
+        _make_video_hit("video.mp4", 0.275, timestamp=750.0),  # 2 s away — suppressed
+    ]
+    mock_qdrant.query_points_groups.return_value = MagicMock(groups=[_make_group(hits)])
+
+    data = client.post("/api/search", json={"query": "frontyard"}).json()
+    assert data["count"] == 1
+    assert data["results"][0]["similarity"] == pytest.approx(0.286, rel=1e-3)
+    assert data["scenes_collapsed"] == 2
+
+
 def test_search_dedup_images_never_collapsed(client, mock_qdrant):
     """Images (timestamp=None) must always be kept — they have no temporal axis."""
     hits = [
@@ -362,3 +382,103 @@ def test_search_dedup_window_start_none_for_images(client, mock_qdrant):
     result = data["results"][0]
     assert result["scene_window_start"] is None
     assert result["scene_window_end"] is None
+
+
+# ---------------------------------------------------------------------------
+# Directory-cap image dedup tests (timelapse flood prevention)
+# ---------------------------------------------------------------------------
+
+def _make_timelapse_group(dir_path: str, filenames: list[str], base_score: float = 0.9):
+    """Helper: build separate single-hit groups for each timelapse JPG file."""
+    groups = []
+    for i, name in enumerate(filenames):
+        path = f"{dir_path}/{name}"
+        hit = _make_video_hit(path, base_score - i * 0.01, timestamp=None)
+        groups.append(_make_group([hit]))
+    return groups
+
+
+def test_search_dir_cap_limits_timelapse_images(client, mock_qdrant):
+    """
+    Regression: DJI timelapse JPGs from the same directory must be capped at
+    MAX_IMAGES_PER_DIR (default 2) when the directory contributes >=
+    TIMELAPSE_FLOOD_THRESHOLD (default 4) images.
+    """
+    groups = _make_timelapse_group(
+        "/mnt/source/DJI/TIMELAPSE/001",
+        ["TIMELAPSE_0688.JPG", "TIMELAPSE_0689.JPG", "TIMELAPSE_0690.JPG",
+         "TIMELAPSE_0691.JPG", "TIMELAPSE_0692.JPG"],
+    )
+    mock_qdrant.query_points_groups.return_value = MagicMock(groups=groups)
+
+    data = client.post("/api/search", json={"query": "frontyard"}).json()
+    # 5 images >= flood_threshold(4) → capped to MAX_IMAGES_PER_DIR=2
+    assert data["count"] == 2
+    assert data["scenes_collapsed"] == 3
+
+
+def test_search_dir_cap_keeps_best_scoring_images(client, mock_qdrant):
+    """The images kept from a capped directory are the highest-scoring ones."""
+    # 5 images so the flood threshold (4) is triggered
+    groups = _make_timelapse_group(
+        "/mnt/source/DJI/TIMELAPSE/001",
+        ["TIMELAPSE_0688.JPG", "TIMELAPSE_0689.JPG", "TIMELAPSE_0690.JPG",
+         "TIMELAPSE_0691.JPG", "TIMELAPSE_0692.JPG"],
+        base_score=0.9,  # scores: 0.90, 0.89, 0.88, 0.87, 0.86
+    )
+    mock_qdrant.query_points_groups.return_value = MagicMock(groups=groups)
+
+    data = client.post("/api/search", json={"query": "frontyard"}).json()
+    assert data["count"] == 2
+    assert data["results"][0]["similarity"] == pytest.approx(0.90, rel=1e-3)
+    assert data["results"][1]["similarity"] == pytest.approx(0.89, rel=1e-3)
+
+
+def test_search_dir_cap_does_not_affect_small_photo_series(client, mock_qdrant):
+    """
+    A normal photo series with fewer images than the flood threshold must NOT
+    be capped — all images pass through regardless of MAX_IMAGES_PER_DIR.
+    E.g. 3 vacation shots in the same album folder.
+    """
+    groups = _make_timelapse_group(
+        "/mnt/source/Pixel 9 Nov 2025",
+        ["PXL_001.JPG", "PXL_002.JPG", "PXL_003.JPG"],  # 3 < flood_threshold(4)
+        base_score=0.9,
+    )
+    mock_qdrant.query_points_groups.return_value = MagicMock(groups=groups)
+
+    data = client.post("/api/search", json={"query": "frontyard"}).json()
+    # 3 < flood_threshold → all 3 pass through, cap never activates
+    assert data["count"] == 3
+
+
+def test_search_dir_cap_does_not_affect_different_directories(client, mock_qdrant):
+    """Two separate timelapse directories are each capped independently."""
+    groups = (
+        _make_timelapse_group("/mnt/source/DJI/TIMELAPSE/001",
+                              ["T_0001.JPG", "T_0002.JPG", "T_0003.JPG",
+                               "T_0004.JPG", "T_0005.JPG"])
+        + _make_timelapse_group("/mnt/source/DJI/TIMELAPSE/002",
+                                ["T_0001.JPG", "T_0002.JPG", "T_0003.JPG",
+                                 "T_0004.JPG", "T_0005.JPG"])
+    )
+    mock_qdrant.query_points_groups.return_value = MagicMock(groups=groups)
+
+    data = client.post("/api/search", json={"query": "frontyard"}).json()
+    # 2 kept from dir 001 + 2 kept from dir 002 = 4
+    assert data["count"] == 4
+
+
+def test_search_dir_cap_does_not_affect_video_frames(client, mock_qdrant):
+    """Video frames (timestamp != None) are never capped by the directory cap."""
+    hits = [
+        _make_video_hit("/mnt/source/video/clip.mp4", 0.9, timestamp=10.0),
+        _make_video_hit("/mnt/source/video/clip.mp4", 0.8, timestamp=20.0),
+        _make_video_hit("/mnt/source/video/clip.mp4", 0.7, timestamp=30.0),
+    ]
+    mock_qdrant.query_points_groups.return_value = MagicMock(
+        groups=[_make_group([h]) for h in hits]
+    )
+
+    data = client.post("/api/search", json={"query": "action"}).json()
+    assert data["count"] == 3

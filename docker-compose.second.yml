@@ -170,6 +170,8 @@ services:
       - PROXY_ROOT=/mnt/proxies
       - REDIS_URL=redis://lumen2-redis:6379
       - DATABASE_URL=postgresql://lumen2_user:${DATABASE_PASSWORD_2}@lumen2-postgres:5432/lumen2
+      - CLIP_MODEL_NAME=clip-ViT-B-32
+      - ALLOWED_ORIGINS=https://lumen.danhle.net,http://localhost:3000,http://localhost:3001,http://localhost:3002
     command: uvicorn main:app --host 0.0.0.0 --port 8000
     volumes:
       - media2_data:/data/media

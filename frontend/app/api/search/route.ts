@@ -6,7 +6,7 @@ export async function POST(request: NextRequest) {
   const BACKEND_API_KEY = process.env.BACKEND_API_KEY || ''
   try {
     const body = await request.json()
-    const { query, limit = 20, threshold, min_similarity } = body
+    const { query, limit = 20, threshold, min_similarity, dedup } = body
 
     if (!query) {
       return NextResponse.json({ error: 'Query is required' }, { status: 400 })
@@ -23,7 +23,7 @@ export async function POST(request: NextRequest) {
         'Content-Type': 'application/json',
         ...(BACKEND_API_KEY && { 'X-API-Key': BACKEND_API_KEY }),
       },
-      body: JSON.stringify({ query, limit, threshold: effectiveThreshold }),
+      body: JSON.stringify({ query, limit, threshold: effectiveThreshold, ...(dedup === false && { dedup: false }) }),
     })
 
     if (!response.ok) {
