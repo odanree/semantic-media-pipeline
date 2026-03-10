@@ -35,7 +35,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/). Version
 
 ---
 
-## [v1.5.0] — 2025-12-01
+## [v1.5.0] — 2026-03-08
 
 ### Added
 - **Semantic topic tag extraction** — CLIP-based tag suggestions surfaced in search UI (PR #27)
@@ -60,7 +60,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/). Version
 
 ---
 
-## [v1.1.0] — 2025-08-15
+## [v1.1.0] — 2026-03-01
 
 ### Added
 - **Real-time WebSocket dashboard** — PostgreSQL `LISTEN/NOTIFY` trigger system with two broadcast channels:
@@ -72,7 +72,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/). Version
 
 ---
 
-## [v1.0.0] — 2025-07-01
+## [v1.0.0] — 2026-03-01
 
 ### Added
 - **Media ingestion pipeline** — discovers and indexes photos (JPEG/PNG) and videos (MP4/MOV) across nested directories
