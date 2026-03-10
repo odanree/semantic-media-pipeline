@@ -515,7 +515,7 @@ describe('AskPanel', () => {
     })
     // Exactly one "cited" badge should appear (only source [1])
     const citedBadges = document.querySelectorAll('span')
-    const citedCount = [...citedBadges].filter(el => el.textContent === 'cited').length
+    const citedCount = [...citedBadges].filter(el => el.textContent.trim() === '✓ cited').length
     expect(citedCount).toBe(1)
   })
 
