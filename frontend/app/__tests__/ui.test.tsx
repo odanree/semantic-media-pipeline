@@ -515,7 +515,7 @@ describe('AskPanel', () => {
     })
     // Exactly one "cited" badge should appear (only source [1])
     const citedBadges = document.querySelectorAll('span')
-    const citedCount = [...citedBadges].filter(el => el.textContent === 'cited').length
+    const citedCount = [...citedBadges].filter(el => el.textContent.trim() === '✓ cited').length
     expect(citedCount).toBe(1)
   })
 
@@ -627,5 +627,49 @@ describe('AskPanel', () => {
     })
     const body = JSON.parse(fetchMock.mock.calls[0][1].body)
     expect(body.dedup).toBe(true)
+  })
+
+  it('displays video thumbnails and captions in source list', async () => {
+    const mockResult = {
+      question: 'test',
+      answer: 'Here is a result [1]',
+      sources: [
+        {
+          file_path: '/media/test.mp4',
+          file_type: 'video',
+          similarity: 0.9,
+          timestamp: 10.5,
+          caption: 'A person running in the park',
+        },
+      ],
+      model_used: 'gpt-4o',
+      retrieval_count: 1,
+      execution_time_ms: 200,
+      scenes_collapsed: 0,
+    }
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve(mockResult),
+    }))
+    render(<AskPanel />)
+    fireEvent.change(screen.getByRole('textbox', { name: /question/i }), {
+      target: { value: 'test' },
+    })
+    await act(async () => {
+      fireEvent.submit(screen.getByRole('textbox', { name: /question/i }).closest('form')!)
+      await new Promise(r => setTimeout(r, 10))
+    })
+    // Verify thumbnail image is rendered with correct src
+    const thumbnail = document.querySelector('img[src*="/api/thumbnail"]') as HTMLImageElement | null
+    expect(thumbnail).toBeTruthy()
+    if (thumbnail) {
+      expect(thumbnail.src).toContain('/api/thumbnail')
+      expect(thumbnail.src).toContain('test.mp4')
+      expect(thumbnail.src).toContain('t=10.5')
+    }
+    // Verify caption is displayed
+    expect(screen.getByText(/A person running in the park/i)).toBeTruthy()
+    // Verify cited badge appears
+    expect(screen.getByText('✓ cited')).toBeTruthy()
   })
 })

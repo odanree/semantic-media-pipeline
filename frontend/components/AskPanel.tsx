@@ -148,14 +148,20 @@ export default function AskPanel() {
             const citedIndices = parseCitedIndices(result.answer)
             return (
               <div>
-                <h4 className="text-sm font-semibold text-gray-400 uppercase tracking-wide mb-3">
+                <h4 className="text-sm font-semibold text-gray-400 uppercase tracking-wide mb-3 flex items-center gap-2">
                   Retrieved Sources
+                  <span className="text-xs text-gray-500 font-normal">
+                    ({result.sources.filter((_, i) => citedIndices.has(i + 1)).length} referenced)
+                  </span>
                 </h4>
                 <div className="space-y-2">
                   {result.sources.map((src, i) => {
                     const isCited = citedIndices.has(i + 1)
                     const isVideo = src.file_type === 'video'
                     const filename = src.file_path.split('/').pop() ?? src.file_path
+                    const thumbnailUrl = isVideo && src.timestamp !== undefined
+                      ? `/api/thumbnail?path=${encodeURIComponent(src.file_path)}&t=${src.timestamp}`
+                      : null
                     return (
                       <div
                         key={i}
@@ -170,29 +176,61 @@ export default function AskPanel() {
                             ? 'bg-blue-900/30 border border-blue-500'
                             : 'bg-gray-800 border border-gray-700',
                           isVideo
-                            ? 'cursor-pointer hover:bg-gray-700'
+                            ? 'cursor-pointer hover:bg-gray-700 hover:border-gray-600'
                             : '',
                         ].join(' ')}
                       >
-                        <span className={`font-mono w-6 shrink-0 ${isCited ? 'text-blue-400 font-bold' : 'text-gray-500'}`}>
+                        {/* Citation number */}
+                        <span className={`font-mono w-6 shrink-0 text-center ${isCited ? 'text-blue-400 font-bold' : 'text-gray-500'}`}>
                           [{i + 1}]
                         </span>
-                        {isVideo && (
-                          <span className="text-blue-400 shrink-0 text-base" aria-hidden>▶</span>
+
+                        {/* Thumbnail for video sources */}
+                        {isVideo && thumbnailUrl && (
+                          <div className="relative w-12 h-12 rounded overflow-hidden shrink-0 bg-gray-900 border border-gray-600">
+                            {/* eslint-disable-next-line @next/next/no-img-element */}
+                            <img
+                              src={thumbnailUrl}
+                              alt={filename}
+                              className="w-full h-full object-cover"
+                              loading="lazy"
+                            />
+                            {/* Play icon overlay */}
+                            <div className="absolute inset-0 flex items-center justify-center bg-black/40">
+                              <span className="text-white text-xs">▶</span>
+                            </div>
+                          </div>
                         )}
-                        <span className="text-blue-400 truncate flex-1 font-mono text-xs">
-                          {filename}
-                        </span>
-                        <span className="text-gray-500 shrink-0 capitalize">{src.file_type}</span>
-                        {src.timestamp !== undefined && (
-                          <span className="text-gray-500 shrink-0">{src.timestamp.toFixed(1)}s</span>
-                        )}
-                        <span className="text-green-400 shrink-0 font-medium">
-                          {(src.similarity * 100).toFixed(0)}%
-                        </span>
-                        {isCited && (
-                          <span className="text-blue-400 shrink-0 text-xs font-semibold">cited</span>
-                        )}
+
+                        {/* Info section */}
+                        <div className="flex-1 min-w-0">
+                          <div className="text-blue-400 truncate font-mono text-xs">
+                            {filename}
+                          </div>
+                          {src.caption && (
+                            <div className="text-gray-400 text-xs truncate">
+                              {src.caption}
+                            </div>
+                          )}
+                        </div>
+
+                        {/* Metadata */}
+                        <div className="flex items-center gap-2 shrink-0">
+                          <span className="text-gray-500 shrink-0 capitalize text-xs">{src.file_type}</span>
+                          {src.timestamp !== undefined && (
+                            <span className="text-gray-500 shrink-0 text-xs">{src.timestamp.toFixed(1)}s</span>
+                          )}
+                          <span className="text-green-400 shrink-0 font-medium text-xs">
+                            {(src.similarity * 100).toFixed(0)}%
+                          </span>
+                          {isCited ? (
+                            <span className="text-blue-400 shrink-0 text-xs font-semibold px-2 py-1 bg-blue-900/50 rounded">
+                              ✓ cited
+                            </span>
+                          ) : (
+                            <span className="text-gray-500 shrink-0 text-xs px-2 py-1">not cited</span>
+                          )}
+                        </div>
                       </div>
                     )
                   })}
