@@ -25,6 +25,9 @@ from qdrant_client import QdrantClient
 
 # Import routers (these may use sentence_transformers internally)
 from routers import health, ingest, search, updates, stats, ask, admin
+from routers import agent as agent_router
+from routers import detect as detect_router
+from middleware.audit import AuditMiddleware
 from auth import require_api_key
 from rate_limit import limiter, LIMIT_DEFAULT
 from slowapi import _rate_limit_exceeded_handler
@@ -44,6 +47,8 @@ app = FastAPI(
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 app.add_middleware(SlowAPIMiddleware)
+# Audit every non-health request to audit_logs table (fire-and-forget, never blocks)
+app.add_middleware(AuditMiddleware)
 
 # Add CORS middleware
 # ALLOWED_ORIGINS env var: comma-separated list of allowed origins.
@@ -72,6 +77,8 @@ app.include_router(ask.router,      prefix="/api", tags=["rag"],           depen
 app.include_router(updates.router,  prefix="/api", tags=["realtime"])       # WS — no HTTP auth
 app.include_router(stats.router,    prefix="/api", tags=["observability"], dependencies=[Depends(require_api_key)])
 app.include_router(admin.router,    prefix="/api", tags=["admin"],         dependencies=[Depends(require_api_key)])
+app.include_router(agent_router.router, prefix="/api", tags=["agents"],    dependencies=[Depends(require_api_key)])
+app.include_router(detect_router.router, prefix="/api", tags=["vision"],   dependencies=[Depends(require_api_key)])
 
 
 @app.get("/api/ping", tags=["health"], include_in_schema=False)
@@ -107,6 +114,16 @@ async def startup_event():
     else:
         print("Auth: disabled (API_KEY_REQUIRED=false — set to true for production)")
     print(f"Rate limits: search={os.getenv('RATE_LIMIT_SEARCH','30/min')}, stream={os.getenv('RATE_LIMIT_STREAM','60/min')}, default={os.getenv('RATE_LIMIT_DEFAULT','200/min')} [Redis: {os.getenv('REDIS_URL','redis://redis:6379')}]")
+
+    # Ensure audit_logs table exists (idempotent — safe to run on every restart)
+    try:
+        from db.models import Base
+        from db.session import get_async_engine
+        engine = get_async_engine()
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+    except Exception as exc:
+        print(f"WARNING: could not create audit_logs table: {exc}")
 
     # Preload CLIP model so first search request is instant
     import asyncio
