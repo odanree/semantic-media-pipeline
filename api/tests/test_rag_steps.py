@@ -241,7 +241,7 @@ class TestQdrantRetrieveStep:
         from rag.steps.qdrant_retrieve import QdrantRetrieveStep
 
         qdrant = MagicMock()
-        qdrant.search.side_effect = RuntimeError("connection refused")
+        qdrant.query_points.side_effect = RuntimeError("connection refused")
         ctx = RAGContext(query="q", query_embedding=np.random.rand(768))
         ctx = asyncio.run(QdrantRetrieveStep(qdrant).run(ctx))
         assert "QdrantRetrieveStep failed" in ctx.error
@@ -251,7 +251,9 @@ class TestQdrantRetrieveStep:
         from rag.steps.qdrant_retrieve import QdrantRetrieveStep
 
         qdrant = MagicMock()
-        qdrant.search.return_value = [self._hit("a.jpg"), self._hit("b.jpg")]
+        result = MagicMock()
+        result.points = [self._hit("a.jpg"), self._hit("b.jpg")]
+        qdrant.query_points.return_value = result
         ctx = RAGContext(query="q", query_embedding=np.random.rand(768), dedup=False)
         ctx = asyncio.run(QdrantRetrieveStep(qdrant).run(ctx))
         assert len(ctx.retrieved) == 2
@@ -263,7 +265,9 @@ class TestQdrantRetrieveStep:
         from rag.steps.qdrant_retrieve import QdrantRetrieveStep
 
         qdrant = MagicMock()
-        qdrant.search.return_value = [self._hit(f"{i}.jpg") for i in range(10)]
+        result = MagicMock()
+        result.points = [self._hit(f"{i}.jpg") for i in range(10)]
+        qdrant.query_points.return_value = result
         ctx = RAGContext(query="q", query_embedding=np.random.rand(768), limit=3, dedup=False)
         ctx = asyncio.run(QdrantRetrieveStep(qdrant).run(ctx))
         assert len(ctx.retrieved) == 3
@@ -272,10 +276,12 @@ class TestQdrantRetrieveStep:
         from rag.steps.qdrant_retrieve import QdrantRetrieveStep
 
         qdrant = MagicMock()
-        qdrant.search.return_value = []
+        result = MagicMock()
+        result.points = []
+        qdrant.query_points.return_value = result
         ctx = RAGContext(query="q", query_embedding=np.random.rand(768), limit=5, dedup=False)
         asyncio.run(QdrantRetrieveStep(qdrant, fetch_multiplier=4).run(ctx))
-        called_limit = qdrant.search.call_args.kwargs.get("limit") or qdrant.search.call_args.args[2]
+        called_limit = qdrant.query_points.call_args.kwargs.get("limit")
         # 5 * 4 = 20
         assert called_limit == 20
 

@@ -15,8 +15,8 @@ from rag.steps.embed_query import EmbedQueryStep
 from rag.steps.qdrant_retrieve import QdrantRetrieveStep
 
 
-async def search_agent_run(query: str, limit: int = 10) -> list[dict]:
-    ctx = RAGContext(query=query, limit=limit, collection=get_collection_name())
+async def search_agent_run(query: str, limit: int = 10, threshold: float = 0.2) -> list[dict]:
+    ctx = RAGContext(query=query, limit=limit, threshold=threshold, collection=get_collection_name())
 
     ctx = await EmbedQueryStep(get_clip_model()).run(ctx)
     if ctx.error:

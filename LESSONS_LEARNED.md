@@ -1234,6 +1234,39 @@ export async function POST(request: NextRequest) {
 
 ---
 
+## 22. `qdrant-client` Minor Version Removed `.search()` — Mocked Tests Passed, Prod Returned 0 Results (2 hotfixes)
+
+**What happened:** After merging the v2.0.0 multi-agent feature, `POST /api/agent/query` always returned 0 results on prod. Direct `POST /api/search` worked fine. The agent coordinator returned in 62ms — too fast for CLIP inference — meaning the search node was silently short-circuiting.
+
+**Root cause:** `qdrant-client` was pinned to `>=1.7` in `requirements.txt`. Prod had installed `1.17.0`, which removed `QdrantClient.search()` entirely in favor of `query_points()`. All tests mock Qdrant at the dependency-injection layer (`get_qdrant`), so the mock's `.search()` attribute worked fine in CI. On prod the real client raised `AttributeError`, which was caught by the broad `except Exception` in `QdrantRetrieveStep` and silently turned into an empty result list.
+
+**Compounding bug:** The agent endpoint also accepted `threshold` and `limit` parameters that were never wired into `AgentState` or passed to `search_agent_run()` — they were silently ignored. This was masked by the Qdrant failure (0 results regardless) but would have caused incorrect behavior even after fixing the client.
+
+**Fix:** Replace `self._qdrant.search(...)` with `self._qdrant.query_points(...)` in `QdrantRetrieveStep`. Add `threshold`/`limit` fields to `AgentState` TypedDict and thread them through `run_search_agent` → `search_agent_run()`.
+
+**How to prevent:**
+- Pin third-party SDK versions to an exact minor: `qdrant-client>=1.17.0,<2.0` — not open-ended `>=X.Y`
+- Add a smoke test that calls the real Qdrant client method path (even with a local Qdrant in CI via a service container) to catch removed APIs
+- When a handler catches `Exception` and returns an empty result, log a warning — silent failures are extremely hard to diagnose on prod
+- When an endpoint accepts parameters (`threshold`, `limit`), write a test that passes non-default values and asserts they change the outcome
+
+---
+
+## 23. Unclosed Mermaid Code Fence Broke Entire README Render on GitHub
+
+**What happened:** GitHub showed `Unable to render rich display` for the entire README. The Mermaid diagram starting at line 14 had no closing ` ``` ` fence — GitHub's renderer treated everything below it as part of the code block and gave up.
+
+**Why `replace_string_in_file` failed repeatedly:** The file had CRLF line endings (`\r\n`) from Windows. The tool's old-string matching uses exact bytes, and patterns copied from the editor (which normalizes to LF) never matched. `re.search(r'```mermaid', content)` also returned `None` when reading the file in text mode on Windows because line endings were normalized differently at read time vs. what was on disk.
+
+**Fix:** Read the file in binary mode (`open('README.md', 'rb')`), confirm the raw bytes, then use Python to overwrite the affected line range directly. Alternatively, replace the mermaid diagram with a plain ASCII art block which renders everywhere (GitHub, editors, terminals) without renderer support.
+
+**How to prevent:**
+- Close every fenced code block — use a linter or pre-commit hook (`markdownlint` rule `MD040`/`MD031`) that catches unclosed fences before push
+- When `replace_string_in_file` fails on a known-present string, check line endings first: `file README.md` or read in binary mode before attempting more string replacements
+- Prefer ASCII diagrams over Mermaid for README architecture overviews — no renderer dependency, copy-pastes cleanly, works in all diff views
+
+---
+
 ## Cross-Cutting Themes
 
 | Theme | Issues |
@@ -1264,5 +1297,9 @@ export async function POST(request: NextRequest) {
 | **Multi-stack compose files must hardcode stack-local service hostnames — missing env vars silently cross-connect stacks** | #15 (lumen2 REDIS_URL → lumen1) |
 | **Qdrant collection must exist before any task runs — create in worker startup hook, not inside the task** | #16 (VectorParams(size=None) retry loop) |
 | **`init-db.sql` and migration scripts must stay in sync — fresh deploys break silently if init script predates schema changes** | #17 (observability columns missing on cloud) |
+| **SDK minor versions can silently remove methods — pin to exact minor and add a smoke test against the real client** | #22 (qdrant-client 1.17 removed `.search()`) |
+| **Endpoint params not threaded into internal state are silently ignored — test with non-default values to assert they change outcome** | #22 (agent threshold/limit) |
+| **CRLF line endings make exact string replacement unreliable — read in binary mode to diagnose before retrying** | #23 (README mermaid CRLF) |
+| **Unclosed Mermaid fences break the entire README renderer — use `markdownlint` pre-commit or prefer ASCII diagrams** | #23 (README render failure) |
 | **`STORAGE_BACKEND=s3` must be checked in every layer that serves files — API endpoints are not exempt** | #18 (stream/thumbnail filesystem-only) |
 | **Variables only assigned in one branch must not be referenced in shared `except` blocks** | #18 (UnboundLocalError in S3 error handler) |
