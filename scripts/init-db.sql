@@ -104,3 +104,22 @@ DROP TRIGGER IF EXISTS media_vector_trigger ON media_files;
 CREATE TRIGGER media_vector_trigger
 AFTER UPDATE ON media_files
 FOR EACH ROW EXECUTE FUNCTION notify_vector_indexed();
+
+-- ============================================================================
+-- Audit Logging (written by api/middleware/audit.py)
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS audit_logs (
+    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    timestamp   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    endpoint    VARCHAR(512) NOT NULL,
+    method      VARCHAR(10)  NOT NULL,
+    request_body_hash VARCHAR(64),   -- SHA-256 hex of raw body; NULL for GETs
+    response_status   INTEGER NOT NULL,
+    response_ms       INTEGER NOT NULL,
+    client_ip   VARCHAR(45),
+    user_agent  VARCHAR(512)
+);
+
+CREATE INDEX IF NOT EXISTS idx_audit_timestamp ON audit_logs (timestamp);
+CREATE INDEX IF NOT EXISTS idx_audit_endpoint  ON audit_logs (endpoint);
+CREATE INDEX IF NOT EXISTS idx_audit_status    ON audit_logs (response_status);
