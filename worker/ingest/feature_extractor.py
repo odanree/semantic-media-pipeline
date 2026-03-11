@@ -61,7 +61,6 @@ def extract_visual_features(img: Image.Image) -> dict:
 def _color_features(img: Image.Image) -> dict:
     """Compute dominant HSV color palette."""
     img_rgb = img.convert("RGB").resize((64, 64))  # fast quantization at small size
-    arr = np.array(img_rgb, dtype=np.float32) / 255.0
 
     # Convert to HSV for perceptual color grouping
     from PIL import ImageStat
