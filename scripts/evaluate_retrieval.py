@@ -494,6 +494,60 @@ def print_summary(
 # CLI
 # ---------------------------------------------------------------------------
 
+
+def _log_to_mlflow(
+    agg: dict,
+    thresholds: dict,
+    args,
+) -> None:
+    """
+    Log aggregate retrieval metrics to MLflow.
+
+    Silently no-ops if mlflow is not installed so CI never hard-fails when
+    --mlflow is absent and the package isn't in the environment.
+
+    Reads MLFLOW_TRACKING_URI from the environment (defaults to ./mlruns).
+    """
+    try:
+        import mlflow  # noqa: PLC0415
+        from datetime import datetime, timezone as _tz  # noqa: PLC0415
+
+        tracking_uri = os.getenv("MLFLOW_TRACKING_URI", "mlruns")
+        mlflow.set_tracking_uri(tracking_uri)
+        mlflow.set_experiment("lumen-retrieval-eval")
+
+        ts = datetime.now(_tz.utc).strftime("%Y%m%dT%H%M%SZ")
+        model_tag = os.getenv("LLM_MODEL", "unknown")
+
+        with mlflow.start_run(run_name=f"retrieval-eval-{ts}"):
+            # Params
+            mlflow.log_param("threshold",          args.threshold)
+            mlflow.log_param("limit",              args.limit)
+            mlflow.log_param("dataset",            args.dataset)
+            mlflow.log_param("generate_paraphrases", args.generate_paraphrases)
+            mlflow.log_param("n_paraphrases",      args.n_paraphrases)
+            mlflow.log_param("llm_model",          model_tag)
+
+            # Core metrics
+            for key in (
+                "hit_rate", "mean_score", "score_std", "mean_snr",
+                "mean_separation", "paraphrase_consistency",
+                "paraphrase_consistency_std",
+            ):
+                if key in agg:
+                    mlflow.log_metric(key, agg[key])
+
+            # CI gate thresholds (logged as params for traceability)
+            for k, v in thresholds.items():
+                mlflow.log_param(f"gate_{k}", v)
+
+        log.info("MLflow run logged → %s", tracking_uri)
+    except ImportError:
+        log.warning("mlflow not installed — skipping MLflow logging (install mlflow>=2.14.0)")
+    except Exception:
+        log.exception("MLflow logging failed — metrics not persisted")
+
+
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Evaluate CLIP retrieval SNR")
     p.add_argument("--dataset",             default="scripts/eval_dataset.json")
@@ -524,6 +578,14 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=float(os.getenv("LLM_TIMEOUT", "120")),
         help="LLM request timeout in seconds for paraphrase generation (default: 120).",
+    )
+    p.add_argument(
+        "--mlflow",
+        action="store_true",
+        help=(
+            "Log metrics to MLflow. Uses MLFLOW_TRACKING_URI env var "
+            "(defaults to ./mlruns if unset). Requires mlflow>=2.14."
+        ),
     )
     return p.parse_args()
 
@@ -572,6 +634,9 @@ async def main_async(args: argparse.Namespace) -> int:
         with open(out, "w") as f:
             json.dump({"aggregate": agg, "thresholds": thresholds, "queries": records}, f, indent=2)
         log.info("Results saved → %s", out)
+
+    if args.mlflow:
+        _log_to_mlflow(agg, thresholds, args)
 
     return 0 if all_pass else 1
 
