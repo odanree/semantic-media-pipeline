@@ -29,6 +29,7 @@ langchain-core>=0.3.0
 
 # MongoDB / Azure CosmosDB support
 motor>=3.6.0
+mongomock>=4.3.0           # in-process MongoDB stub for unit tests
 
 # ONNX export + quantization
 onnx>=1.16.0

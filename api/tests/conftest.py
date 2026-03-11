@@ -88,6 +88,29 @@ _API_DIR = os.path.dirname(os.path.dirname(__file__))  # …/api/
 if _API_DIR not in sys.path:
     sys.path.insert(0, _API_DIR)
 
+# Expose 'api' as a package rooted at api/ so that `from api.db.*` and
+# similar absolute imports resolve correctly inside scaffolded modules.
+import types as _types
+if "api" not in sys.modules:
+    _api_pkg = _types.ModuleType("api")
+    _api_pkg.__path__ = [_API_DIR]
+    _api_pkg.__package__ = "api"
+    sys.modules["api"] = _api_pkg
+
+# Stub api.models — MediaFile ORM class is not yet defined; downstream
+# repository methods import it with `# type: ignore[import]`.
+if "api.models" not in sys.modules:
+    _api_models = _types.ModuleType("api.models")
+    _api_models.MediaFile = MagicMock(name="MediaFile")
+    sys.modules["api.models"] = _api_models
+
+# Stub db.session — session factory module referenced by metadata_agent but
+# not yet implemented in the scaffold.
+if "db.session" not in sys.modules:
+    _db_session_mod = _types.ModuleType("db.session")
+    _db_session_mod.get_async_session_factory = MagicMock(name="get_async_session_factory")
+    sys.modules["db.session"] = _db_session_mod
+
 
 # ---------------------------------------------------------------------------
 # 3. Shared mock objects (session-scoped = created once per test run)
