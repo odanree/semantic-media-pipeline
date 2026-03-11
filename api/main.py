@@ -26,6 +26,8 @@ from qdrant_client import QdrantClient
 # Import routers (these may use sentence_transformers internally)
 from routers import health, ingest, search, updates, stats, ask, admin
 from routers import agent as agent_router
+from routers import detect as detect_router
+from middleware.audit import AuditMiddleware
 from auth import require_api_key
 from rate_limit import limiter, LIMIT_DEFAULT
 from slowapi import _rate_limit_exceeded_handler
@@ -45,6 +47,8 @@ app = FastAPI(
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 app.add_middleware(SlowAPIMiddleware)
+# Audit every non-health request to audit_logs table (fire-and-forget, never blocks)
+app.add_middleware(AuditMiddleware)
 
 # Add CORS middleware
 # ALLOWED_ORIGINS env var: comma-separated list of allowed origins.
@@ -74,6 +78,7 @@ app.include_router(updates.router,  prefix="/api", tags=["realtime"])       # WS
 app.include_router(stats.router,    prefix="/api", tags=["observability"], dependencies=[Depends(require_api_key)])
 app.include_router(admin.router,    prefix="/api", tags=["admin"],         dependencies=[Depends(require_api_key)])
 app.include_router(agent_router.router, prefix="/api", tags=["agents"],    dependencies=[Depends(require_api_key)])
+app.include_router(detect_router.router, prefix="/api", tags=["vision"],   dependencies=[Depends(require_api_key)])
 
 
 @app.get("/api/ping", tags=["health"], include_in_schema=False)

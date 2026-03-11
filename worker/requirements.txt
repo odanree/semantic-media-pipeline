@@ -28,6 +28,8 @@ psutil==6.0.0
 librosa>=0.10.2
 scipy>=1.13.0
 
+# YOLO object detection (yolo_detector.py)
+ultralytics>=8.0.0
 # OCR for visual feature extraction (optional — skipped gracefully if absent)
 # pytesseract requires tesseract-ocr system package: apt-get install tesseract-ocr
 # Uncomment if desired:
