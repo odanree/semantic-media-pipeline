@@ -127,17 +127,22 @@ class AuditMiddleware(BaseHTTPMiddleware):
         response = await call_next(request)
         elapsed_ms = int((time.perf_counter() - t0) * 1000)
 
-        # Fire-and-forget — never block the caller
-        asyncio.ensure_future(
-            _write_audit_row(
-                endpoint=path,
-                method=request.method,
-                body_hash=body_hash,
-                status=response.status_code,
-                elapsed_ms=elapsed_ms,
-                client_ip=_client_ip(request),
-                user_agent=request.headers.get("User-Agent"),
+        # Fire-and-forget — never block the caller.
+        # Catch errors from ensure_future itself (e.g. loop not running in tests)
+        # so the response is always returned to the caller.
+        try:
+            asyncio.ensure_future(
+                _write_audit_row(
+                    endpoint=path,
+                    method=request.method,
+                    body_hash=body_hash,
+                    status=response.status_code,
+                    elapsed_ms=elapsed_ms,
+                    client_ip=_client_ip(request),
+                    user_agent=request.headers.get("User-Agent"),
+                )
             )
-        )
+        except Exception:
+            log.exception("AuditMiddleware: could not schedule audit task for %s %s", request.method, path)
 
         return response
