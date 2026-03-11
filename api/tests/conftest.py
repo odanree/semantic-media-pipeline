@@ -77,6 +77,8 @@ os.environ.setdefault("RATE_LIMIT_ASK",    "1000/minute")
 os.environ.setdefault("RATE_LIMIT_SEARCH", "1000/minute")
 # Provide a dummy key so ask.py's OpenAI client init doesn't raise RuntimeError.
 os.environ.setdefault("OPENAI_API_KEY",   "test-key")
+# Disable audit middleware DB writes — no PostgreSQL in the test environment.
+os.environ.setdefault("AUDIT_ENABLED",    "false")
 
 # ---------------------------------------------------------------------------
 # 2. Ensure api/ is on sys.path so `from main import app` and `from routers…`
@@ -85,6 +87,29 @@ os.environ.setdefault("OPENAI_API_KEY",   "test-key")
 _API_DIR = os.path.dirname(os.path.dirname(__file__))  # …/api/
 if _API_DIR not in sys.path:
     sys.path.insert(0, _API_DIR)
+
+# Expose 'api' as a package rooted at api/ so that `from api.db.*` and
+# similar absolute imports resolve correctly inside scaffolded modules.
+import types as _types
+if "api" not in sys.modules:
+    _api_pkg = _types.ModuleType("api")
+    _api_pkg.__path__ = [_API_DIR]
+    _api_pkg.__package__ = "api"
+    sys.modules["api"] = _api_pkg
+
+# Stub api.models — MediaFile ORM class is not yet defined; downstream
+# repository methods import it with `# type: ignore[import]`.
+if "api.models" not in sys.modules:
+    _api_models = _types.ModuleType("api.models")
+    _api_models.MediaFile = MagicMock(name="MediaFile")
+    sys.modules["api.models"] = _api_models
+
+# Stub db.session — session factory module referenced by metadata_agent but
+# not yet implemented in the scaffold.
+if "db.session" not in sys.modules:
+    _db_session_mod = _types.ModuleType("db.session")
+    _db_session_mod.get_async_session_factory = MagicMock(name="get_async_session_factory")
+    sys.modules["db.session"] = _db_session_mod
 
 
 # ---------------------------------------------------------------------------
@@ -206,10 +231,25 @@ def client(mock_qdrant, mock_clip, mock_db_session, mock_llm):
     import routers.stats   # noqa: F401
     import routers.ingest  # noqa: F401
     import routers.ask     # noqa: F401
+    import routers.detect  # noqa: F401
 
     mock_s3 = MagicMock(name="s3_client")
 
+    # detect endpoint: return a canned payload so no YOLO model is loaded
+    _detect_payload = {
+        "yolo_labels":         ["person", "bicycle"],
+        "yolo_detections":     [
+            {"label": "person",  "confidence": 0.91, "bbox": [10.0, 20.0, 200.0, 400.0]},
+            {"label": "bicycle", "confidence": 0.77, "bbox": [50.0, 80.0, 300.0, 350.0]},
+        ],
+        "yolo_object_count":   2,
+        "yolo_model":          "yolov8n",
+        "yolo_conf_threshold": 0.25,
+    }
+    mock_detect = MagicMock(name="detect_from_bytes", return_value=_detect_payload)
+
     with (
+        patch("routers.detect.detect_from_bytes",  mock_detect),
         patch("routers.search.qdrant_client",    mock_qdrant),
         patch("routers.health.qdrant_client",    mock_qdrant),
         patch("routers.ask.qdrant_client",       mock_qdrant),
