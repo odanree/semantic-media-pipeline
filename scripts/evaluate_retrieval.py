@@ -28,10 +28,23 @@ Metrics computed:
                  Failure here means the index is empty or threshold is too high.
 
   Paraphrase consistency (self-supervised):
-    Each query is reworded and re-submitted. The Jaccard similarity of the two
+    Each query is reworded and re-submitted. The Jaccard similarity of the
     returned file-path sets is the consistency score. A stable semantic index
     should return largely the same results for equivalent queries.
     No ground-truth annotations required.
+
+    Two modes:
+      Default (no flag): uses _PARAPHRASES hand-written map — deterministic,
+        no external calls, safe for CI.
+
+      --generate-paraphrases: asks the configured LLM to produce N distinct
+        phrasings at runtime (default N=3). Reports mean AND std of Jaccard
+        across all variants. The std is itself a useful signal:
+          low std  → index is reliably stable across diverse surface forms
+          high std → brittle; some phrasings fall below the threshold
+        Uses the same LLM_PROVIDER / LLM_BASE_URL / LLM_MODEL / OPENAI_API_KEY
+        env vars already used by the api/llm/ layer. On LLM failure, falls
+        back to the hand-written map with a warning.
 
 CI gates (configurable with --*):
   --min-snr         default 2.0   — fail if overall SNR is below this
@@ -42,11 +55,18 @@ Usage:
     python scripts/evaluate_retrieval.py
     python scripts/evaluate_retrieval.py --threshold 0.22 --limit 10
     python scripts/evaluate_retrieval.py --output scripts/retrieval_results.json
+    python scripts/evaluate_retrieval.py --generate-paraphrases
+    python scripts/evaluate_retrieval.py --generate-paraphrases --n-paraphrases 5
     python scripts/evaluate_retrieval.py --min-snr 1.5 --min-separation 0.03
 
 Environment:
     API_BASE_URL   default http://localhost:8000
     API_KEY        forwarded as X-API-Key header if set
+    LLM_PROVIDER   openai | local  (used by --generate-paraphrases)
+    LLM_BASE_URL   e.g. http://localhost:11434/v1  (local provider)
+    LLM_MODEL      model name
+    LLM_TIMEOUT    seconds (default 120)
+    OPENAI_API_KEY required when LLM_PROVIDER=openai
 """
 
 from __future__ import annotations
@@ -76,8 +96,9 @@ _BANDS = [
     ("fair",   0.30, 0.40),
 ]
 
-# Simple paraphrase map — no LLM needed; hand-written synonyms are reproducible
-# and deterministic, which is what you want in a CI gate.
+# Hand-written paraphrase map — deterministic, no external dependencies.
+# Used by default in CI. Pass --generate-paraphrases to replace these with
+# LLM-generated variants at runtime (adversarial robustness mode).
 _PARAPHRASES: Dict[str, str] = {
     "Show me videos recorded during sunset at the beach":
         "Beach videos shot at dusk with warm golden light",
@@ -90,6 +111,103 @@ _PARAPHRASES: Dict[str, str] = {
     "Find videos where someone is speaking outdoors":
         "Outdoor footage where a person is talking",
 }
+
+_PARAPHRASE_PROMPT = """Generate {n} distinct paraphrases of the following search query.
+Each paraphrase must:
+  - Preserve the original intent exactly
+  - Use different vocabulary and sentence structure
+  - Represent how a real user might naturally phrase the same request
+  - NOT add new constraints or remove existing ones
+
+Return ONLY a JSON array of strings, no explanation.
+Example output: ["paraphrase one", "paraphrase two"]
+
+Original query: {query}"""
+
+
+async def _generate_paraphrases_llm(
+    query: str,
+    n: int,
+    timeout: float,
+) -> List[str]:
+    """
+    Ask the configured LLM to produce N paraphrases of a query at runtime.
+
+    Uses the same env vars as api/llm/ providers so no extra configuration
+    is needed beyond what's already set for the running stack.
+    Falls back to the hand-written map entry (or empty list) on any error.
+    """
+    provider = os.getenv("LLM_PROVIDER", "local").lower()
+    model = os.getenv("LLM_MODEL", "mistral")
+
+    try:
+        from openai import AsyncOpenAI  # soft dependency — already in requirements
+
+        if provider == "openai":
+            api_key = os.getenv("OPENAI_API_KEY", "")
+            if not api_key:
+                raise RuntimeError("OPENAI_API_KEY not set")
+            import httpx as _httpx
+            client = AsyncOpenAI(
+                api_key=api_key,
+                http_client=_httpx.AsyncClient(timeout=timeout),
+            )
+        else:  # local / Ollama / vLLM
+            base_url = os.getenv("LLM_BASE_URL", "http://localhost:11434/v1")
+            import httpx as _httpx
+            client = AsyncOpenAI(
+                base_url=base_url,
+                api_key="not-needed",
+                http_client=_httpx.AsyncClient(timeout=timeout),
+            )
+
+        resp = await client.chat.completions.create(
+            model=model,
+            messages=[{
+                "role": "user",
+                "content": _PARAPHRASE_PROMPT.format(n=n, query=query),
+            }],
+            temperature=0.9,   # high temp → diverse surface forms
+            max_tokens=300,
+        )
+        raw = resp.choices[0].message.content or ""
+
+        # Parse the JSON array the LLM returns
+        # Strip markdown fences if the model wraps it
+        raw = raw.strip().strip("```json").strip("```").strip()
+        paraphrases: List[str] = json.loads(raw)
+        if not isinstance(paraphrases, list):
+            raise ValueError("LLM did not return a JSON array")
+        return [str(p).strip() for p in paraphrases[:n] if str(p).strip()]
+
+    except Exception as exc:
+        log.warning("LLM paraphrase generation failed for '%s': %s", query[:50], exc)
+        return []
+
+
+async def build_paraphrase_map(
+    dataset: List[Dict],
+    n: int,
+    timeout: float,
+) -> Dict[str, List[str]]:
+    """
+    Build a query → [paraphrase, ...] map using the LLM.
+    Queries without a hand-written entry and with a failed LLM call
+    get an empty list (consistency will show None).
+    """
+    paraphrase_map: Dict[str, List[str]] = {}
+    for item in dataset:
+        q = item["question"]
+        log.info("Generating %d paraphrases for: %s", n, q[:55])
+        variants = await _generate_paraphrases_llm(q, n, timeout)
+        if not variants:
+            # Degrade gracefully: use hand-written entry as a single variant
+            fallback = _PARAPHRASES.get(q)
+            variants = [fallback] if fallback else []
+            if variants:
+                log.info("  → fell back to hand-written paraphrase")
+        paraphrase_map[q] = variants
+    return paraphrase_map
 
 
 # ---------------------------------------------------------------------------
@@ -205,7 +323,14 @@ async def run_evaluation(
     dataset: List[Dict],
     threshold: float,
     limit: int,
+    paraphrase_map: Optional[Dict[str, List[str]]] = None,
 ) -> List[Dict[str, Any]]:
+    """
+    paraphrase_map: query → list of paraphrase strings.
+      None / missing key  → fall back to _PARAPHRASES (single hand-written entry).
+      Empty list          → skip consistency for that query.
+      N strings           → evaluate all N; report mean + std Jaccard.
+    """
     records = []
     async with httpx.AsyncClient() as client:
         for item in dataset:
@@ -218,20 +343,40 @@ async def run_evaluation(
 
             metrics = _compute_query_metrics(results, threshold)
 
-            # Paraphrase consistency (self-supervised — no ground truth needed)
-            paraphrase = _PARAPHRASES.get(q)
-            consistency: Optional[float] = None
-            if paraphrase:
-                para_results = await _search(paraphrase, client, threshold, limit)
-                paths_orig = {r["file_path"] for r in results if "file_path" in r}
+            # Resolve which paraphrases to use for this query
+            if paraphrase_map is not None:
+                variants = paraphrase_map.get(q, [])
+                source = "generated"
+            else:
+                hw = _PARAPHRASES.get(q)
+                variants = [hw] if hw else []
+                source = "hand_written"
+
+            # Measure Jaccard for each variant; collect the distribution
+            paths_orig = {r["file_path"] for r in results if "file_path" in r}
+            jaccard_scores: List[float] = []
+            for variant in variants:
+                para_results = await _search(variant, client, threshold, limit)
                 paths_para = {r["file_path"] for r in para_results if "file_path" in r}
-                consistency = round(_jaccard(paths_orig, paths_para), 3)
+                jaccard_scores.append(_jaccard(paths_orig, paths_para))
+
+            if jaccard_scores:
+                mean_j = sum(jaccard_scores) / len(jaccard_scores)
+                variance_j = sum((s - mean_j) ** 2 for s in jaccard_scores) / len(jaccard_scores)
+                std_j: Optional[float] = round(math.sqrt(variance_j), 3)
+                consistency: Optional[float] = round(mean_j, 3)
+            else:
+                consistency = None
+                std_j = None
 
             records.append({
                 "id": item["id"],
                 "question": q,
                 "latency_ms": round(latency_ms, 1),
                 "paraphrase_consistency": consistency,
+                "paraphrase_consistency_std": std_j,
+                "paraphrase_source": source,
+                "paraphrase_variants": variants,
                 **metrics,
             })
 
@@ -256,6 +401,12 @@ def _aggregate(records: List[Dict]) -> Dict[str, float]:
     consistency_vals = [r["paraphrase_consistency"] for r in records if r["paraphrase_consistency"] is not None]
     mean_consistency = sum(consistency_vals) / len(consistency_vals) if consistency_vals else None
 
+    std_vals = [r["paraphrase_consistency_std"] for r in records if r.get("paraphrase_consistency_std") is not None]
+    mean_consistency_std = sum(std_vals) / len(std_vals) if std_vals else None
+
+    sources = {r.get("paraphrase_source") for r in records}
+    para_source = "generated" if "generated" in sources else "hand_written"
+
     return {
         "hit_rate": round(hit_rate, 3),
         "mean_snr": round(mean_snr, 3),
@@ -263,6 +414,8 @@ def _aggregate(records: List[Dict]) -> Dict[str, float]:
         "mean_score": round(mean_score, 4),
         "mean_latency_ms": round(mean_latency, 1),
         "mean_paraphrase_consistency": round(mean_consistency, 3) if mean_consistency is not None else None,
+        "mean_paraphrase_consistency_std": round(mean_consistency_std, 3) if mean_consistency_std is not None else None,
+        "paraphrase_source": para_source,
         "n_queries": n,
     }
 
@@ -291,13 +444,23 @@ def print_summary(
     print(f"  Mean separation:       {agg['mean_separation']:.4f}  (above noise floor)")
     print(f"  Mean latency:          {agg['mean_latency_ms']:.0f} ms")
     if agg.get("mean_paraphrase_consistency") is not None:
-        print(f"  Paraphrase consistency: {agg['mean_paraphrase_consistency']:.3f}  (Jaccard, 0–1)")
+        src = agg.get("paraphrase_source", "hand_written")
+        std_display = (
+            f"  ±{agg['mean_paraphrase_consistency_std']:.3f} std"
+            if agg.get("mean_paraphrase_consistency_std") is not None
+            else ""
+        )
+        print(
+            f"  Paraphrase consistency: {agg['mean_paraphrase_consistency']:.3f}"
+            f"{std_display}  (Jaccard, 0–1, source={src})"
+        )
 
     score_note = (
         "  SNR interpretation: >5 = tight/precise, 2-5 = acceptable, "
         "<2 = noisy retrieval\n"
         "  Separation: how far avg score sits above the similarity threshold.\n"
-        "  Paraphrase consistency: same results returned for semantically equivalent queries."
+        "  Paraphrase consistency: same results returned for semantically equivalent queries.\n"
+        "  Consistency std: low = stable index; high = brittle surface-form sensitivity."
     )
     print(f"\n{score_note}")
 
@@ -333,13 +496,35 @@ def print_summary(
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Evaluate CLIP retrieval SNR")
-    p.add_argument("--dataset",        default="scripts/eval_dataset.json")
-    p.add_argument("--output",         default=None)
-    p.add_argument("--threshold",      type=float, default=float(os.getenv("SEARCH_THRESHOLD", "0.22")))
-    p.add_argument("--limit",          type=int,   default=10)
-    p.add_argument("--min-snr",        type=float, default=2.0)
-    p.add_argument("--min-separation", type=float, default=0.05)
-    p.add_argument("--min-hit-rate",   type=float, default=0.50)
+    p.add_argument("--dataset",             default="scripts/eval_dataset.json")
+    p.add_argument("--output",              default=None)
+    p.add_argument("--threshold",           type=float, default=float(os.getenv("SEARCH_THRESHOLD", "0.22")))
+    p.add_argument("--limit",               type=int,   default=10)
+    p.add_argument("--min-snr",             type=float, default=2.0)
+    p.add_argument("--min-separation",      type=float, default=0.05)
+    p.add_argument("--min-hit-rate",        type=float, default=0.50)
+    p.add_argument(
+        "--generate-paraphrases",
+        action="store_true",
+        help=(
+            "Use the configured LLM (LLM_PROVIDER/LLM_BASE_URL/LLM_MODEL) to generate "
+            "N paraphrase variants per query at runtime instead of hand-written ones. "
+            "Tests robustness against unpredictable user phrasing. "
+            "Falls back to hand-written paraphrases if the LLM is unavailable."
+        ),
+    )
+    p.add_argument(
+        "--n-paraphrases",
+        type=int,
+        default=3,
+        help="Number of LLM-generated paraphrase variants per query (default: 3).",
+    )
+    p.add_argument(
+        "--llm-timeout",
+        type=float,
+        default=float(os.getenv("LLM_TIMEOUT", "120")),
+        help="LLM request timeout in seconds for paraphrase generation (default: 120).",
+    )
     return p.parse_args()
 
 
@@ -359,7 +544,18 @@ async def main_async(args: argparse.Namespace) -> int:
         len(dataset), API_BASE_URL, args.threshold, args.limit,
     )
 
-    records = await run_evaluation(dataset, args.threshold, args.limit)
+    paraphrase_map: Optional[Dict[str, List[str]]] = None
+    if args.generate_paraphrases:
+        log.info(
+            "Generating %d LLM paraphrases per query (provider=%s, model=%s, timeout=%.0fs)...",
+            args.n_paraphrases,
+            os.getenv("LLM_PROVIDER", "local"),
+            os.getenv("LLM_MODEL", "mistral"),
+            args.llm_timeout,
+        )
+        paraphrase_map = await build_paraphrase_map(dataset, args.n_paraphrases, args.llm_timeout)
+
+    records = await run_evaluation(dataset, args.threshold, args.limit, paraphrase_map)
     agg = _aggregate(records)
 
     thresholds = {
