@@ -4,6 +4,7 @@ Database Models and ORM Configuration
 
 import os
 import uuid
+import hashlib
 from datetime import datetime
 from typing import Optional
 
@@ -52,6 +53,41 @@ Index("idx_file_hash", MediaFile.file_hash, unique=True)
 Index("idx_processing_status", MediaFile.processing_status)
 Index("idx_file_type", MediaFile.file_type)
 Index("idx_created_at", MediaFile.created_at)
+
+
+class AuditLog(Base):
+    """
+    Immutable audit log for every non-health API request.
+
+    Written by api/middleware/audit.py via fire-and-forget asyncio task so the
+    response latency is never affected.  The request body is hashed (SHA-256)
+    rather than stored verbatim to avoid logging PII or large binary payloads.
+
+    Compliance note: this table should be treated as append-only.  Add a DB-level
+    policy or use a write-only Postgres role for the API service account.
+    """
+    __tablename__ = "audit_logs"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    timestamp = Column(TIMESTAMP(timezone=True), default=datetime.utcnow, nullable=False, index=True)
+    endpoint = Column(String(512), nullable=False, index=True)
+    method = Column(String(10), nullable=False)
+    request_body_hash = Column(String(64), nullable=True)   # SHA-256 hex of raw body; NULL for GETs
+    response_status = Column(Integer, nullable=False, index=True)
+    response_ms = Column(Integer, nullable=False)           # full round-trip latency
+    client_ip = Column(String(45), nullable=True)           # IPv4 or IPv6
+    user_agent = Column(String(512), nullable=True)
+
+    def __repr__(self) -> str:
+        return (
+            f"<AuditLog(id={self.id}, endpoint={self.endpoint!r}, "
+            f"status={self.response_status}, ts={self.timestamp})>"
+        )
+
+
+Index("idx_audit_timestamp", AuditLog.timestamp)
+Index("idx_audit_endpoint", AuditLog.endpoint)
+Index("idx_audit_status", AuditLog.response_status)
 
 
 async def get_async_engine():
