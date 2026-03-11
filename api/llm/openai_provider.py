@@ -5,7 +5,10 @@ OpenAI provider — wraps the existing OpenAI SDK pattern already used in ask.py
 import os
 from typing import AsyncIterator
 
+import httpx
 from openai import AsyncOpenAI
+
+_TIMEOUT = float(os.getenv("LLM_TIMEOUT", "60"))
 
 
 class OpenAIProvider:
@@ -13,7 +16,10 @@ class OpenAIProvider:
         api_key = os.getenv("OPENAI_API_KEY", "")
         if not api_key:
             raise RuntimeError("OPENAI_API_KEY must be set for OpenAI provider")
-        self._client = AsyncOpenAI(api_key=api_key)
+        self._client = AsyncOpenAI(
+            api_key=api_key,
+            http_client=httpx.AsyncClient(timeout=_TIMEOUT),
+        )
         self._default_model = os.getenv("LLM_MODEL", "gpt-4o-mini")
 
     async def complete(

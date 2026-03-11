@@ -11,7 +11,10 @@ Required env vars:
 import os
 from typing import AsyncIterator
 
+import httpx
 from openai import AsyncAzureOpenAI
+
+_TIMEOUT = float(os.getenv("LLM_TIMEOUT", "120"))
 
 
 class AzureOpenAIProvider:
@@ -20,6 +23,7 @@ class AzureOpenAIProvider:
             api_key=os.getenv("AZURE_OPENAI_API_KEY", ""),
             azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT", ""),
             api_version=os.getenv("AZURE_OPENAI_API_VERSION", "2024-02-01"),
+            http_client=httpx.AsyncClient(timeout=_TIMEOUT),
         )
         self._default_model = os.getenv("LLM_MODEL", "gpt-4o")
 
