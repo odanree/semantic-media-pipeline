@@ -16,7 +16,7 @@ import pytest
 
 class TestAuditLogModel:
     def test_model_has_required_columns(self):
-        from worker.db.models import AuditLog
+        from db.models import AuditLog
         cols = {c.key for c in AuditLog.__table__.columns}
         required = {"id", "timestamp", "endpoint", "method",
                     "request_body_hash", "response_status", "response_ms",
@@ -24,23 +24,23 @@ class TestAuditLogModel:
         assert required.issubset(cols)
 
     def test_model_tablename(self):
-        from worker.db.models import AuditLog
+        from db.models import AuditLog
         assert AuditLog.__tablename__ == "audit_logs"
 
     def test_repr_contains_endpoint(self):
-        from worker.db.models import AuditLog
+        from db.models import AuditLog
         row = AuditLog(endpoint="/api/search", method="POST",
                        response_status=200, response_ms=42)
         assert "/api/search" in repr(row)
 
     def test_id_column_has_uuid_default(self):
-        from worker.db.models import AuditLog
+        from db.models import AuditLog
         id_col = AuditLog.__table__.columns["id"]
         assert id_col.default is not None
         assert callable(id_col.default.arg)
 
     def test_indexes_registered(self):
-        from worker.db.models import AuditLog
+        from db.models import AuditLog
         index_cols = {col.name for idx in AuditLog.__table__.indexes for col in idx.columns}
         assert "timestamp" in index_cols
         assert "endpoint" in index_cols

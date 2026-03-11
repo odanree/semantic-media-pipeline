@@ -66,7 +66,11 @@ class TestClassifyIntent:
         state = asyncio.run(
             classify_intent(_base_state(query="test", search_results=[{"x": 1}]))
         )
-        assert state["search_results"] == [{"x": 1}]
+        # classify_intent returns only {"intent": ...} — LangGraph merges the
+        # partial update back into full state at runtime; direct node tests only
+        # see the returned partial dict
+        assert "intent" in state
+        assert state["intent"] == "visual"  # generic query defaults to visual
 
     def test_when_keyword_triggers_temporal(self):
         from agents.coordinator import classify_intent
