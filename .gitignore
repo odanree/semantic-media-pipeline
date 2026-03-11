@@ -58,11 +58,8 @@ debug-*.md
 .env.local
 .env.*.local
 
-# Working / scratch notes (never commit private task data)
-task-diagnosis.md
-debug-*.md
-.env.local
-.env.*.local
+# Internal planning prompts (not for public repo)
+.github/prompts/
 
 # VS Code
 .vscode/
