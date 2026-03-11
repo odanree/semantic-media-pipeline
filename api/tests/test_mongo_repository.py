@@ -176,8 +176,10 @@ class TestPostgresMediaRepository:
         row = MagicMock()
         row.id = 1
         row.file_path = "found.jpg"
-        col_id = MagicMock(); col_id.name = "id"
-        col_fp = MagicMock(); col_fp.name = "file_path"
+        col_id = MagicMock()
+        col_id.name = "id"
+        col_fp = MagicMock()
+        col_fp.name = "file_path"
         row.__table__ = MagicMock()
         row.__table__.columns = [col_id, col_fp]
         execute_result = MagicMock()
@@ -191,7 +193,8 @@ class TestPostgresMediaRepository:
     def test_delete_returns_true_when_row_deleted(self):
         repo, session = self._make_repo()
         session.execute.return_value.rowcount = 1
-        mock_stmt = MagicMock(); mock_stmt.where.return_value = mock_stmt
+        mock_stmt = MagicMock()
+        mock_stmt.where.return_value = mock_stmt
         with patch("sqlalchemy.delete", MagicMock(return_value=mock_stmt)):
             result = asyncio.run(repo.delete(1))
         assert result is True
@@ -199,7 +202,8 @@ class TestPostgresMediaRepository:
     def test_delete_returns_false_when_no_row(self):
         repo, session = self._make_repo()
         session.execute.return_value.rowcount = 0
-        mock_stmt = MagicMock(); mock_stmt.where.return_value = mock_stmt
+        mock_stmt = MagicMock()
+        mock_stmt.where.return_value = mock_stmt
         with patch("sqlalchemy.delete", MagicMock(return_value=mock_stmt)):
             result = asyncio.run(repo.delete(999))
         assert result is False

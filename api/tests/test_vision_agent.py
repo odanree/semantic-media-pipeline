@@ -309,9 +309,12 @@ class TestVisionAgentRun:
     def test_llm_failure_for_one_frame_does_not_stop_others(self, tmp_path):
         from agents.vision_agent import vision_agent_run
 
-        f1 = tmp_path / "ok.jpg";   f1.write_bytes(_make_1x1_jpeg())
-        f2 = tmp_path / "fail.jpg"; f2.write_bytes(_make_1x1_jpeg())
-        f3 = tmp_path / "ok2.jpg";  f3.write_bytes(_make_1x1_jpeg())
+        f1 = tmp_path / "ok.jpg"
+        f1.write_bytes(_make_1x1_jpeg())
+        f2 = tmp_path / "fail.jpg"
+        f2.write_bytes(_make_1x1_jpeg())
+        f3 = tmp_path / "ok2.jpg"
+        f3.write_bytes(_make_1x1_jpeg())
 
         call_count = 0
 

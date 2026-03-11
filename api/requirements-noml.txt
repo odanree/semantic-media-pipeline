@@ -2,6 +2,7 @@
 # excluded. They are stubbed in sys.modules by api/tests/conftest.py so
 # tests run without the 2 GB ML download.
 fastapi==0.135.1
+python-multipart>=0.0.9          # required by FastAPI UploadFile / Form
 uvicorn[standard]==0.30.1
 aiofiles==23.2.1
 pydantic==2.10.6
