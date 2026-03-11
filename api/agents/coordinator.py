@@ -18,6 +18,7 @@ from __future__ import annotations
 import logging
 import os
 from typing import Annotated, Optional, TypedDict
+from typing_extensions import NotRequired
 
 from langgraph.graph import END, StateGraph
 from langgraph.graph.message import add_messages
@@ -33,12 +34,12 @@ MIN_RESULTS_FOR_VISION = int(os.getenv("AGENT_MIN_RESULTS_FOR_VISION", "3"))
 
 class AgentState(TypedDict):
     query: str
-    intent: Optional[str]                 # "visual" | "temporal" | "mixed"
-    search_results: list[dict]            # from SearchAgent
-    metadata_results: list[dict]          # from MetadataAgent
-    vision_results: list[dict]            # from VisionAgent (conditional)
-    final_answer: Optional[str]
-    error: Optional[str]
+    intent: NotRequired[Optional[str]]            # "visual" | "temporal" | "mixed"
+    search_results: NotRequired[list[dict]]        # from SearchAgent
+    metadata_results: NotRequired[list[dict]]      # from MetadataAgent
+    vision_results: NotRequired[list[dict]]        # from VisionAgent (conditional)
+    final_answer: NotRequired[Optional[str]]
+    error: NotRequired[Optional[str]]
 
 
 # ---------------------------------------------------------------------------
@@ -64,35 +65,35 @@ async def classify_intent(state: AgentState) -> AgentState:
     else:
         intent = "visual"
 
-    return {**state, "intent": intent}
+    return {"intent": intent}
 
 
 async def run_search_agent(state: AgentState) -> AgentState:
     """SearchAgent: CLIP vector similarity via Qdrant."""
     from agents.search_agent import search_agent_run
     results = await search_agent_run(state["query"])
-    return {**state, "search_results": results}
+    return {"search_results": results}
 
 
 async def run_metadata_agent(state: AgentState) -> AgentState:
     """MetadataAgent: PostgreSQL temporal/location queries."""
     from agents.metadata_agent import metadata_agent_run
     results = await metadata_agent_run(state["query"])
-    return {**state, "metadata_results": results}
+    return {"metadata_results": results}
 
 
 async def run_vision_agent(state: AgentState) -> AgentState:
     """VisionAgent: deep frame analysis via GPT-4o Vision or LLaVA."""
     from agents.vision_agent import vision_agent_run
     results = await vision_agent_run(state["search_results"])
-    return {**state, "vision_results": results}
+    return {"vision_results": results}
 
 
 async def aggregate_and_answer(state: AgentState) -> AgentState:
     """Fuse results from all agents into a final answer via LLM."""
     from agents.aggregator import build_final_answer
     answer = await build_final_answer(state)
-    return {**state, "final_answer": answer}
+    return {"final_answer": answer}
 
 
 # ---------------------------------------------------------------------------

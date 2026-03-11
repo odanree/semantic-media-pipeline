@@ -56,7 +56,7 @@ def _extract_temporal_filters(query: str) -> dict:
 
 
 async def metadata_agent_run(query: str, limit: int = 20) -> list[dict]:
-    from worker.db.models import MediaFile  # shared ORM model
+    from db.models import MediaFile
 
     filters = _extract_temporal_filters(query)
     if not filters:

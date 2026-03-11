@@ -115,6 +115,16 @@ async def startup_event():
         print("Auth: disabled (API_KEY_REQUIRED=false — set to true for production)")
     print(f"Rate limits: search={os.getenv('RATE_LIMIT_SEARCH','30/min')}, stream={os.getenv('RATE_LIMIT_STREAM','60/min')}, default={os.getenv('RATE_LIMIT_DEFAULT','200/min')} [Redis: {os.getenv('REDIS_URL','redis://redis:6379')}]")
 
+    # Ensure audit_logs table exists (idempotent — safe to run on every restart)
+    try:
+        from db.models import Base
+        from db.session import get_async_engine
+        engine = get_async_engine()
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+    except Exception as exc:
+        print(f"WARNING: could not create audit_logs table: {exc}")
+
     # Preload CLIP model so first search request is instant
     import asyncio
     from routers.search import get_clip_model

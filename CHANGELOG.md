@@ -6,6 +6,29 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/). Version
 
 ---
 
+## [v2.0.0] — 2026-03-11
+
+### Added
+- **RAG Ask pipeline** — `/api/ask` retrieves semantically relevant frames, reads captions via local VLM, and returns a grounded answer + source list via GPT-4o-mini
+- **Multi-agent coordinator** — LangGraph graph with `classify_intent`, `search_agent`, `metadata_agent`, `vision_agent`, and `aggregate` nodes; dispatches to the right specialist and merges results
+- **YOLO object detection** — `/api/detect` accepts a raw image upload, runs YOLOv8n inference, returns bounding boxes and confidence scores
+- **Audit middleware** — Every API request is logged to a Postgres `audit_logs` table (endpoint, method, HTTP status, response time in ms)
+- **`api/db/models.py` + `api/db/session.py`** — API-side SQLAlchemy models and async session factory, decoupled from the `worker` package
+- **`api/ml/yolo_detector.py`** — YOLO inference module accessible from the API container without the worker namespace
+- **`scripts/local_backfill_dev.py`** — Caption backfill script that targets local Qdrant directly (no SSH tunnel); works on both Windows and macOS workers
+- **Vision captioning backfill** — Ran llava:7b captions on 80,000+ uncaptioned frames across Windows and Mac workers
+
+### Fixed
+- **`NotRequired` Python 3.10 import** — Changed `from typing import NotRequired` to `from typing_extensions import NotRequired` in `api/agents/coordinator.py`
+- **LangGraph `INVALID_CONCURRENT_GRAPH_UPDATE`** — Each agent node now returns only its own partial state dict instead of `{**state, ...}`, eliminating concurrent update conflicts
+- **`worker.*` import paths in API** — All `from worker.db.models`, `from worker.db.session`, and `from worker.ml.yolo_detector` imports replaced with local API-side equivalents
+
+### Changed
+- **Qdrant port exposed in dev** — Added `ports: - "6333:6333"` to qdrant service in `docker-compose.yml` for local backfill access
+- **Backend test coverage** — 78% → **82%** (335 tests passing)
+
+---
+
 ## [v1.7.2] — 2026-03-10
 
 ### Fixed
