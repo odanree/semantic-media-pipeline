@@ -11,39 +11,32 @@
 
 A distributed, multimodal media intelligence platform. v1 unified photos and videos into a searchable vector space using **CLIP embeddings**, **Celery**, and **Qdrant**. v2 adds a **RAG pipeline**, **multi-agent query coordinator** (LangGraph), **YOLO object detection**, and a **distributed vision captioning** layer — all running locally with no data leaving the device.
 
-```mermaid
-flowchart LR
-    subgraph Ingest["Ingestion (Celery Workers)"]
-        direction TB
-        P[📷 Photos\nJPEG / PNG] --> CE[CLIP Encoder]
-        V[🎬 Videos\nMP4 / MOV] --> FF[ffmpeg\nFrame Extraction] --> CE
-        CE --> CAP[Vision LLM\nllava:7b Caption]
-    end
-
-    subgraph Storage["Storage"]
-        direction TB
-        M[MinIO / R2\nRaw Media]
-        Q[(Qdrant\nVectors + Captions)]
-        PG[(PostgreSQL\nMetadata + Audit)]
-    end
-
-    subgraph Intelligence["Intelligence Layer (v2)"]
-        direction TB
-        AG[LangGraph\nAgent Coordinator]
-        RAG[RAG Pipeline\nCLIP + GPT-4o-mini]
-        YO[YOLO\nObject Detection]
-    end
-
-    subgraph API["API + Frontend"]
-        direction TB
-        FA[FastAPI] --> NX[Next.js\nSearch + Ask UI]
-    end
-
-    CE -->|768-dim vectors + captions| Q
-    CE -->|metadata + file path| PG
-    P & V --> M
-    Q & PG --> FA
-    FA --> AG & RAG & YO
+```
+  Photos / Videos
+  (JPEG, PNG, MP4...)
+        |
+        v
+  +---------------------+
+  |  Celery Workers     |
+  |  - CLIP Encoder     |  -- 768-dim vectors + captions --> [ Qdrant ]
+  |  - ffmpeg frames    |  -- metadata + file path -------> [ PostgreSQL ]
+  |  - llava:7b caption |  -- raw media -----------------> [ MinIO / R2 ]
+  +---------------------+
+                                          |
+                                          v
+                               +---------------------+
+                               |  FastAPI  (8000)    |
+                               +---------------------+
+                                  |        |       |
+                                  v        v       v
+                             LangGraph    RAG    YOLO
+                              Agents   Pipeline  Detect
+                                  |        |       |
+                                  v        v       v
+                           +------------------------------+
+                           |  Next.js  Search + Ask UI   |
+                           +------------------------------+
+```
 * *"Progress on the home ADU construction in Orange"*
 * *"Our family trip to Vietnam in late 2025"*
 * *"My son playing with his Labubu toys"*
@@ -108,6 +101,26 @@ The system is built on a "Producer-Consumer" architecture to ensure that process
 * **Metadata:** PostgreSQL maintains the mapping between vectors, file paths, and observability metrics (`embedding_ms`, `worker_id`, `frame_cache_hit`, `model_version`).
 
 [Image of a vector database search mechanism using cosine similarity to match text queries with image embeddings]
+
+---
+
+## 📸 Screenshots
+
+**Semantic search** — natural language query across 500GB+ media:
+
+![Semantic Search Results](docs/homepage-semantic-search.png)
+
+**RAG Ask** — retrieves relevant frames and returns a grounded answer:
+
+![RAG Ask Results](docs/homepage-ask-results.png)
+
+**YOLO Object Detection** — per-frame bounding boxes with confidence scores:
+
+![YOLO Detect JSON](docs/yolo-detect-json.png)
+
+**Audit Log** — every API request logged to Postgres `audit_logs`:
+
+![Audit Log Table](docs/audit-log-table.png)
 
 ---
 
