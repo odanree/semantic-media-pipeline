@@ -79,8 +79,8 @@ async def _write_audit_row(
     try:
         # Import lazily to avoid circular imports and allow the app to start
         # even if the DB is temporarily unreachable.
-        from worker.db.models import AuditLog  # type: ignore[import]
-        from worker.db.session import get_async_session_factory  # type: ignore[import]
+        from db.models import AuditLog
+        from db.session import get_async_session_factory
 
         factory = get_async_session_factory()
         async with factory() as session:

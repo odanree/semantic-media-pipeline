@@ -27,7 +27,7 @@ from fastapi import APIRouter, HTTPException, Request, UploadFile
 from pydantic import BaseModel
 
 from rate_limit import limiter
-from worker.ml.yolo_detector import detect_from_bytes  # type: ignore[import]
+from ml.yolo_detector import detect_from_bytes  # type: ignore[import]
 
 import os
 

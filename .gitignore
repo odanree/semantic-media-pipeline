@@ -283,4 +283,16 @@ scripts/*_local.py
 
 # Personal/draft docs
 docs/linkedin-post-draft.txt
+docs/linkedin-post-v2.txt
+
+# ML model weights (binary, too large for git)
+*.pt
+*.onnx
+*.bin
+
+# Temp test files
+test.jpg
+test_results.txt
+temp-scripts/frame_cache/
+temp-scripts/frame_cache.tar.gz
 scripts/dispatch_*.py
