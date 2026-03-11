@@ -132,7 +132,7 @@ services:
       - ${MEDIA_SOURCE_PATH_2}:/mnt/source/d:ro
       - ${MEDIA_SOURCE_PATH_3}:/mnt/source/e:ro
       - ${MEDIA_SOURCE_PATH_4}:/mnt/source/f-storage:ro
-      - ${MEDIA_SOURCE_PATH_5}:/mnt/source/f-downloads:ro
+      # - ${MEDIA_SOURCE_PATH_5}:/mnt/source/f-downloads:ro  # uncomment when _5 is set
     depends_on:
       redis2:
         condition: service_healthy
@@ -179,7 +179,7 @@ services:
       - ${MEDIA_SOURCE_PATH_2}:/mnt/source/d:ro
       - ${MEDIA_SOURCE_PATH_3}:/mnt/source/e:ro
       - ${MEDIA_SOURCE_PATH_4}:/mnt/source/f-storage:ro
-      - ${MEDIA_SOURCE_PATH_5}:/mnt/source/f-downloads:ro
+      # - ${MEDIA_SOURCE_PATH_5}:/mnt/source/f-downloads:ro  # uncomment when _5 is set
       - hf_cache:/root/.cache/huggingface   # Persist model downloads across rebuilds
     depends_on:
       redis2:
@@ -219,7 +219,7 @@ services:
       - ${MEDIA_SOURCE_PATH_2}:/mnt/source/d:ro
       - ${MEDIA_SOURCE_PATH_3}:/mnt/source/e:ro
       - ${MEDIA_SOURCE_PATH_4}:/mnt/source/f-storage:ro
-      - ${MEDIA_SOURCE_PATH_5}:/mnt/source/f-downloads:ro
+      # - ${MEDIA_SOURCE_PATH_5}:/mnt/source/f-downloads:ro  # uncomment when _5 is set
     depends_on:
       - api2
     networks:

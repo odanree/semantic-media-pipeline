@@ -178,7 +178,9 @@ jobs:
         run: pip install pip-audit
 
       - name: Audit api/requirements.txt
-        run: pip-audit -r api/requirements.txt
+        run: pip-audit -r api/requirements.txt --ignore-vuln CVE-2025-69872
+        # CVE-2025-69872 affects diskcache (transitive dep via mlflow). No fix version
+        # available upstream as of 2026-03-11. Re-evaluate when diskcache >5.6.3 ships.
 
   # -------------------------------------------------------------------------
   # Secret scanning (trufflehog — detects leaked credentials in git history)

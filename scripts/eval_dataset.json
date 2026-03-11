@@ -1,0 +1,50 @@
+[
+  {
+    "id": "q001",
+    "question": "Show me videos recorded during sunset at the beach",
+    "ground_truth": "golden hour beach footage with warm orange and amber tones",
+    "relevant_file_ids": []
+  },
+  {
+    "id": "q002",
+    "question": "Find images with a lot of text like signs or documents",
+    "ground_truth": "photos where text or signage is prominently visible",
+    "relevant_file_ids": []
+  },
+  {
+    "id": "q003",
+    "question": "What media files were captured in winter 2023?",
+    "ground_truth": "files with creation timestamps between December 2022 and February 2023",
+    "relevant_file_ids": []
+  },
+  {
+    "id": "q004",
+    "question": "Find clips with high audio energy and speech",
+    "ground_truth": "video files with detected speech content and high RMS audio energy",
+    "relevant_file_ids": []
+  },
+  {
+    "id": "q005",
+    "question": "Show me photos taken during high-stress moments based on biometric data",
+    "ground_truth": "images correlated with elevated heart rate or high sensor stress index",
+    "relevant_file_ids": []
+  },
+  {
+    "id": "q006",
+    "question": "Find blue-dominant images with low brightness",
+    "ground_truth": "photos where blue channel mean is highest and luminance mean is low",
+    "relevant_file_ids": []
+  },
+  {
+    "id": "q007",
+    "question": "What are the most common subjects captured across all media?",
+    "ground_truth": "summary of recurring visual themes derived from Moondream captions",
+    "relevant_file_ids": []
+  },
+  {
+    "id": "q008",
+    "question": "Find videos where someone is speaking outdoors",
+    "ground_truth": "video clips with outdoor scenes and detected speech in the audio track",
+    "relevant_file_ids": []
+  }
+]
