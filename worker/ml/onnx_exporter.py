@@ -174,7 +174,35 @@ class CLIPOnnxExporter:
             "n_runs": n_runs,
         }
         log.info("Benchmark: %s", result)
+
+        # MLflow experiment tracking — opt-in via MLFLOW_TRACKING_URI env var.
+        # Never raises; a missing mlflow install is logged but never fatal.
+        if os.getenv("MLFLOW_TRACKING_URI"):
+            self._log_benchmark_to_mlflow(result)
+
         return result
+
+    def _log_benchmark_to_mlflow(self, result: dict) -> None:
+        """Persist ONNX benchmark metrics to MLflow (fire-and-forget)."""
+        try:
+            import mlflow  # noqa: PLC0415
+            from datetime import datetime, timezone as _tz  # noqa: PLC0415
+
+            mlflow.set_tracking_uri(os.environ["MLFLOW_TRACKING_URI"])
+            mlflow.set_experiment("lumen-onnx-export")
+            ts = datetime.now(_tz.utc).strftime("%Y%m%dT%H%M%SZ")
+            with mlflow.start_run(run_name=f"onnx-benchmark-{ts}"):
+                mlflow.log_param("model_name",  self.model_name)
+                mlflow.log_param("n_runs",      result["n_runs"])
+                mlflow.log_metric("fp32_latency_ms",          result["fp32_latency_ms"])
+                mlflow.log_metric("int8_latency_ms",          result["int8_latency_ms"])
+                mlflow.log_metric("speedup",                  result["speedup"])
+                mlflow.log_metric("embedding_cosine_similarity", result["embedding_cosine_similarity"])
+            log.info("MLflow ONNX benchmark run logged.")
+        except ImportError:
+            log.warning("mlflow not installed — skipping ONNX benchmark tracking")
+        except Exception:
+            log.exception("MLflow ONNX benchmark logging failed")
 
 
 # ---------------------------------------------------------------------------
