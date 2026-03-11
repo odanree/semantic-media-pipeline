@@ -41,6 +41,8 @@ async def agent_query(request: Request, body: AgentQueryRequest):
 
     initial_state = {
         "query": body.query,
+        "limit": body.limit,
+        "threshold": body.threshold,
         "intent": None,
         "search_results": [],
         "metadata_results": [],
