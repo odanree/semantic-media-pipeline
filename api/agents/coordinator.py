@@ -34,6 +34,8 @@ MIN_RESULTS_FOR_VISION = int(os.getenv("AGENT_MIN_RESULTS_FOR_VISION", "3"))
 
 class AgentState(TypedDict):
     query: str
+    limit: NotRequired[int]                        # max results per agent
+    threshold: NotRequired[float]                  # CLIP similarity threshold
     intent: NotRequired[Optional[str]]            # "visual" | "temporal" | "mixed"
     search_results: NotRequired[list[dict]]        # from SearchAgent
     metadata_results: NotRequired[list[dict]]      # from MetadataAgent
@@ -71,7 +73,11 @@ async def classify_intent(state: AgentState) -> AgentState:
 async def run_search_agent(state: AgentState) -> AgentState:
     """SearchAgent: CLIP vector similarity via Qdrant."""
     from agents.search_agent import search_agent_run
-    results = await search_agent_run(state["query"])
+    results = await search_agent_run(
+        state["query"],
+        limit=state.get("limit", 10),
+        threshold=state.get("threshold", 0.2),
+    )
     return {"search_results": results}
 
 
