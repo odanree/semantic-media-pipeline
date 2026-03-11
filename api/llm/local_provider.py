@@ -10,7 +10,12 @@ Required env vars:
 import os
 from typing import AsyncIterator
 
+import httpx
 from openai import AsyncOpenAI
+
+# Local inference (Ollama/vLLM on home hardware) can take 60-180 s per call.
+# Default is generous; lower it for production cloud deployments.
+_TIMEOUT = float(os.getenv("LLM_TIMEOUT", "120"))
 
 
 class LocalLLMProvider:
@@ -21,7 +26,11 @@ class LocalLLMProvider:
                 "LLM_BASE_URL must be set for local provider "
                 "(e.g. http://localhost:11434/v1)"
             )
-        self._client = AsyncOpenAI(base_url=base_url, api_key="not-needed")
+        self._client = AsyncOpenAI(
+            base_url=base_url,
+            api_key="not-needed",
+            http_client=httpx.AsyncClient(timeout=_TIMEOUT),
+        )
         self._default_model = os.getenv("LLM_MODEL", "mistral")
 
     async def complete(
