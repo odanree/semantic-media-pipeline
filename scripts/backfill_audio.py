@@ -208,10 +208,12 @@ def _local_video(file_path: str, path_map: list[tuple[str, str]]):
 def _extract(video_path: str) -> dict | None:
     """
     Import and call extract_audio_features from the worker package.
-    Adds the worker/ directory to sys.path so the import resolves both when running
-    from the repo root and from inside a Docker container.
+    Resolves the worker directory in order:
+      1. Relative to this script (repo layout: scripts/../worker)
+      2. /app (inside the Docker worker container)
     """
-    worker_dir = Path(__file__).parent.parent / "worker"
+    candidate = Path(__file__).parent.parent / "worker"
+    worker_dir = candidate if (candidate / "ingest").exists() else Path("/app")
     if str(worker_dir) not in sys.path:
         sys.path.insert(0, str(worker_dir))
     from ingest.audio_extractor import extract_audio_features  # noqa: PLC0415
