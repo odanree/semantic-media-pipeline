@@ -6,6 +6,27 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/). Version
 
 ---
 
+## [v2.2.0] — 2026-03-12
+
+### Added
+- **Audio filter UI** — Search panel now has "Has audio" and "Has speech" toggles; `audioHasAudio` maps to `min_audio_energy: 0.001`, `audioHasSpeech` maps to `audio_has_speech: true` in the API payload; both fields already supported by the backend but previously inaccessible from the UI
+- **`updated_at` in search results** — `GET /api/search` response now includes `updated_at` per hit (ISO-8601 for backfilled points, null for legacy)
+- **Backfill coverage in `/api/stats/summary`** — Response now includes `backfill: { enriched_points, total_points, coverage_pct }` block using `IsNotNull(key="updated_at")` filter
+- **Audio backfill script (`scripts/backfill_audio.py`)** — Iterates Qdrant collection, downloads videos from R2 via boto3, extracts audio features via FFmpeg + librosa, writes 9 DSP payload fields back to Qdrant; supports `--stack` flag (`lumen`, `lumen2`, `prod`, `prod-internal`)
+- **`prod-internal` stack preset** — Uses `host=qdrant, port=6333` (Docker DNS) for running the backfill script inside the worker container without SSH tunnels  
+- **`updated_at` timestamp on all `set_payload` writes** — `backfill_audio.py`, `local_backfill.py`, and `local_backfill_dev.py` now stamp every enriched point with an ISO-8601 `updated_at`
+- **`temp-scripts/` gitignored** — Scratch `.http` files and one-off queries stay local, never reach the repo
+
+### Fixed
+- **`_extract()` module path inside Docker** — Falls back to `/app` when `backfill_audio.py` runs as `/tmp/backfill_audio.py` inside the worker container (where `__file__.parent.parent` does not resolve to the worker directory)
+- **`file_cache` key in R2 mode** — Re-keyed from resolved local path to original `file_path` from Qdrant payload so cache deduplication works correctly when filenames are R2 object keys
+
+### Changed
+- **Frontend test count** — 117 → **124 tests** (7 new audio filter tests)
+- **Frontend coverage** — statements 71.22% → **79.24%**, branches 72.72% → **73.83%** (both above thresholds)
+
+---
+
 ## [v2.1.0] — 2026-03-12
 
 ### Added

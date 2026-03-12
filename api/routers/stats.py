@@ -17,6 +17,7 @@ import numpy as np
 
 from fastapi import APIRouter, Query
 from qdrant_client import QdrantClient
+from qdrant_client.models import Filter, IsNullCondition
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 
@@ -127,6 +128,20 @@ def processing_summary():
         except Exception as e:
             qdrant_status = f"error: {str(e)}"
 
+        # --- Backfill coverage (points enriched with updated_at) ---
+        backfill_enriched = None
+        if qdrant_status == "ok" and qdrant_vectors:
+            try:
+                qdrant = _get_qdrant()
+                enriched_result = qdrant.count(
+                    collection_name=collection_name,
+                    count_filter=Filter(must_not=[IsNullCondition(key="updated_at")]),
+                    exact=False,
+                )
+                backfill_enriched = enriched_result.count
+            except Exception:
+                pass
+
         done_count = by_status.get("done", 0)
         vector_drift = (
             (qdrant_vectors - done_count) if qdrant_vectors is not None else None
@@ -146,6 +161,15 @@ def processing_summary():
                 # Negative drift = DB records without vectors — indicates a pipeline gap
                 # (files marked 'done' in Postgres but never upserted to Qdrant).
                 "drift": vector_drift,
+            },
+            "backfill": {
+                "enriched_points": backfill_enriched,
+                "total_points": qdrant_vectors,
+                "coverage_pct": (
+                    round(backfill_enriched / qdrant_vectors * 100, 1)
+                    if backfill_enriched is not None and qdrant_vectors
+                    else None
+                ),
             },
             "top_errors": top_errors,
         }

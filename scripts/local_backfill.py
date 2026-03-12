@@ -17,6 +17,7 @@ Config (top of file or via env vars):
 import argparse
 import base64
 import hashlib
+import datetime
 import logging
 import os
 import socket
@@ -194,10 +195,11 @@ def run_backfill(dry_run: bool = False, scroll_batch: int = 100):
                     elapsed = time.time() - t0
                     timings.append(elapsed)
 
+                    now = datetime.datetime.utcnow().isoformat()
                     if caption:
                         client.set_payload(
-                            collection_name=COLLECTION,
-                            payload={"caption": caption},
+                            collection_name=collection,
+                            payload={"caption": caption, "updated_at": now},
                             points=[point.id],
                         )
                         processed += 1
@@ -205,8 +207,8 @@ def run_backfill(dry_run: bool = False, scroll_batch: int = 100):
                         # Write placeholder so this point is skipped on future runs
                         log.warning("Empty caption for point %s — writing placeholder", point.id)
                         client.set_payload(
-                            collection_name=COLLECTION,
-                            payload={"caption": "[no description]"},
+                            collection_name=collection,
+                            payload={"caption": "[no description]", "updated_at": now},
                             points=[point.id],
                         )
                         failed += 1
