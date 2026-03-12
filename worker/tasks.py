@@ -26,7 +26,11 @@ from sqlalchemy import select
 from celery_app import app
 from db.models import MediaFile
 from db.session import SyncSessionLocal
-from ingest.audio_extractor import extract_audio_features
+from ingest.audio_segmenter import (
+    extract_audio_segments,
+    segment_for_timestamp,
+    segment_to_payload,
+)
 from ingest.crawler import crawl_media, crawl_s3
 from ingest.ffmpeg import (
     FFmpegError,
@@ -568,15 +572,16 @@ def process_video(self, file_path: str, media_record_id: str):
 
                 frame_paths = _save_frame_cache(media_record.file_hash, fps, resolution, raw_frame_paths)
 
-            # --- Audio feature extraction (DSP) ---
-            # Runs once per file; features are merged into every frame's Qdrant payload.
+            # --- Audio segmentation (two-pass VAD → Whisper → AST) ---
+            # Segments the audio track into typed windows (speech/non_verbal/music/event).
+            # Each frame vector will receive the features of its containing segment.
             # Non-fatal: videos without audio tracks return None and ingest continues.
             with _local_path(file_path) as _audio_local:
-                audio_features = extract_audio_features(_audio_local) or {}
-            if audio_features:
-                log.info("[Audio] Extracted %d features for %s", len(audio_features), file_path)
+                audio_segments = extract_audio_segments(_audio_local) or []
+            if audio_segments:
+                log.info("[Audio] %d segments extracted for %s", len(audio_segments), file_path)
             else:
-                log.debug("[Audio] No audio track or extraction skipped for %s", file_path)
+                log.debug("[Audio] No audio track or segmentation skipped for %s", file_path)
 
             # Record cache hit/miss and start embedding
             cache_hit = cached is not None
@@ -596,6 +601,10 @@ def process_video(self, file_path: str, media_record_id: str):
             points = []
             for frame_idx, embedding in enumerate(embeddings):
                 point_id = str(uuid.uuid4())
+                frame_ts = frame_idx / fps
+                # Map this frame's timestamp to its audio segment
+                seg = segment_for_timestamp(audio_segments, frame_ts) if audio_segments else None
+                seg_payload = segment_to_payload(seg, len(audio_segments)) if seg else {}
                 points.append(
                     PointStruct(
                         id=point_id,
@@ -605,10 +614,10 @@ def process_video(self, file_path: str, media_record_id: str):
                             "file_type": "video",
                             "file_hash": media_record.file_hash,
                             "frame_index": frame_idx,
-                            "timestamp": (frame_idx / fps),
+                            "timestamp": frame_ts,
                             "created_at": datetime.utcnow().isoformat(),
                             "media_file_id": media_record_id,
-                            **audio_features,
+                            **seg_payload,
                         },
                     )
                 )
@@ -830,6 +839,142 @@ def backfill_captions(self, dry_run: bool = False):
 
     summary = {"status": "complete", "total": total, "processed": processed, "skipped": skipped, "failed": failed}
     log.info("[Backfill] Done: %s", summary)
+    return summary
+
+
+@app.task(
+    bind=True,
+    max_retries=0,
+    time_limit=691200,       # 8 days hard limit
+    soft_time_limit=648000,  # 7.5 days soft
+)
+def backfill_audio_segments(self, dry_run: bool = False):
+    """
+    Backfill two-pass audio segmentation for all existing video-frame Qdrant points.
+
+    For each unique video file found in the collection:
+      1. Re-runs extract_audio_segments() on the source file.
+      2. For every frame point belonging to that file, finds its segment by timestamp
+         and updates the Qdrant payload in-place via set_payload().
+
+    - Idempotent: points that already have audio_segment_method="vad_two_pass" are skipped.
+    - Safe to re-run after partial failure — progress is committed per file.
+    - Set dry_run=True to count eligible points without writing anything.
+
+    Returns a summary dict: {total_files, processed_files, skipped_files, failed_files,
+                              total_points, updated_points}.
+    """
+    total_files = processed_files = skipped_files = failed_files = 0
+    total_points = updated_points = 0
+
+    log.info("[AudioBackfill] Starting — dry_run=%s", dry_run)
+
+    # --- Step 1: Collect all video frame points grouped by file_path ---
+    file_points: dict[str, list] = {}   # file_path → [(point_id, timestamp)]
+    offset = None
+
+    while True:
+        records, next_offset = qdrant_client.scroll(
+            collection_name=QDRANT_COLLECTION_NAME,
+            limit=200,
+            offset=offset,
+            with_payload=True,
+            with_vectors=False,
+        )
+        if not records:
+            break
+
+        for point in records:
+            payload = point.payload or {}
+            if payload.get("file_type") != "video":
+                continue
+            total_points += 1
+            fp = payload.get("file_path")
+            ts = payload.get("timestamp")
+            if fp is None or ts is None:
+                continue
+            file_points.setdefault(fp, []).append((point.id, float(ts)))
+
+        if next_offset is None:
+            break
+        offset = next_offset
+
+    log.info("[AudioBackfill] Found %d unique video files, %d frame points", len(file_points), total_points)
+
+    # --- Step 2: Re-segment each file and update its frame payloads ---
+    for file_path, point_list in file_points.items():
+        total_files += 1
+
+        # Skip files already processed with the two-pass method
+        # (check the first point's payload)
+        if point_list:
+            sample_records = qdrant_client.retrieve(
+                collection_name=QDRANT_COLLECTION_NAME,
+                ids=[point_list[0][0]],
+                with_payload=True,
+                with_vectors=False,
+            )
+            if sample_records and sample_records[0].payload.get("audio_segment_method") == "vad_two_pass":
+                log.debug("[AudioBackfill] Skipping already-segmented file: %s", file_path)
+                skipped_files += 1
+                continue
+
+        if dry_run:
+            processed_files += 1
+            updated_points += len(point_list)
+            continue
+
+        try:
+            with _local_path(file_path) as local_path:
+                segments = extract_audio_segments(local_path)
+        except Exception as exc:
+            log.warning("[AudioBackfill] Segmentation failed for %s: %s", file_path, exc)
+            failed_files += 1
+            continue
+
+        if not segments:
+            log.debug("[AudioBackfill] No audio for %s — skipping", file_path)
+            skipped_files += 1
+            continue
+
+        # Build and push payload updates per frame
+        file_updated = 0
+        for point_id, ts in point_list:
+            seg = segment_for_timestamp(segments, ts)
+            if seg is None:
+                continue
+            payload_update = segment_to_payload(seg, len(segments))
+            try:
+                qdrant_client.set_payload(
+                    collection_name=QDRANT_COLLECTION_NAME,
+                    payload=payload_update,
+                    points=[point_id],
+                )
+                file_updated += 1
+            except Exception as exc:
+                log.warning("[AudioBackfill] set_payload failed for point %s: %s", point_id, exc)
+
+        updated_points += file_updated
+        processed_files += 1
+        log.debug("[AudioBackfill] %s → updated %d/%d points", file_path, file_updated, len(point_list))
+
+        if processed_files % 50 == 0:
+            log.info(
+                "[AudioBackfill] Progress — files: %d processed / %d total  points updated: %d",
+                processed_files, total_files, updated_points,
+            )
+
+    summary = {
+        "status": "complete",
+        "dry_run": dry_run,
+        "total_files": total_files,
+        "processed_files": processed_files,
+        "skipped_files": skipped_files,
+        "failed_files": failed_files,
+        "total_points": total_points,
+        "updated_points": updated_points,
+    }
+    log.info("[AudioBackfill] Done: %s", summary)
     return summary
 
 
