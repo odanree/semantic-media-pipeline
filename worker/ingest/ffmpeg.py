@@ -108,13 +108,11 @@ def extract_keyframes(
             except FFmpegError:
                 video_duration = 0
 
-        # Calculate timeout: 120s base + 2s per second of video content
-        # This accounts for I/O overhead and processing time
+        # Timeout: video_duration × 1.5 safety margin, floored at FFMPEG_TIMEOUT default.
+        # FFMPEG_TIMEOUT env acts as both the minimum and the cap — set it high for 4K/long files.
         base_timeout = int(os.getenv("FFMPEG_TIMEOUT") or "1200")  # 20 minutes default
         if video_duration > 0:
-            # For longer videos, scale up the timeout proportionally
-            # 2x video duration as safety margin for slow I/O
-            computed_timeout = int(base_timeout + (video_duration * 1.5))
+            computed_timeout = int(video_duration * 1.5)
             timeout = max(base_timeout, computed_timeout)
             print(f"[FFmpeg] Video: {video_path}")
             print(f"[FFmpeg] Duration: {video_duration:.1f}s | Base timeout: {base_timeout}s | Computed: {computed_timeout}s | Final: {timeout}s")
