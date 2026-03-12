@@ -28,6 +28,9 @@ Notes:
     - Video files must be accessible on the machine running this script.
     - Set VIDEO_ROOT_OVERRIDE if the /mnt/source/... paths in Qdrant don't resolve locally.
       Example: VIDEO_ROOT_OVERRIDE="E:/" replaces "/mnt/source/e/" prefix.
+    - R2/S3 mode: if S3_ENDPOINT_URL + S3_BUCKET are set, file_path is treated as an object
+      key and downloaded to a temp file for each extraction, then deleted. Requires boto3.
+      Set AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY (or S3_ACCESS_KEY + S3_SECRET_KEY).
     - Idempotent: points already having 'audio_has_speech' are skipped.
     - Non-fatal per file: extraction errors are logged and counted, not fatal.
     - Prod SSH credentials (SSH_HOST, SSH_USER, QDRANT_DOCKER_IP) are read from env vars.
@@ -37,12 +40,14 @@ Notes:
 from __future__ import annotations
 
 import argparse
+import contextlib
 import datetime
 import logging
 import os
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -52,9 +57,10 @@ from qdrant_client.models import Filter, FieldCondition, IsNullCondition, Payloa
 # ─── Config ───────────────────────────────────────────────────────────────────
 
 STACK_PRESETS: dict[str, dict] = {
-    "lumen":  {"host": "127.0.0.1", "port": 6333,  "use_tunnel": False, "collection": "media_vectors"},
-    "lumen2": {"host": "127.0.0.1", "port": 6340,  "use_tunnel": False, "collection": "media_vectors2"},
-    "prod":   {"host": "127.0.0.1", "port": 26334, "use_tunnel": True,  "collection": "media_vectors"},  # distinct from caption backfill (26333)
+    "lumen":         {"host": "127.0.0.1", "port": 6333,  "use_tunnel": False, "collection": "media_vectors"},
+    "lumen2":        {"host": "127.0.0.1", "port": 6340,  "use_tunnel": False, "collection": "media_vectors2"},
+    "prod":          {"host": "127.0.0.1", "port": 26334, "use_tunnel": True,  "collection": "media_vectors"},  # SSH tunnel from Windows/Mac
+    "prod-internal": {"host": "qdrant",    "port": 6333,  "use_tunnel": False, "collection": "media_vectors"},  # inside prod worker container
 }
 
 COLLECTION         = os.getenv("QDRANT_COLLECTION_NAME", "media_vectors")  # overridden per-stack below
@@ -144,6 +150,59 @@ def _start_ssh_tunnel(local_port: int) -> subprocess.Popen:
     sys.exit(1)
 
 
+# ─── R2 / S3 download ────────────────────────────────────────────────────────
+
+S3_ENDPOINT_URL = os.getenv("S3_ENDPOINT_URL", "")
+S3_BUCKET       = os.getenv("S3_BUCKET", "")
+S3_ACCESS_KEY   = os.getenv("AWS_ACCESS_KEY_ID") or os.getenv("S3_ACCESS_KEY", "")
+S3_SECRET_KEY   = os.getenv("AWS_SECRET_ACCESS_KEY") or os.getenv("S3_SECRET_KEY", "")
+
+
+@contextlib.contextmanager
+def _local_video(file_path: str, path_map: list[tuple[str, str]]):
+    """
+    Yields a local filesystem path for the video.
+
+    - If S3_ENDPOINT_URL + S3_BUCKET are set, file_path is treated as an R2/S3
+      object key: the file is downloaded to a temp file, yielded, then deleted.
+    - Otherwise falls back to path_map rewriting (local mount or VIDEO_ROOT_OVERRIDE).
+    """
+    if S3_ENDPOINT_URL and S3_BUCKET:
+        try:
+            import boto3  # noqa: PLC0415
+            from botocore.config import Config  # noqa: PLC0415
+        except ImportError:
+            log.error("boto3 not installed — required for R2 download. pip install boto3")
+            yield None
+            return
+
+        s3 = boto3.client(
+            "s3",
+            endpoint_url=S3_ENDPOINT_URL,
+            aws_access_key_id=S3_ACCESS_KEY or None,
+            aws_secret_access_key=S3_SECRET_KEY or None,
+            config=Config(signature_version="s3v4"),
+        )
+        suffix = Path(file_path).suffix or ".mp4"
+        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+            tmp_path = tmp.name
+        try:
+            log.info("Downloading s3://%s/%s", S3_BUCKET, file_path)
+            s3.download_file(S3_BUCKET, file_path, tmp_path)
+            yield tmp_path
+        except Exception as exc:
+            log.warning("R2 download failed for %s: %s", file_path, exc)
+            yield None
+        finally:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+    else:
+        local = _resolve_path(file_path, path_map)
+        yield local if Path(local).exists() else None
+
+
 # ─── Audio extraction ─────────────────────────────────────────────────────────
 
 def _extract(video_path: str) -> dict | None:
@@ -229,34 +288,33 @@ def run_backfill(stack: str, dry_run: bool = False, batch_size: int = 100):
                 skipped += 1
                 continue
 
-            local_path = _resolve_path(file_path, path_map)
-
             # Extract audio once per file, reuse for all its frames
-            if local_path not in file_cache:
+            if file_path not in file_cache:
                 if not dry_run:
-                    if not Path(local_path).exists():
-                        log.warning("File not found locally: %s (resolved from %s)", local_path, file_path)
-                        file_cache[local_path] = None
-                        failed += 1
-                    else:
-                        log.info("Extracting audio: %s", local_path)
-                        try:
-                            features = _extract(local_path)
-                            file_cache[local_path] = features
-                            if features:
-                                processed_files += 1
-                                log.info("  → %d features extracted", len(features))
-                            else:
-                                log.info("  → no audio track")
-                        except Exception as exc:
-                            log.warning("Extraction failed for %s: %s", local_path, exc)
-                            file_cache[local_path] = None
+                    with _local_video(file_path, path_map) as local_path:
+                        if not local_path:
+                            log.warning("File not found/downloadable: %s", file_path)
+                            file_cache[file_path] = None
                             failed += 1
+                        else:
+                            log.info("Extracting audio: %s", file_path)
+                            try:
+                                features = _extract(local_path)
+                                file_cache[file_path] = features
+                                if features:
+                                    processed_files += 1
+                                    log.info("  → %d features extracted", len(features))
+                                else:
+                                    log.info("  → no audio track")
+                            except Exception as exc:
+                                log.warning("Extraction failed for %s: %s", file_path, exc)
+                                file_cache[file_path] = None
+                                failed += 1
                 else:
                     # dry-run: just record it as seen
-                    file_cache[local_path] = {"audio_has_speech": False}  # placeholder
+                    file_cache[file_path] = {"audio_has_speech": False}  # placeholder
 
-            features = file_cache.get(local_path)
+            features = file_cache.get(file_path)
 
             if dry_run:
                 processed_points += 1
