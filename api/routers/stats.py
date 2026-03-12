@@ -17,7 +17,7 @@ import numpy as np
 
 from fastapi import APIRouter, Query
 from qdrant_client import QdrantClient
-from qdrant_client.models import Filter, IsNotNull
+from qdrant_client.models import Filter, IsNullCondition
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 
@@ -135,7 +135,7 @@ def processing_summary():
                 qdrant = _get_qdrant()
                 enriched_result = qdrant.count(
                     collection_name=collection_name,
-                    count_filter=Filter(must=[IsNotNull(key="updated_at")]),
+                    count_filter=Filter(must_not=[IsNullCondition(key="updated_at")]),
                     exact=False,
                 )
                 backfill_enriched = enriched_result.count
