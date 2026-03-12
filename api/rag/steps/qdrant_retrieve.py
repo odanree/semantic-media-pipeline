@@ -31,13 +31,14 @@ class QdrantRetrieveStep:
 
         fetch_limit = context.limit * self._fetch_multiplier
         try:
-            hits = self._qdrant.search(
+            result = self._qdrant.query_points(
                 collection_name=context.collection,
-                query_vector=context.query_embedding.tolist(),
+                query=context.query_embedding.tolist(),
                 limit=fetch_limit,
                 score_threshold=context.threshold,
                 with_payload=True,
             )
+            hits = result.points
         except Exception as exc:
             context.error = f"QdrantRetrieveStep failed: {exc}"
             log.error("Qdrant search error: %s", exc)
