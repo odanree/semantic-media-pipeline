@@ -352,6 +352,7 @@ async def search_media(request: Request, body: SearchRequest):
                 "timestamp": ts,
                 "scene_window_start": window_start,
                 "scene_window_end": window_end,
+                "updated_at": payload.get("updated_at"),
             })
 
         execution_time_ms = (time.time() - start_time) * 1000
