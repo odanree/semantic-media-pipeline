@@ -10,6 +10,8 @@ export interface SearchFilters {
   minSimilarity?: number
   maxResults?: number
   dedup?: boolean
+  audioHasAudio?: boolean
+  audioHasSpeech?: boolean
 }
 
 interface SearchBarProps {
@@ -342,6 +344,55 @@ export default function SearchBar({ onSearch, isLoading = false, suggestions, ex
             </button>
           </div>
 
+          {/* Audio Filters */}
+          <div className="space-y-3">
+            <p className="text-sm font-semibold text-gray-300">Audio</p>
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm text-gray-300">🔊 Has audio</p>
+                <p className="text-xs text-gray-500 mt-0.5">Only show videos with a detectable audio track</p>
+              </div>
+              <button
+                type="button"
+                role="switch"
+                aria-label="Has audio"
+                aria-checked={filters.audioHasAudio ?? false}
+                onClick={() => setFilters({ ...filters, audioHasAudio: !(filters.audioHasAudio ?? false) })}
+                className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
+                  (filters.audioHasAudio ?? false) ? 'bg-blue-600' : 'bg-gray-600'
+                }`}
+              >
+                <span
+                  className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                    (filters.audioHasAudio ?? false) ? 'translate-x-6' : 'translate-x-1'
+                  }`}
+                />
+              </button>
+            </div>
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm text-gray-300">🗣 Has speech</p>
+                <p className="text-xs text-gray-500 mt-0.5">Only show videos where speech was detected</p>
+              </div>
+              <button
+                type="button"
+                role="switch"
+                aria-label="Has speech"
+                aria-checked={filters.audioHasSpeech ?? false}
+                onClick={() => setFilters({ ...filters, audioHasSpeech: !(filters.audioHasSpeech ?? false) })}
+                className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
+                  (filters.audioHasSpeech ?? false) ? 'bg-blue-600' : 'bg-gray-600'
+                }`}
+              >
+                <span
+                  className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                    (filters.audioHasSpeech ?? false) ? 'translate-x-6' : 'translate-x-1'
+                  }`}
+                />
+              </button>
+            </div>
+          </div>
+
           {/* Reset Filters */}
           <button
             type="button"
@@ -351,6 +402,8 @@ export default function SearchBar({ onSearch, isLoading = false, suggestions, ex
                 minSimilarity: 0.3,
                 maxResults: 20,
                 dedup: true,
+                audioHasAudio: false,
+                audioHasSpeech: false,
               })
             }
             className="w-full px-4 py-2 bg-gray-700 hover:bg-gray-600 text-gray-300 hover:text-white rounded transition text-sm font-semibold"

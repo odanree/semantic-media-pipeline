@@ -76,6 +76,12 @@ export default function SearchPage() {
       if (filters.dedup === false) {
         payload.dedup = false
       }
+      if (filters.audioHasAudio) {
+        payload.min_audio_energy = 0.001
+      }
+      if (filters.audioHasSpeech) {
+        payload.audio_has_speech = true
+      }
 
       const response = await fetch('/api/search', {
         method: 'POST',
