@@ -12,6 +12,9 @@ interface CollectionInfo {
   percent_indexed: number
   by_type: Record<string, number>
   topic_tags: string[]
+  vector_points: number | null
+  captioned_count: number | null
+  caption_pct: number | null
 }
 
 export default function SearchPage() {
@@ -112,6 +115,11 @@ export default function SearchPage() {
               ? `${collectionInfo.indexed.toLocaleString()} of ${collectionInfo.total.toLocaleString()} ${Object.keys(collectionInfo.by_type).map(t => `${t}s`).join('/')} indexed`
               : '~500 personal home videos'}
           </span>
+          {collectionInfo?.captioned_count != null && (
+            <span className="bg-gray-800 border border-gray-700 text-gray-300 px-3 py-1 rounded-full">
+              🏷️ {collectionInfo.captioned_count.toLocaleString()} frames captioned ({collectionInfo.caption_pct}%)
+            </span>
+          )}
         </div>
         {collectionInfo && collectionInfo.topic_tags.length > 0 && (
           <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">

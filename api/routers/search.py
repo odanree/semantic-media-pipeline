@@ -12,6 +12,7 @@ from fastapi import APIRouter, HTTPException, Request
 from rate_limit import limiter, LIMIT_SEARCH, LIMIT_SEARCH_VEC
 from pydantic import BaseModel
 from qdrant_client import QdrantClient
+from qdrant_client.models import Filter, FieldCondition, Range, MatchValue
 
 router = APIRouter()
 
@@ -95,6 +96,8 @@ class SearchRequest(BaseModel):
     limit: int = 20
     threshold: float = 0.2
     dedup: bool = True  # False = raw frames (A/B comparison / debug mode)
+    audio_has_speech: Optional[bool] = None   # True/False to require/exclude speech
+    min_audio_energy: Optional[float] = None  # e.g. 0.05 to require loud audio
 
 
 class SearchResult(BaseModel):
@@ -263,6 +266,18 @@ async def search_media(request: Request, body: SearchRequest):
                 detail=f"CLIP embedder failed to load: {str(e)}"
             )
 
+        # Build optional audio payload filter
+        audio_conditions = []
+        if body.audio_has_speech is not None:
+            audio_conditions.append(
+                FieldCondition(key="audio_has_speech", match=MatchValue(value=body.audio_has_speech))
+            )
+        if body.min_audio_energy is not None:
+            audio_conditions.append(
+                FieldCondition(key="audio_rms_energy", range=Range(gte=body.min_audio_energy))
+            )
+        audio_filter = Filter(must=audio_conditions) if audio_conditions else None
+
         # Embed the text query using CLIP
         query_embedding = model.encode(body.query, convert_to_tensor=False)
         if isinstance(query_embedding, np.ndarray):
@@ -282,6 +297,7 @@ async def search_media(request: Request, body: SearchRequest):
                 limit=body.limit,
                 group_size=SEARCH_GROUP_SIZE,
                 score_threshold=body.threshold,
+                query_filter=audio_filter,
                 with_payload=True,
             )
 
@@ -311,6 +327,7 @@ async def search_media(request: Request, body: SearchRequest):
                 limit=body.limit,
                 with_payload=True,
                 score_threshold=body.threshold,
+                query_filter=audio_filter,
             ).points
             final_hits = raw_points
             raw_frame_count = len(final_hits)

@@ -157,6 +157,10 @@ def _build_context(results: list[dict]) -> str:
             parts.append(f"  • Timestamp in video: {r['timestamp']:.1f}s")
         if r.get("caption"):
             parts.append(f"  • Visual description: {r['caption']}")
+        if r.get("audio_has_speech") is not None:
+            speech = "speech detected" if r["audio_has_speech"] else "no speech"
+            energy = r.get("audio_rms_energy", 0)
+            parts.append(f"  • Audio: {speech}, energy={energy:.4f}")
 
         lines.append("\n".join(parts))
 
@@ -257,6 +261,8 @@ async def ask_about_media(request: Request, body: AskRequest):
             "frame_index": p.payload.get("frame_index"),
             "timestamp": p.payload.get("timestamp"),
             "caption": p.payload.get("caption"),  # None until Phase 2
+            "audio_has_speech": p.payload.get("audio_has_speech"),
+            "audio_rms_energy": p.payload.get("audio_rms_energy"),
         }
         for p in points
     ]
