@@ -37,6 +37,7 @@ Notes:
 from __future__ import annotations
 
 import argparse
+import datetime
 import logging
 import os
 import socket
@@ -277,7 +278,7 @@ def run_backfill(stack: str, dry_run: bool = False, batch_size: int = 100):
 
             client.set_payload(
                 collection_name=collection,
-                payload=features,
+                payload={**features, "updated_at": datetime.datetime.utcnow().isoformat()},
                 points=[point.id],
             )
             processed_points += 1
