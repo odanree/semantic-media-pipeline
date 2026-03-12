@@ -2,9 +2,9 @@
 **Internal Codename: Lumen**
 
 ![CI](https://github.com/odanree/semantic-media-pipeline/actions/workflows/ci.yml/badge.svg?branch=main)
-![Version](https://img.shields.io/badge/version-v2.0.0-blue)
+![Version](https://img.shields.io/badge/version-v2.1.0-blue)
 ![Tests](https://img.shields.io/badge/tests-335%20passing-brightgreen)
-![Backend Coverage](https://img.shields.io/badge/backend%20coverage-82%25-green)
+![Backend Coverage](https://img.shields.io/badge/backend%20coverage-79%25-green)
 ![Frontend Coverage](https://img.shields.io/badge/frontend%20coverage-73%25-green)
 
 > See [CHANGELOG.md](CHANGELOG.md) for full release history.

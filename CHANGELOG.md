@@ -6,6 +6,23 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/). Version
 
 ---
 
+## [v2.1.0] — 2026-03-12
+
+### Added
+- **Audio feature extraction** — `worker/ingest/audio_extractor.py` wired into `process_video`; runs once per file after frame cache and spreads 9 DSP payload fields into every Qdrant point: `audio_mfcc_mean`, `audio_mfcc_std`, `audio_mel_mean_db`, `audio_dominant_pitch_class`, `audio_rms_energy`, `audio_speech_band_power`, `audio_peak_frequency_hz`, `audio_has_speech`, `audio_duration_secs`
+- **Audio-filtered `/api/search`** — `SearchRequest` now accepts `audio_has_speech: bool | null` and `min_audio_energy: float | null`; builds a Qdrant payload `Filter` applied to both `query_points_groups` and `query_points` paths. Enables queries like "concert footage, no dialogue" or "interview clips with speech"
+- **Audio context in `/api/ask`** — `_build_context()` appends `• Audio: speech detected, energy=0.0821` to each LLM context entry when audio fields are present in the Qdrant payload; enables reasoning over audio characteristics in natural language answers
+- **`soundfile>=0.12.1`** added to `worker/requirements.txt` (required by librosa for audio I/O)
+
+### Fixed
+- **FFmpeg timeout formula** — Changed `base + duration*1.5` to `max(base, duration*1.5)`; previous formula was producing 2× inflated timeouts on long DV files (e.g. a 2-hr video was getting a 3.5-hr timeout instead of the 1.5× cap)
+
+### Changed
+- **`docker-compose.second.yml`** — Set `FRAME_CACHE_DIR=/tmp/lumen_frames` on lumen2 worker (was unset; frames were writing to ephemeral layer instead of the persistent `worker2_tmp` named volume); swapped active mounts to `f-downloads` (PATH_5); commented out offline `d:` drive (PATH_2) and `f-storage` (PATH_4)
+- **Backend test coverage** — 335 tests passing, **79% coverage** (threshold: 77%)
+
+---
+
 ## [v2.0.0] — 2026-03-11
 
 ### Added

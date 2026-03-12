@@ -123,16 +123,18 @@ services:
       - EMBEDDING_BATCH_SIZE=${EMBEDDING_BATCH_SIZE:-96}
       - EMBEDDING_DEVICE=${EMBEDDING_DEVICE:-}
       - FFMPEG_TIMEOUT=${FFMPEG_TIMEOUT:-}
+      - FRAME_CACHE_DIR=/tmp/lumen_frames
     user: root
     volumes:
       - media2_data:/data/media
       - worker2_tmp:/tmp/lumen_frames
       - proxies2_data:/mnt/proxies
       - /usr/lib/wsl/lib:/usr/lib/wsl/lib
-      - ${MEDIA_SOURCE_PATH_2}:/mnt/source/d:ro
+      # F: drive — uncomment when drive is reconnected:
+      # - ${MEDIA_SOURCE_PATH_2}:/mnt/source/d:ro
       - ${MEDIA_SOURCE_PATH_3}:/mnt/source/e:ro
-      - ${MEDIA_SOURCE_PATH_4}:/mnt/source/f-storage:ro
-      # - ${MEDIA_SOURCE_PATH_5}:/mnt/source/f-downloads:ro  # uncomment when _5 is set
+      # - ${MEDIA_SOURCE_PATH_4}:/mnt/source/f-storage:ro
+      - ${MEDIA_SOURCE_PATH_5}:/mnt/source/f-downloads:ro
     depends_on:
       redis2:
         condition: service_healthy
@@ -176,10 +178,11 @@ services:
     volumes:
       - media2_data:/data/media
       - proxies2_data:/mnt/proxies:ro
-      - ${MEDIA_SOURCE_PATH_2}:/mnt/source/d:ro
+      # F: drive — uncomment when drive is reconnected:
+      # - ${MEDIA_SOURCE_PATH_2}:/mnt/source/d:ro
       - ${MEDIA_SOURCE_PATH_3}:/mnt/source/e:ro
-      - ${MEDIA_SOURCE_PATH_4}:/mnt/source/f-storage:ro
-      # - ${MEDIA_SOURCE_PATH_5}:/mnt/source/f-downloads:ro  # uncomment when _5 is set
+      # - ${MEDIA_SOURCE_PATH_4}:/mnt/source/f-storage:ro
+      - ${MEDIA_SOURCE_PATH_5}:/mnt/source/f-downloads:ro
       - hf_cache:/root/.cache/huggingface   # Persist model downloads across rebuilds
     depends_on:
       redis2:
@@ -216,10 +219,11 @@ services:
       - NEXT_PUBLIC_QDRANT_PORT=6340
     volumes:
       - media2_data:/data/media
-      - ${MEDIA_SOURCE_PATH_2}:/mnt/source/d:ro
+      # F: drive — uncomment when drive is reconnected:
+      # - ${MEDIA_SOURCE_PATH_2}:/mnt/source/d:ro
       - ${MEDIA_SOURCE_PATH_3}:/mnt/source/e:ro
-      - ${MEDIA_SOURCE_PATH_4}:/mnt/source/f-storage:ro
-      # - ${MEDIA_SOURCE_PATH_5}:/mnt/source/f-downloads:ro  # uncomment when _5 is set
+      # - ${MEDIA_SOURCE_PATH_4}:/mnt/source/f-storage:ro
+      - ${MEDIA_SOURCE_PATH_5}:/mnt/source/f-downloads:ro
     depends_on:
       - api2
     networks:
