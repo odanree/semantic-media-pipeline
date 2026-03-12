@@ -56,6 +56,7 @@ target/
 # Working / scratch notes (never commit private task data)
 task-diagnosis.md
 debug-*.md
+temp-scripts/
 .env.local
 .env.*.local
 
