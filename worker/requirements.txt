@@ -26,6 +26,7 @@ psutil==6.0.0
 # Audio feature extraction (audio_extractor.py)
 # librosa pins numpy<2; consistent with api/requirements.txt
 librosa>=0.10.2
+soundfile>=0.12.1
 scipy>=1.13.0
 
 # YOLO object detection (yolo_detector.py)

@@ -26,6 +26,7 @@ from sqlalchemy import select
 from celery_app import app
 from db.models import MediaFile
 from db.session import SyncSessionLocal
+from ingest.audio_extractor import extract_audio_features
 from ingest.crawler import crawl_media, crawl_s3
 from ingest.ffmpeg import (
     FFmpegError,
@@ -567,6 +568,16 @@ def process_video(self, file_path: str, media_record_id: str):
 
                 frame_paths = _save_frame_cache(media_record.file_hash, fps, resolution, raw_frame_paths)
 
+            # --- Audio feature extraction (DSP) ---
+            # Runs once per file; features are merged into every frame's Qdrant payload.
+            # Non-fatal: videos without audio tracks return None and ingest continues.
+            with _local_path(file_path) as _audio_local:
+                audio_features = extract_audio_features(_audio_local) or {}
+            if audio_features:
+                log.info("[Audio] Extracted %d features for %s", len(audio_features), file_path)
+            else:
+                log.debug("[Audio] No audio track or extraction skipped for %s", file_path)
+
             # Record cache hit/miss and start embedding
             cache_hit = cached is not None
             media_record.frame_cache_hit = cache_hit
@@ -597,6 +608,7 @@ def process_video(self, file_path: str, media_record_id: str):
                             "timestamp": (frame_idx / fps),
                             "created_at": datetime.utcnow().isoformat(),
                             "media_file_id": media_record_id,
+                            **audio_features,
                         },
                     )
                 )

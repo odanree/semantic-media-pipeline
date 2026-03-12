@@ -500,9 +500,8 @@ def collection_info():
     """
     Collection summary for demo context UI.
 
-    Returns file counts by type/status and topic tags derived from CLIP
-    semantic similarity — surfaces what the collection actually contains
-    without relying on filenames.
+    Returns file counts by type/status, caption coverage from Qdrant, and
+    topic tags derived from CLIP semantic similarity.
     """
     db = _get_session()
     try:
@@ -522,6 +521,33 @@ def collection_info():
             if status == "done":
                 indexed += count
 
+        # Caption coverage — query Qdrant for frames that have a caption payload
+        vector_points: int | None = None
+        captioned_count: int | None = None
+        caption_pct: float | None = None
+        try:
+            from qdrant_client.http import models as qmodels
+            qdrant = _get_qdrant()
+            collection_name = os.getenv("QDRANT_COLLECTION_NAME", "media_vectors")
+            vector_points = qdrant.get_collection(collection_name).points_count
+            captioned_result = qdrant.count(
+                collection_name=collection_name,
+                count_filter=qmodels.Filter(
+                    must_not=[
+                        qmodels.IsEmptyCondition(
+                            is_empty=qmodels.PayloadField(key="caption")
+                        )
+                    ]
+                ),
+                exact=True,
+            )
+            captioned_count = captioned_result.count
+            caption_pct = round(
+                (captioned_count / vector_points * 100) if vector_points else 0, 1
+            )
+        except Exception:
+            pass  # degrade gracefully — caption stats are non-critical
+
         # Semantic topic tags: CLIP-based vocabulary probe (see _compute_topic_tags)
         try:
             top_topics = _compute_topic_tags(k=10)
@@ -534,6 +560,9 @@ def collection_info():
             "percent_indexed": round((indexed / total * 100) if total else 0, 1),
             "by_type": by_type,
             "topic_tags": top_topics,
+            "vector_points": vector_points,
+            "captioned_count": captioned_count,
+            "caption_pct": caption_pct,
         }
     finally:
         db.close()
