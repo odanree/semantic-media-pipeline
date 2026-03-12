@@ -23,11 +23,17 @@ google-cloud-storage==2.16.0
 ffmpeg-python==0.2.0
 psutil==6.0.0
 
-# Audio feature extraction (audio_extractor.py)
+# Audio feature extraction (audio_extractor.py) + segmentation (audio_segmenter.py)
 # librosa pins numpy<2; consistent with api/requirements.txt
 librosa>=0.10.2
 soundfile>=0.12.1
 scipy>=1.13.0
+# Two-pass audio segmentation pipeline:
+#   Pass 1: Silero VAD loads via torch.hub (torch already present — no extra pip dep)
+#   Pass 2a: faster-whisper for speech transcription
+#   Pass 2b: MIT/ast-finetuned-audioset-10-10-0.4593 via transformers (likely already
+#            installed as a transitive dep of sentence-transformers, but listed explicitly)
+faster-whisper>=1.0.0
 
 # YOLO object detection (yolo_detector.py)
 ultralytics>=8.0.0

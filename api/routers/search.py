@@ -96,8 +96,12 @@ class SearchRequest(BaseModel):
     limit: int = 20
     threshold: float = 0.2
     dedup: bool = True  # False = raw frames (A/B comparison / debug mode)
+    # --- Audio filters (file-level, backward-compatible) ---
     audio_has_speech: Optional[bool] = None   # True/False to require/exclude speech
     min_audio_energy: Optional[float] = None  # e.g. 0.05 to require loud audio
+    # --- Segment-level filters (two-pass pipeline) ---
+    audio_segment_type: Optional[str] = None  # speech | non_verbal | music | ambient | event | silence
+    audio_event_top: Optional[str] = None     # e.g. "Scream" — AudioSet top label
 
 
 class SearchResult(BaseModel):
@@ -275,6 +279,14 @@ async def search_media(request: Request, body: SearchRequest):
         if body.min_audio_energy is not None:
             audio_conditions.append(
                 FieldCondition(key="audio_rms_energy", range=Range(gte=body.min_audio_energy))
+            )
+        if body.audio_segment_type is not None:
+            audio_conditions.append(
+                FieldCondition(key="audio_segment_type", match=MatchValue(value=body.audio_segment_type))
+            )
+        if body.audio_event_top is not None:
+            audio_conditions.append(
+                FieldCondition(key="audio_event_top", match=MatchValue(value=body.audio_event_top))
             )
         audio_filter = Filter(must=audio_conditions) if audio_conditions else None
 
