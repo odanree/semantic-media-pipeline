@@ -198,7 +198,7 @@ def run_backfill(dry_run: bool = False, scroll_batch: int = 100):
                     now = datetime.datetime.utcnow().isoformat()
                     if caption:
                         client.set_payload(
-                            collection_name=collection,
+                            collection_name=COLLECTION,
                             payload={"caption": caption, "updated_at": now},
                             points=[point.id],
                         )
@@ -207,7 +207,7 @@ def run_backfill(dry_run: bool = False, scroll_batch: int = 100):
                         # Write placeholder so this point is skipped on future runs
                         log.warning("Empty caption for point %s — writing placeholder", point.id)
                         client.set_payload(
-                            collection_name=collection,
+                            collection_name=COLLECTION,
                             payload={"caption": "[no description]", "updated_at": now},
                             points=[point.id],
                         )
