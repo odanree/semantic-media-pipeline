@@ -25,55 +25,29 @@ jobs:
           fetch-depth: 2   # need previous commit to detect changed files
 
       # ------------------------------------------------------------------
-      # Detect which service directories changed so we only rebuild those.
-      # Falls back to building all services on the first deploy or if the
-      # detection is ambiguous.
+      # Detect which service directories changed and build the deploy command.
+      # Collapsed into one step to avoid GitHub Actions outputs passing issues.
+      # Falls back to building all services if detection is ambiguous.
       # ------------------------------------------------------------------
-      - name: Detect changed services
-        id: changes
+      - name: Detect changed services and build deploy command
+        id: script
         run: |
           CHANGED=$(git diff --name-only HEAD~1 HEAD 2>/dev/null || echo "all")
           echo "Changed files: $CHANGED"
 
-          build_api=false
-          build_worker=false
-          build_frontend=false
-
-          if echo "$CHANGED" | grep -qE '^api/|^Dockerfile' ; then
-            build_api=true
-          fi
-          if echo "$CHANGED" | grep -qE '^worker/' ; then
-            build_worker=true
-          fi
-          if echo "$CHANGED" | grep -qE '^frontend/' ; then
-            build_frontend=true
-          fi
-          # docker-compose.yml or .env changes: restart everything but no image rebuild
-          # scripts/ or root-level changes trigger nothing by default
-
-          echo "api=$build_api"       >> "$GITHUB_OUTPUT"
-          echo "worker=$build_worker" >> "$GITHUB_OUTPUT"
-          echo "frontend=$build_frontend" >> "$GITHUB_OUTPUT"
-
-      # ------------------------------------------------------------------
-      # Build the remote commands based on what changed
-      # ------------------------------------------------------------------
-      - name: Build deploy script
-        id: script
-        run: |
           SERVICES=""
-          if [ "${{ steps.changes.outputs.api }}" = "true" ];      then SERVICES="$SERVICES api"; fi
-          if [ "${{ steps.changes.outputs.worker }}" = "true" ];   then SERVICES="$SERVICES worker"; fi
-          if [ "${{ steps.changes.outputs.frontend }}" = "true" ]; then SERVICES="$SERVICES frontend"; fi
+          echo "$CHANGED" | grep -qE '^api/|^Dockerfile'  && SERVICES="$SERVICES api"
+          echo "$CHANGED" | grep -qE '^worker/'            && SERVICES="$SERVICES worker"
+          echo "$CHANGED" | grep -qE '^frontend/'          && SERVICES="$SERVICES frontend"
 
           if [ -n "$SERVICES" ]; then
-            BUILD_CMD="docker compose build --no-cache$SERVICES"
+            BUILD_CMD="docker compose build --no-cache $SERVICES"
           else
             BUILD_CMD="echo 'No image rebuild needed'"
           fi
 
           echo "build_cmd=$BUILD_CMD" >> "$GITHUB_OUTPUT"
-          echo "Services to rebuild:$SERVICES"
+          echo "Services to rebuild: $SERVICES"
 
       # ------------------------------------------------------------------
       # SSH into server and deploy
