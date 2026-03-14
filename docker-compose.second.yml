@@ -264,16 +264,22 @@ services:
 volumes:
   redis2_data:
     name: semantic-media-pipeline_redis2_data
+    external: true
   postgres2_data:
     name: semantic-media-pipeline_postgres2_data
+    external: true
   qdrant2_data:
     name: semantic-media-pipeline_qdrant2_data
+    external: true
   media2_data:
     name: semantic-media-pipeline_media2_data
+    external: true
   worker2_tmp:
     name: semantic-media-pipeline_worker2_tmp
+    external: true
   proxies2_data:
     name: semantic-media-pipeline_proxies2_data
+    external: true
   hf_cache:
     external: true   # Shared with main lumen stack — same model, one download
 

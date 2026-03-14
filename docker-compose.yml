@@ -1,4 +1,6 @@
 
+name: lumen1
+
 services:
   # =========================================================================
   # Data & Message Queue Layer
@@ -312,27 +314,30 @@ services:
 # ============================================================================
 volumes:
   redis_data:
-    driver: local
+    name: semantic-media-pipeline_redis_data
+    external: true
   postgres_data:
-    driver: local
+    name: semantic-media-pipeline_postgres_data
+    external: true
   qdrant_data:
-    driver: local
+    name: semantic-media-pipeline_qdrant_data
+    external: true
   media_data:
-    driver: local
-    driver_opts:
-      type: none
-      o: bind
-      device: ${MEDIA_ROOT:-/data/media}
+    name: semantic-media-pipeline_media_data
+    external: true
   worker_tmp:
-    driver: local
+    name: semantic-media-pipeline_worker_tmp
+    external: true
   proxies_data:
-    driver: local
+    name: semantic-media-pipeline_proxies_data
+    external: true
   hf_cache:
-    driver: local
+    name: semantic-media-pipeline_hf_cache
+    external: true
   prometheus_data:
-    driver: local
+    name: semantic-media-pipeline_prometheus_data
   grafana_data:
-    driver: local
+    name: semantic-media-pipeline_grafana_data
 
 # ============================================================================
 # Networks
