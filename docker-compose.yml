@@ -1,6 +1,4 @@
 
-name: lumen
-
 services:
   # =========================================================================
   # Data & Message Queue Layer
@@ -8,8 +6,7 @@ services:
   redis:
     image: redis:7.4.8-alpine
     container_name: lumen-redis
-    ports:
-      - "127.0.0.1:6379:6379"   # Exposed for WSL2 native worker (localhost only)
+    # No host port — internal Docker network only
     volumes:
       - redis_data:/data
     healthcheck:
@@ -28,8 +25,7 @@ services:
       POSTGRES_USER: ${DATABASE_USER:-lumen_user}
       POSTGRES_PASSWORD: ${DATABASE_PASSWORD:-secure_password_here}
       POSTGRES_DB: ${DATABASE_NAME:-lumen}
-    ports:
-      - "127.0.0.1:15432:5432"  # Exposed for WSL2 native worker (localhost only; 5432 conflicts with wslrelay)
+    # No host port — internal Docker network only
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./scripts/init-db.sql:/docker-entrypoint-initdb.d/init.sql
@@ -122,33 +118,22 @@ services:
       - QDRANT_GRPC_PORT=${QDRANT_GRPC_PORT:-6334}
       - MEDIA_ROOT=${MEDIA_ROOT:-/data/media}
       - STORAGE_BACKEND=${STORAGE_BACKEND:-local}
-      # Worker throttling — tune in .env to match available RAM
-      # Rule of thumb: CELERY_CONCURRENCY = floor(free_RAM_GB / 2)
-      # Each worker: ~600MB CLIP model + ~400MB FFmpeg buffers per 4K video
       - CELERY_CONCURRENCY=${CELERY_CONCURRENCY:-4}
       - CELERY_WORKER_PREFETCH_MULTIPLIER=${CELERY_WORKER_PREFETCH_MULTIPLIER:-1}
       - CELERY_MAX_TASKS_PER_CHILD=${CELERY_MAX_TASKS_PER_CHILD:-50}
       - CELERY_MAX_MEMORY_PER_CHILD=${CELERY_MAX_MEMORY_PER_CHILD:-1500000}
-      # Proxy sidecar: faststart copies land here (source stays :ro)
       - PROXY_ROOT=${PROXY_ROOT:-/mnt/proxies}
-      # Proxy skip threshold: non-H264 files longer than this (seconds) are
-      # not transcoded. H264 files always get a fast stream-copy proxy.
       - PROXY_MAX_DURATION_SECS=${PROXY_MAX_DURATION_SECS:-3600}
-      # Observability: stable worker identifier for Mac vs Windows attribution in stats
       - WORKER_ID=${WORKER_ID:-windows-1}
-      # Frame cache: always /mnt/frame_cache inside container (bind handles host-side path)
       - FRAME_CACHE_DIR=/mnt/frame_cache
     user: root
     volumes:
       - media_data:/data/media
       - worker_tmp:/tmp/lumen_frames
-      - proxies_data:/mnt/proxies        # Faststart proxy cache (:rw — worker writes here)
-      - /usr/lib/wsl/lib:/usr/lib/wsl/lib  # WSL2 DirectX driver mapping
-      - ${MEDIA_SOURCE_PATH}:/mnt/source:ro # Host media library (path set in .env)
-      - ${FRAME_CACHE_DIR:-/tmp/lumen_frame_cache}:/mnt/frame_cache # Shared frame cache (rw)
-      # Development: Mount worker code for hot-reload (comment out for production)
-      # - ./worker:/app/worker
-      # - ./scripts:/app/scripts
+      - proxies_data:/mnt/proxies
+      - /usr/lib/wsl/lib:/usr/lib/wsl/lib
+      - ${MEDIA_SOURCE_PATH}:/mnt/source:ro
+      - ${FRAME_CACHE_DIR:-/tmp/lumen_frame_cache}:/mnt/frame_cache
     depends_on:
       redis:
         condition: service_healthy
@@ -162,16 +147,8 @@ services:
     deploy:
       resources:
         limits:
-          cpus: '8'
-          memory: 24G
-    # -----------------------------------------------------------------------
-    # GPU passthrough (currently blocked by Docker Desktop + AMD limitation)
-    # DirectML detects AMD GPUs in native WSL2 but Docker Desktop's VM
-    # does not expose them via DXCore. The worker will fall back to CPU.
-    # Uncomment when Docker Desktop adds AMD GPU support:
-    # -----------------------------------------------------------------------
-    # devices:
-    #   - /dev/dxg:/dev/dxg
+          cpus: '4'
+          memory: 6G
 
   # =========================================================================
   # FastAPI Backend
@@ -191,16 +168,14 @@ services:
       - QDRANT_HOST=${QDRANT_HOST:-lumen-qdrant}
       - QDRANT_PORT=${QDRANT_PORT:-6333}
       - MEDIA_ROOT=${MEDIA_ROOT:-/data/media}
-      # Proxy sidecar: read proxies volume to serve faststart copies
       - PROXY_ROOT=${PROXY_ROOT:-/mnt/proxies}
-    # Development: mount source for hot-reload (comment out for production)
     command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
     volumes:
       - media_data:/data/media
-      - proxies_data:/mnt/proxies:ro      # Faststart proxy cache (:ro for API)
-      - ${MEDIA_SOURCE_PATH}:/mnt/source:ro # Host media library (path set in .env)
-      - ./api:/app                          # Development: hot-reload (comment out for production)
-      - hf_cache:/root/.cache/huggingface   # Persist model downloads across rebuilds
+      - proxies_data:/mnt/proxies:ro
+      - ${MEDIA_SOURCE_PATH}:/mnt/source:ro
+      - ./api:/app
+      - hf_cache:/root/.cache/huggingface
     depends_on:
       redis:
         condition: service_healthy
@@ -220,7 +195,6 @@ services:
       context: ./frontend
       dockerfile: Dockerfile
       args:
-        # Baked into Next.js JS bundle at build time — must match the public URL
         NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
         NEXT_PUBLIC_STREAM_URL: ${NEXT_PUBLIC_STREAM_URL:-http://localhost:8000}
     container_name: lumen-frontend
@@ -229,19 +203,15 @@ services:
     env_file:
       - .env
     environment:
-      # Server-side API endpoint (for Next.js API routes to proxy requests)
       - API_URL=http://api:8000
-      # Client-side API endpoint (for WebSocket and browser-based requests)
       - NEXT_PUBLIC_API_URL=http://api:8000
-      # Browser-direct URL for media streaming (bypasses Next.js proxy, no buffering)
       - NEXT_PUBLIC_STREAM_URL=${NEXT_PUBLIC_STREAM_URL:-http://localhost:8000}
       - NEXT_PUBLIC_QDRANT_HOST=qdrant
       - NEXT_PUBLIC_QDRANT_PORT=6333
-      # Server-side API key forwarded to FastAPI (set in .env, never exposed to browser)
       - BACKEND_API_KEY=${BACKEND_API_KEY:-}
     volumes:
       - media_data:/data/media
-      - ${MEDIA_SOURCE_PATH}:/mnt/source:ro # Host media library (for video streaming)
+      - ${MEDIA_SOURCE_PATH}:/mnt/source:ro
     depends_on:
       - api
     networks:
@@ -314,30 +284,27 @@ services:
 # ============================================================================
 volumes:
   redis_data:
-    name: semantic-media-pipeline_redis_data
-    external: true
+    driver: local
   postgres_data:
-    name: semantic-media-pipeline_postgres_data
-    external: true
+    driver: local
   qdrant_data:
-    name: semantic-media-pipeline_qdrant_data
-    external: true
+    driver: local
   media_data:
-    name: semantic-media-pipeline_media_data
-    external: true
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${MEDIA_ROOT:-/data/media}
   worker_tmp:
-    name: semantic-media-pipeline_worker_tmp
-    external: true
+    driver: local
   proxies_data:
-    name: semantic-media-pipeline_proxies_data
-    external: true
+    driver: local
   hf_cache:
-    name: semantic-media-pipeline_hf_cache
-    external: true
+    driver: local
   prometheus_data:
-    name: semantic-media-pipeline_prometheus_data
+    driver: local
   grafana_data:
-    name: semantic-media-pipeline_grafana_data
+    driver: local
 
 # ============================================================================
 # Networks
