@@ -176,9 +176,9 @@ services:
       - REDIS_URL=redis://lumen2-redis:6379
       - DATABASE_URL=postgresql://lumen2_user:${DATABASE_PASSWORD_2}@lumen2-postgres:5432/lumen2
       - CLIP_MODEL_NAME=clip-ViT-L-14
-      - LUMEN_PATH_MAP_0=/mnt/source/f-downloads:C:/Users/<user>/Downloads/<media-folder>
-      - LUMEN_PATH_MAP_1=/mnt/source/e:E:/Unsorted
-      - ALLOWED_ORIGINS=https://lumen.example.com,http://localhost:3000,http://localhost:3001,http://localhost:3002
+      - LUMEN_PATH_MAP_0=${LUMEN_PATH_MAP_0:-}
+      - LUMEN_PATH_MAP_1=${LUMEN_PATH_MAP_1:-}
+      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-http://localhost:3000,http://localhost:3001,http://localhost:3002}
       - LLM_PROVIDER=${LLM_PROVIDER:-local}
       - LLM_MODEL=${LLM_MODEL:-qwen3:14b}
       - LLM_BASE_URL=${LLM_BASE_URL:-http://host.docker.internal:11434/v1}
@@ -263,22 +263,22 @@ services:
 # ============================================================================
 volumes:
   redis2_data:
-    name: semantic-media-pipeline_redis2_data
+    name: lumen2_redis2_data
     external: true
   postgres2_data:
-    name: semantic-media-pipeline_postgres2_data
+    name: lumen2_postgres2_data
     external: true
   qdrant2_data:
-    name: semantic-media-pipeline_qdrant2_data
+    name: lumen2_qdrant2_data
     external: true
   media2_data:
-    name: semantic-media-pipeline_media2_data
+    name: lumen2_media2_data
     external: true
   worker2_tmp:
-    name: semantic-media-pipeline_worker2_tmp
+    name: lumen2_worker2_tmp
     external: true
   proxies2_data:
-    name: semantic-media-pipeline_proxies2_data
+    name: lumen2_proxies2_data
     external: true
   hf_cache:
     external: true   # Shared with main lumen stack — same model, one download
