@@ -36,9 +36,10 @@ class AgentState(TypedDict):
     query: str
     limit: NotRequired[int]                        # max results per agent
     threshold: NotRequired[float]                  # CLIP similarity threshold
-    intent: NotRequired[Optional[str]]            # "visual" | "temporal" | "mixed"
+    intent: NotRequired[Optional[str]]            # "visual" | "temporal" | "audio" | "mixed"
     search_results: NotRequired[list[dict]]        # from SearchAgent
     metadata_results: NotRequired[list[dict]]      # from MetadataAgent
+    audio_results: NotRequired[list[dict]]         # from AudioAgent
     vision_results: NotRequired[list[dict]]        # from VisionAgent (conditional)
     final_answer: NotRequired[Optional[str]]
     error: NotRequired[Optional[str]]
@@ -50,17 +51,28 @@ class AgentState(TypedDict):
 
 async def classify_intent(state: AgentState) -> AgentState:
     """
-    Simple rule-based intent classification.
+    Rule-based intent classification.
     Upgrade to LLM-based classification as needed.
     """
     query = state["query"].lower()
     temporal_keywords = {"when", "date", "year", "month", "before", "after", "during"}
     visual_keywords = {"look", "color", "show", "photo", "video", "picture", "scene"}
+    audio_keywords = {
+        "music", "singing", "song", "speech", "talking", "speaking", "sound",
+        "audio", "hear", "noise", "voice", "dialogue", "conversation", "narration",
+        "ambient", "silence", "quiet", "event", "applause", "crowd", "explosion",
+        "vietnamese", "english", "french", "spanish", "japanese", "korean",
+    }
 
     has_temporal = any(k in query for k in temporal_keywords)
     has_visual = any(k in query for k in visual_keywords)
+    has_audio = any(k in query for k in audio_keywords)
 
-    if has_temporal and has_visual:
+    if has_audio and (has_temporal or has_visual):
+        intent = "mixed"
+    elif has_audio:
+        intent = "audio"
+    elif has_temporal and has_visual:
         intent = "mixed"
     elif has_temporal:
         intent = "temporal"
@@ -86,6 +98,16 @@ async def run_metadata_agent(state: AgentState) -> AgentState:
     from agents.metadata_agent import metadata_agent_run
     results = await metadata_agent_run(state["query"])
     return {"metadata_results": results}
+
+
+async def run_audio_agent(state: AgentState) -> AgentState:
+    """AudioAgent: Qdrant audio filter queries (segment type, speech, events)."""
+    from agents.audio_agent import audio_agent_run
+    intent = state.get("intent", "")
+    if intent not in ("audio", "mixed"):
+        return {"audio_results": []}
+    results = await audio_agent_run(state["query"], limit=state.get("limit", 20))
+    return {"audio_results": results}
 
 
 async def run_vision_agent(state: AgentState) -> AgentState:
@@ -122,22 +144,25 @@ def build_coordinator() -> StateGraph:
     graph.add_node("classify_intent", classify_intent)
     graph.add_node("search_agent", run_search_agent)
     graph.add_node("metadata_agent", run_metadata_agent)
+    graph.add_node("audio_agent", run_audio_agent)
     graph.add_node("vision_agent", run_vision_agent)
     graph.add_node("aggregate", aggregate_and_answer)
 
     graph.set_entry_point("classify_intent")
 
-    # classify → search + metadata in parallel
+    # classify → search + metadata + audio in parallel
     graph.add_edge("classify_intent", "search_agent")
     graph.add_edge("classify_intent", "metadata_agent")
+    graph.add_edge("classify_intent", "audio_agent")
 
-    # Both branches join at the conditional edge
+    # search → conditional vision or aggregate
     graph.add_conditional_edges(
         "search_agent",
         needs_vision,
         {"vision": "vision_agent", "aggregate": "aggregate"},
     )
     graph.add_edge("metadata_agent", "aggregate")
+    graph.add_edge("audio_agent", "aggregate")
     graph.add_edge("vision_agent", "aggregate")
     graph.add_edge("aggregate", END)
 
