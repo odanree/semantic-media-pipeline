@@ -667,7 +667,7 @@ describe('AskPanel', () => {
       fireEvent.submit(screen.getByRole('textbox', { name: /question/i }).closest('form')!)
       await new Promise(r => setTimeout(r, 10))
     })
-    expect(screen.getByText(/3 duplicate frames collapsed/i)).toBeTruthy()
+    expect(screen.getByText(/3 duplicates collapsed/i)).toBeTruthy()
   })
 
   it('dismisses error when Dismiss is clicked', async () => {

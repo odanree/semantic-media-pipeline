@@ -255,23 +255,11 @@ async def search_media(request: Request, body: SearchRequest):
     Returns:
         List of matching media with similarity scores
     """
-    if not body.query or not body.query.strip():
-        raise HTTPException(status_code=400, detail="Query cannot be empty")
-
     try:
         start_time = time.time()
 
-        # Load CLIP model (lazy-loaded on first use)
-        try:
-            model = get_clip_model()
-        except Exception as e:
-            raise HTTPException(
-                status_code=503,
-                detail=f"CLIP embedder failed to load: {str(e)}"
-            )
-
-        # Build optional audio payload filter
-        # DEBUG: Log what we received
+        # Build optional audio payload filter first so we can decide whether
+        # an empty query is valid (filter-only browse is allowed).
         import logging
         logger = logging.getLogger(__name__)
         logger.info(f"[SEARCH] received: query={body.query}, audio_has_speech={body.audio_has_speech}, audio_segment_type={body.audio_segment_type}")
@@ -297,6 +285,20 @@ async def search_media(request: Request, body: SearchRequest):
         audio_filter = Filter(must=audio_conditions) if audio_conditions else None
 
         filter_only = audio_filter is not None and not body.query.strip()
+
+        # Reject empty queries only when there are no audio filters to fall back on
+        if not body.query.strip() and not filter_only:
+            raise HTTPException(status_code=400, detail="Query cannot be empty")
+
+        # Load CLIP model (lazy-loaded on first use); skip for filter-only requests
+        if not filter_only:
+            try:
+                model = get_clip_model()
+            except Exception as e:
+                raise HTTPException(
+                    status_code=503,
+                    detail=f"CLIP embedder failed to load: {str(e)}"
+                )
 
         if filter_only:
             # No query — scroll by filter only, no similarity threshold
