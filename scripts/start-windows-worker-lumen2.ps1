@@ -55,10 +55,8 @@ Set-Location $WORKER_DIR
 
 & "$VENV_DIR\Scripts\celery.exe" -A celery_app worker `
     --loglevel=info `
-    --pool=prefork `
+    --pool=solo `
     -E `
-    --concurrency=$concurrency `
     --prefetch-multiplier=1 `
-    --max-tasks-per-child=$(if ($env:CELERY_MAX_TASKS_PER_CHILD) { $env:CELERY_MAX_TASKS_PER_CHILD } else { "50" }) `
     --queues=celery `
     --hostname=$hostname
