@@ -774,6 +774,119 @@ Kill the Ollama process, confirm `nvidia-smi` works in WSL, then restart Ollama.
 
 ---
 
+## 21. Manual Container Removal Breaks Docker DNS for the Entire Stack
+
+**Commit(s):** ops — 2026-03-14
+**Component:** `docker-compose.yml`
+**Severity:** Critical — every dependent service lost connectivity to Redis; API returned 500 on all requests
+
+### What Broke
+
+`lumen-redis` was manually stopped and removed (`docker stop lumen-redis && docker rm lumen-redis`) to add a host port binding. It was then recreated with `docker compose up -d redis` — but without the `-p lumen1` project flag. Docker Compose derived the project name from the working directory (`semantic-media-pipeline`) and placed the new container on the `semantic-media-pipeline_lumen-net` bridge network. Every other container in the stack — `lumen-api`, `lumen-flower`, `lumen-worker`, etc. — was still on `lumen1_lumen-net`. Docker's internal DNS is network-scoped: `lumen-redis` was no longer resolvable from any of those containers.
+
+Symptoms:
+- `lumen-api`: every request returned `500 Internal Server Error` (slowapi rate-limit middleware hitting a `ConnectionError` trying to reach Redis)
+- `lumen-flower`: `Error -2 connecting to lumen-redis:6379. Name does not resolve` in a tight retry loop
+- `lumen-worker`: identical DNS failure on broker connection
+
+### Root Cause
+
+Docker's embedded DNS resolver is per-network. A container on network A cannot resolve the hostname of a container on network B. When the project name changes, the network name changes, and a recreated container lands on the new network while the rest of the stack remains on the old one. `docker container inspect` confirms the mismatch immediately:
+
+```bash
+# Before fix — mismatched networks
+docker inspect lumen-redis  --format '{{range $k,$v := .NetworkSettings.Networks}}{{$k}}{{end}}'
+# semantic-media-pipeline_lumen-net   ← wrong
+
+docker inspect lumen-api --format '{{range $k,$v := .NetworkSettings.Networks}}{{$k}}{{end}}'
+# lumen1_lumen-net   ← correct
+```
+
+### Fix
+
+Remove the misnetworked container and recreate it under the correct project name:
+
+```bash
+docker stop lumen-redis && docker rm lumen-redis
+docker compose -p lumen1 up -d redis   # explicit project name matches existing stack
+```
+
+Then restart all dependent containers so they pick up the new container in DNS:
+
+```bash
+docker restart lumen-api lumen-flower lumen-worker
+```
+
+The long-term fix is to add `name: lumen1` to `docker-compose.yml` (see entry #17), which makes the project name immutable regardless of invocation flags.
+
+### Lesson
+
+**Never `docker stop && docker rm` a container and recreate it with `docker compose up -d` without explicitly matching the original project name via `-p <name>` or a `name:` field in the compose file.** A missing `-p` flag puts the container on a new Docker network, severing DNS for every other container in the stack. Always verify network membership after recreation:
+
+```bash
+docker inspect <container> --format '{{range $k,$v := .NetworkSettings.Networks}}{{$k}}: {{$v.IPAddress}}{{end}}'
+```
+
+If networks don't match, the container is on the wrong network and DNS will silently fail.
+
+---
+
+## 22. slowapi Crashes on Redis ConnectionError Due to Wrong Hostname in REDIS_URL
+
+**Commit(s):** ops — 2026-03-14
+**Component:** `api/rate_limit.py`
+**Severity:** Critical — all API requests returned 500; the error was a slowapi bug triggered by a misconfigured env var
+
+### What Broke
+
+After the Redis DNS breakage (entry #21), `lumen-api` was restarted. The container started successfully but returned `500 Internal Server Error` on every request. The traceback in the logs:
+
+```
+File "/usr/local/lib/python3.10/site-packages/slowapi/middleware.py", line 77, in sync_check_limits
+    return exception_handler(request, exc), _bool
+File "/usr/local/lib/python3.10/site-packages/slowapi/extension.py", line 81, in _rate_limit_exceeded_handler
+    {"error": f"Rate limit exceeded: {exc.detail}"}, status_code=429
+AttributeError: 'ConnectionError' object has no attribute 'detail'
+```
+
+`rate_limit.py` used `os.getenv("REDIS_URL", "redis://redis:6379")` for the slowapi storage URI. The `.env` file had `REDIS_URL=redis://redis:6379` — the hostname `redis` (not `lumen-redis`). This host never resolved inside the Docker network. Every request caused slowapi to attempt a Redis connection, get a `ConnectionError`, and pass it to `_rate_limit_exceeded_handler` — which expected a `RateLimitExceeded` (an `HTTPException` subclass with a `.detail` attribute) and called `exc.detail`, crashing with `AttributeError`.
+
+### Root Cause
+
+Two compounding bugs:
+1. `REDIS_URL` in `.env` used the wrong container hostname (`redis` vs `lumen-redis`)
+2. slowapi's middleware has a latent bug: it catches any exception from Redis (including `ConnectionError`) and routes it to `_rate_limit_exceeded_handler`, which unconditionally accesses `.detail` — an attribute that only exists on `HTTPException` subclasses, not on generic exceptions
+
+### Fix
+
+In `api/rate_limit.py`, prefer `CELERY_BROKER_URL` (which is always set to the correct container hostname in Compose) over `REDIS_URL`, and add `in_memory_fallback_enabled=True` to fail open if Redis is temporarily unreachable:
+
+```python
+# Before
+_storage_uri = os.getenv("REDIS_URL", "redis://redis:6379")
+
+# After
+_storage_uri = (
+    os.getenv("CELERY_BROKER_URL")          # already correct in Compose env
+    or os.getenv("REDIS_URL", "redis://lumen-redis:6379")
+)
+
+limiter = Limiter(
+    key_func=get_remote_address,
+    storage_uri=_storage_uri,
+    default_limits=[LIMIT_DEFAULT],
+    in_memory_fallback_enabled=True,  # fail open if Redis is temporarily unreachable
+)
+```
+
+### Lesson
+
+**Verify that `REDIS_URL` (or any Redis connection string) matches the actual container hostname before deploying.** In Docker Compose stacks, the hostname is the service name — not `redis`, not `localhost`. Run `docker exec <api_container> env | grep REDIS` after any env change to confirm.
+
+Additionally: **add `in_memory_fallback_enabled=True` to any slowapi `Limiter` that uses a Redis backend.** Without it, a transient Redis unavailability (container restart, network blip) crashes every in-flight request with a 500 instead of gracefully degrading to in-memory rate limiting. The slowapi bug (routing non-`RateLimitExceeded` exceptions to `_rate_limit_exceeded_handler`) is upstream, but `in_memory_fallback_enabled` prevents it from ever being triggered.
+
+---
+
 ## Summary Table
 
 | # | Bug | Component | Severity | Introduced | Fixed |
@@ -798,6 +911,8 @@ Kill the Ollama process, confirm `nvidia-smi` works in WSL, then restart Ollama.
 | 18 | Volume ownership conflict on project rename | `docker-compose*.yml` | High | `feat/windows-native-worker` | `feat/windows-native-worker` |
 | 19 | JSX unescaped `"` breaks Next.js build | `frontend/components/AskPanel.tsx` | Medium | `feat/windows-native-worker` | `feat/windows-native-worker` |
 | 20 | Ollama falling back to CPU inference | Ollama / WSL2 | High | ops | ops |
+| 21 | Manual container removal breaks Docker DNS | `docker-compose.yml` | Critical | ops | ops |
+| 22 | slowapi crashes on Redis ConnectionError (wrong hostname) | `api/rate_limit.py` | Critical | ops | ops |
 
 ---
 
@@ -819,7 +934,7 @@ Bug #11 is one of the most common advanced React bugs in the industry. It's subt
 Bugs #11 (copied between two hooks), #5, and #6 all appeared in multiple files simultaneously because one was based on the other. When fixing a pattern bug, always search the entire codebase for all instances.
 
 ### Docker Compose is not a simple process manager
-Bugs #14–#18 all stem from treating Docker Compose like a system service manager (`restart` ≈ `systemctl restart`). It is not. Container recreation, network membership, volume naming, and environment injection are all creation-time decisions. Partial restarts, missing `name:` fields, and missing `external:` declarations each create subtle configuration drift that compounds over time into a fragmented, inconsistent cluster. Treat `docker compose up -d` as the canonical deployment operation and `docker restart` as reserved for emergency use only.
+Bugs #14–#18, #21 all stem from treating Docker Compose like a system service manager (`restart` ≈ `systemctl restart`). It is not. Container recreation, network membership, volume naming, and environment injection are all creation-time decisions. Partial restarts, missing `name:` fields, and missing `external:` declarations each create subtle configuration drift that compounds over time into a fragmented, inconsistent cluster. Treat `docker compose up -d` as the canonical deployment operation and `docker restart` as reserved for emergency use only. Manually stopping and removing a container (`docker stop && docker rm`) then recreating it without `-p <project>` is the highest-risk variant — it silently severs DNS for the entire stack.
 
 ### Operational changes need the same rigour as code changes
 Bugs #12–#20 were all operational rather than code bugs — wrong queue flags, missing compose fields, Ollama GPU init order. They had the same or greater impact as code bugs but left no git trail and were harder to diagnose. Document every operational change (compose flags, env vars, startup order) in the codebase itself, not just in chat logs.

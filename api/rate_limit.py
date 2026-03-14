@@ -21,7 +21,12 @@ from slowapi.util import get_remote_address
 
 # Redis-backed counters — falls back gracefully to in-memory if Redis is
 # unreachable (acceptable for local dev, not for production).
-_storage_uri = os.getenv("REDIS_URL", "redis://redis:6379")
+# Prefer CELERY_BROKER_URL (always set to the correct container hostname in Compose)
+# over REDIS_URL (which may point to a stale/wrong hostname from .env).
+_storage_uri = (
+    os.getenv("CELERY_BROKER_URL")
+    or os.getenv("REDIS_URL", "redis://lumen-redis:6379")
+)
 
 # Per-route limit strings — configurable without rebuilding the container.
 LIMIT_SEARCH     = os.getenv("RATE_LIMIT_SEARCH",     "30/minute")
@@ -35,4 +40,5 @@ limiter = Limiter(
     key_func=get_remote_address,   # rate-key = client IP
     storage_uri=_storage_uri,
     default_limits=[LIMIT_DEFAULT],
+    in_memory_fallback_enabled=True,  # fail open if Redis is temporarily unreachable
 )
