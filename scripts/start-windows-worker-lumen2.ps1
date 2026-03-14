@@ -22,20 +22,19 @@ Get-Content $ENV_FILE | Where-Object { $_ -notmatch '^\s*#' -and $_ -match '=' }
 }
 
 # ----------------------------------------------------------------------------
-# 2. Test DirectML
+# 2. Test CUDA (GPU 1)
 # ----------------------------------------------------------------------------
-Write-Host "==> Testing DirectML (RX 7900 XT)..."
-$dmlTest = & "$VENV_DIR\Scripts\python.exe" -c @"
-import torch_directml, torch
-try:
-    d = torch_directml.device(0)
-    torch.zeros(1, device=d)
-    print('   GPU OK: privateuseone:0 [DirectML ACTIVE]')
-except Exception as e:
-    print(f'   DirectML error: {e}')
-    print('   Will fall back to CPU.')
+Write-Host "==> Testing CUDA (GPU 1)..."
+$cudaTest = & "$VENV_DIR\Scripts\python.exe" -c @"
+import torch
+if torch.cuda.is_available() and torch.cuda.device_count() > 1:
+    print(f'   GPU 1 OK: {torch.cuda.get_device_name(1)} [CUDA ACTIVE]')
+elif torch.cuda.is_available():
+    print(f'   Only 1 GPU found: {torch.cuda.get_device_name(0)} — check if lumen2 should use cuda:0')
+else:
+    print('   CUDA not available — will fall back to CPU')
 "@
-Write-Host $dmlTest
+Write-Host $cudaTest
 
 # ----------------------------------------------------------------------------
 # 3. Start Celery worker
