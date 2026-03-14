@@ -96,10 +96,9 @@ services:
     command: >
       sh -c "celery -A celery_app worker
       --loglevel=info
+      --pool=solo
       -E
-      --concurrency=$${CELERY_CONCURRENCY:-8}
-      --prefetch-multiplier=$${CELERY_WORKER_PREFETCH_MULTIPLIER:-1}
-      --max-tasks-per-child=$${CELERY_MAX_TASKS_PER_CHILD:-50}
+      --prefetch-multiplier=1
       --queues=celery,proxies"
     environment:
       - CELERY_BROKER_URL=redis://lumen2-redis:6379/0
@@ -124,7 +123,7 @@ services:
       - KEYFRAME_RESOLUTION=${KEYFRAME_RESOLUTION:-224}
       - CLIP_MODEL_NAME=${CLIP_MODEL_NAME:-clip-ViT-B-32}
       - EMBEDDING_BATCH_SIZE=${EMBEDDING_BATCH_SIZE:-96}
-      - EMBEDDING_DEVICE=${EMBEDDING_DEVICE:-}
+      - EMBEDDING_DEVICE=cpu
       - FFMPEG_TIMEOUT=${FFMPEG_TIMEOUT:-}
       - FRAME_CACHE_DIR=/tmp/lumen_frames
     user: root

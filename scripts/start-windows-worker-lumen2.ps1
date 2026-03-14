@@ -22,20 +22,17 @@ Get-Content $ENV_FILE | Where-Object { $_ -notmatch '^\s*#' -and $_ -match '=' }
 }
 
 # ----------------------------------------------------------------------------
-# 2. Test DirectML
+# 2. Test CUDA (GPU 1)
 # ----------------------------------------------------------------------------
-Write-Host "==> Testing DirectML (RX 7900 XT)..."
-$dmlTest = & "$VENV_DIR\Scripts\python.exe" -c @"
-import torch_directml, torch
-try:
-    d = torch_directml.device(0)
-    torch.zeros(1, device=d)
-    print('   GPU OK: privateuseone:0 [DirectML ACTIVE]')
-except Exception as e:
-    print(f'   DirectML error: {e}')
-    print('   Will fall back to CPU.')
+Write-Host "==> Testing CUDA (GPU 1)..."
+$cudaTest = & "$VENV_DIR\Scripts\python.exe" -c @"
+import torch
+if torch.cuda.is_available():
+    print(f'   GPU OK: {torch.cuda.get_device_name(0)} [CUDA ACTIVE]')
+else:
+    print('   CUDA not available — will fall back to CPU')
 "@
-Write-Host $dmlTest
+Write-Host $cudaTest
 
 # ----------------------------------------------------------------------------
 # 3. Start Celery worker
@@ -56,10 +53,8 @@ Set-Location $WORKER_DIR
 
 & "$VENV_DIR\Scripts\celery.exe" -A celery_app worker `
     --loglevel=info `
-    --pool=prefork `
+    --pool=solo `
     -E `
-    --concurrency=$concurrency `
     --prefetch-multiplier=1 `
-    --max-tasks-per-child=$(if ($env:CELERY_MAX_TASKS_PER_CHILD) { $env:CELERY_MAX_TASKS_PER_CHILD } else { "50" }) `
     --queues=celery `
     --hostname=$hostname

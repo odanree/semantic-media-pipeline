@@ -286,7 +286,7 @@ def _run_whisper(
     if _whisper_model is None or _whisper_model_size != model_size:
         try:
             whisper_device = os.getenv("WHISPER_DEVICE", "cpu")
-            compute_type = "float16" if whisper_device == "cuda" else "int8"
+            compute_type = "float16" if whisper_device.startswith("cuda") else "int8"
             _whisper_model = WhisperModel(model_size, device=whisper_device, compute_type=compute_type)
             _whisper_model_size = model_size
             log.info("[Whisper] Loaded model: %s", model_size)
@@ -350,7 +350,12 @@ def _run_ast(
 
     if _ast_pipeline is None:
         try:
-            ast_device = 0 if os.getenv("WHISPER_DEVICE", "cpu") == "cuda" else -1
+            _wd = os.getenv("WHISPER_DEVICE", "cpu")
+            if _wd.startswith("cuda"):
+                _parts = _wd.split(":")
+                ast_device = int(_parts[1]) if len(_parts) > 1 else 0
+            else:
+                ast_device = -1
             _ast_pipeline = hf_pipeline(
                 "audio-classification",
                 model="MIT/ast-finetuned-audioset-10-10-0.4593",
