@@ -2,9 +2,11 @@
 # ============================================================================
 # Second isolated Lumen stack — indexes a separate media library.
 #
-# Launch:  docker compose -f docker-compose.second.yml -p lumen2 up -d
-# Tear down: docker compose -f docker-compose.second.yml -p lumen2 down
-# Logs:    docker compose -f docker-compose.second.yml -p lumen2 logs -f worker
+# Launch:  docker compose -f docker-compose.second.yml up -d
+# Tear down: docker compose -f docker-compose.second.yml down
+# Logs:    docker compose -f docker-compose.second.yml logs -f worker
+
+name: lumen2
 #
 # Port map (main → second):
 #   API      8000 → 8001
@@ -177,6 +179,10 @@ services:
       - LUMEN_PATH_MAP_0=/mnt/source/f-downloads:C:/Users/<user>/Downloads/<media-folder>
       - LUMEN_PATH_MAP_1=/mnt/source/e:E:/Unsorted
       - ALLOWED_ORIGINS=https://lumen.example.com,http://localhost:3000,http://localhost:3001,http://localhost:3002
+      - LLM_PROVIDER=${LLM_PROVIDER:-local}
+      - LLM_MODEL=${LLM_MODEL:-qwen3:14b}
+      - LLM_BASE_URL=${LLM_BASE_URL:-http://host.docker.internal:11434/v1}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
     command: uvicorn main:app --host 0.0.0.0 --port 8000
     volumes:
       - media2_data:/data/media
