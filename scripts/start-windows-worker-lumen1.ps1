@@ -6,7 +6,7 @@
 $ErrorActionPreference = "Stop"
 
 $VENV_DIR  = "C:\lumen-worker-venv"
-$PROJ_DIR  = "C:\Users\<user>\Projects\semantic-media-pipeline"
+$PROJ_DIR  = (Resolve-Path "$PSScriptRoot\..").Path
 $ENV_FILE  = "$PROJ_DIR\.env.windows-worker-lumen1"
 $WORKER_DIR = "$PROJ_DIR\worker"
 

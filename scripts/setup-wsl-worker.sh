@@ -104,30 +104,39 @@ echo "[5/6] Setting up /mnt/source symlinks..."
 sudo mkdir -p /mnt/source
 
 # lumen2 paths:
-#   /mnt/source/e           → E:\Unsorted
-#   /mnt/source/f-downloads → C:\Users\<user>\Downloads\<media-folder>
-if [ -d /mnt/e/Unsorted ]; then
+#   /mnt/source/e           → E:\Unsorted  (or set LUMEN2_SOURCE_E env var)
+#   /mnt/source/f-downloads → path set via LUMEN2_SOURCE_F env var
+#
+# Set these env vars before running this script, e.g.:
+#   export LUMEN2_SOURCE_E=/mnt/e/Unsorted
+#   export LUMEN2_SOURCE_F="/mnt/c/Users/<your-user>/Downloads/<your-media-folder>"
+
+LUMEN2_SOURCE_E="${LUMEN2_SOURCE_E:-/mnt/e/Unsorted}"
+if [ -d "$LUMEN2_SOURCE_E" ]; then
     if [ ! -e /mnt/source/e ]; then
-        sudo ln -s /mnt/e/Unsorted /mnt/source/e
-        echo "      Created: /mnt/source/e -> /mnt/e/Unsorted"
+        sudo ln -s "$LUMEN2_SOURCE_E" /mnt/source/e
+        echo "      Created: /mnt/source/e -> $LUMEN2_SOURCE_E"
     else
         echo "      Exists:  /mnt/source/e"
     fi
 else
-    echo "      WARNING: /mnt/e/Unsorted not found — E: drive not mounted in WSL2?"
+    echo "      WARNING: '$LUMEN2_SOURCE_E' not found — set LUMEN2_SOURCE_E env var or mount E: drive"
     echo "      Mount it with: sudo mkdir -p /mnt/e && sudo mount -t drvfs E: /mnt/e"
 fi
 
-MEDIA_SOURCE_PATH="/mnt/c/Users/<user>/Downloads/<media-folder>"
-if [ -d "$MEDIA_SOURCE_PATH" ]; then
-    if [ ! -e /mnt/source/f-downloads ]; then
-        sudo ln -s "$MEDIA_SOURCE_PATH" /mnt/source/f-downloads
-        echo "      Created: /mnt/source/f-downloads -> $MEDIA_SOURCE_PATH"
+if [ -n "${LUMEN2_SOURCE_F:-}" ]; then
+    if [ -d "$LUMEN2_SOURCE_F" ]; then
+        if [ ! -e /mnt/source/f-downloads ]; then
+            sudo ln -s "$LUMEN2_SOURCE_F" /mnt/source/f-downloads
+            echo "      Created: /mnt/source/f-downloads -> $LUMEN2_SOURCE_F"
+        else
+            echo "      Exists:  /mnt/source/f-downloads"
+        fi
     else
-        echo "      Exists:  /mnt/source/f-downloads"
+        echo "      WARNING: LUMEN2_SOURCE_F='$LUMEN2_SOURCE_F' not found"
     fi
 else
-    echo "      WARNING: '$MEDIA_SOURCE_PATH' not found — path may differ"
+    echo "      Skipping /mnt/source/f-downloads — set LUMEN2_SOURCE_F env var to enable"
 fi
 
 # lumen1 paths:

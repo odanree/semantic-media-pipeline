@@ -73,7 +73,7 @@ QDRANT_REMOTE_PORT = int(os.getenv("QDRANT_REMOTE_PORT", "6333"))
 
 # Path rewriting: if Qdrant stores /mnt/source/e/foo.mp4 but locally it's E:/foo.mp4
 # Set VIDEO_ROOT_OVERRIDE as a comma-separated list of "qdrant_prefix:local_prefix" pairs.
-# Example: VIDEO_ROOT_OVERRIDE="/mnt/source/e:E:/,/mnt/source/f-downloads:C:/Users/<user>/Downloads/<media-folder>"
+# Example: VIDEO_ROOT_OVERRIDE="/mnt/source/e:E:/Unsorted,/mnt/source/f-downloads:C:/Users/<user>/Downloads/<media-folder>"
 VIDEO_ROOT_OVERRIDE = os.getenv("VIDEO_ROOT_OVERRIDE", "")
 
 # ─── Logging ──────────────────────────────────────────────────────────────────
