@@ -263,17 +263,17 @@ services:
 # ============================================================================
 volumes:
   redis2_data:
-    driver: local
+    name: semantic-media-pipeline_redis2_data
   postgres2_data:
-    driver: local
+    name: semantic-media-pipeline_postgres2_data
   qdrant2_data:
-    driver: local
+    name: semantic-media-pipeline_qdrant2_data
   media2_data:
-    driver: local
+    name: semantic-media-pipeline_media2_data
   worker2_tmp:
-    driver: local
+    name: semantic-media-pipeline_worker2_tmp
   proxies2_data:
-    driver: local
+    name: semantic-media-pipeline_proxies2_data
   hf_cache:
     external: true   # Shared with main lumen stack — same model, one download
 
