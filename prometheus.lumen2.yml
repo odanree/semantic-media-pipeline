@@ -1,0 +1,21 @@
+# Prometheus metrics configuration — lumen2 stack
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+  - job_name: 'lumen2-api'
+    static_configs:
+      - targets: ['api2:8000']   # internal container port (host-mapped: 8001)
+    metrics_path: '/metrics'
+
+  - job_name: 'lumen2-flower'
+    static_configs:
+      - targets: ['flower2:5555']  # internal container port (host-mapped: 5556)
+    metrics_path: '/metrics'
+    # Note: Flower 2.x /metrics is unauthenticated even with --basic_auth set.
+    # basic_auth only protects the web UI routes.

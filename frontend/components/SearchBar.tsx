@@ -12,6 +12,7 @@ export interface SearchFilters {
   dedup?: boolean
   audioHasAudio?: boolean
   audioHasSpeech?: boolean
+  audioSegmentType?: 'speech' | 'non_verbal' | 'music' | 'ambient' | 'event' | 'silence' | ''
 }
 
 interface SearchBarProps {
@@ -391,6 +392,25 @@ export default function SearchBar({ onSearch, isLoading = false, suggestions, ex
                 />
               </button>
             </div>
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm text-gray-300">🎵 Segment type</p>
+                <p className="text-xs text-gray-500 mt-0.5">Filter by audio segment classification</p>
+              </div>
+              <select
+                value={filters.audioSegmentType ?? ''}
+                onChange={(e) => setFilters({ ...filters, audioSegmentType: e.target.value as SearchFilters['audioSegmentType'] })}
+                className="bg-gray-700 text-gray-300 text-sm rounded px-2 py-1 border border-gray-600 focus:outline-none focus:border-blue-500"
+              >
+                <option value="">Any</option>
+                <option value="speech">Speech</option>
+                <option value="music">Music</option>
+                <option value="ambient">Ambient</option>
+                <option value="event">Event</option>
+                <option value="non_verbal">Non-verbal</option>
+                <option value="silence">Silence</option>
+              </select>
+            </div>
           </div>
 
           {/* Reset Filters */}
@@ -404,6 +424,7 @@ export default function SearchBar({ onSearch, isLoading = false, suggestions, ex
                 dedup: true,
                 audioHasAudio: false,
                 audioHasSpeech: false,
+                audioSegmentType: '',
               })
             }
             className="w-full px-4 py-2 bg-gray-700 hover:bg-gray-600 text-gray-300 hover:text-white rounded transition text-sm font-semibold"

@@ -12,7 +12,7 @@ from fastapi import APIRouter, HTTPException, Request
 from rate_limit import limiter, LIMIT_SEARCH, LIMIT_SEARCH_VEC
 from pydantic import BaseModel
 from qdrant_client import QdrantClient
-from qdrant_client.models import Filter, FieldCondition, Range, MatchValue
+from qdrant_client.models import Filter, FieldCondition, Range, MatchValue, ScrollRequest
 
 router = APIRouter()
 
@@ -96,8 +96,12 @@ class SearchRequest(BaseModel):
     limit: int = 20
     threshold: float = 0.2
     dedup: bool = True  # False = raw frames (A/B comparison / debug mode)
+    # --- Audio filters (file-level, backward-compatible) ---
     audio_has_speech: Optional[bool] = None   # True/False to require/exclude speech
     min_audio_energy: Optional[float] = None  # e.g. 0.05 to require loud audio
+    # --- Segment-level filters (two-pass pipeline) ---
+    audio_segment_type: Optional[str] = None  # speech | non_verbal | music | ambient | event | silence
+    audio_event_top: Optional[str] = None     # e.g. "Scream" — AudioSet top label
 
 
 class SearchResult(BaseModel):
@@ -251,24 +255,18 @@ async def search_media(request: Request, body: SearchRequest):
     Returns:
         List of matching media with similarity scores
     """
-    if not body.query or not body.query.strip():
-        raise HTTPException(status_code=400, detail="Query cannot be empty")
-
     try:
         start_time = time.time()
 
-        # Load CLIP model (lazy-loaded on first use)
-        try:
-            model = get_clip_model()
-        except Exception as e:
-            raise HTTPException(
-                status_code=503,
-                detail=f"CLIP embedder failed to load: {str(e)}"
-            )
+        # Build optional audio payload filter first so we can decide whether
+        # an empty query is valid (filter-only browse is allowed).
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.info(f"[SEARCH] received: query={body.query}, audio_has_speech={body.audio_has_speech}, audio_segment_type={body.audio_segment_type}")
 
-        # Build optional audio payload filter
         audio_conditions = []
         if body.audio_has_speech is not None:
+            logger.info(f"[SEARCH] Adding audio_has_speech filter: {body.audio_has_speech}")
             audio_conditions.append(
                 FieldCondition(key="audio_has_speech", match=MatchValue(value=body.audio_has_speech))
             )
@@ -276,62 +274,105 @@ async def search_media(request: Request, body: SearchRequest):
             audio_conditions.append(
                 FieldCondition(key="audio_rms_energy", range=Range(gte=body.min_audio_energy))
             )
+        if body.audio_segment_type is not None:
+            audio_conditions.append(
+                FieldCondition(key="audio_segment_type", match=MatchValue(value=body.audio_segment_type))
+            )
+        if body.audio_event_top is not None:
+            audio_conditions.append(
+                FieldCondition(key="audio_event_top", match=MatchValue(value=body.audio_event_top))
+            )
         audio_filter = Filter(must=audio_conditions) if audio_conditions else None
 
-        # Embed the text query using CLIP
-        query_embedding = model.encode(body.query, convert_to_tensor=False)
-        if isinstance(query_embedding, np.ndarray):
-            query_vector = query_embedding.tolist()
-        else:
-            query_vector = query_embedding
+        filter_only = audio_filter is not None and not body.query.strip()
 
-        if body.dedup:
-            # ------------------------------------------------------------------
-            # Layer 1: Qdrant search_groups — one group per file, GROUP_SIZE
-            # candidate frames per group returned from the DB.
-            # ------------------------------------------------------------------
-            groups_result = qdrant_client.query_points_groups(
+        # Reject empty queries only when there are no audio filters to fall back on
+        if not body.query.strip() and not filter_only:
+            raise HTTPException(status_code=400, detail="Query cannot be empty")
+
+        # Load CLIP model (lazy-loaded on first use); skip for filter-only requests
+        if not filter_only:
+            try:
+                model = get_clip_model()
+            except Exception as e:
+                raise HTTPException(
+                    status_code=503,
+                    detail=f"CLIP embedder failed to load: {str(e)}"
+                )
+
+        if filter_only:
+            # No query — scroll by filter only, no similarity threshold
+            scroll_result, _ = qdrant_client.scroll(
                 collection_name=QDRANT_COLLECTION_NAME,
-                query=query_vector,
-                group_by="file_path",
+                scroll_filter=audio_filter,
                 limit=body.limit,
-                group_size=SEARCH_GROUP_SIZE,
-                score_threshold=body.threshold,
-                query_filter=audio_filter,
                 with_payload=True,
             )
-
-            raw_frame_count = sum(len(g.hits) for g in groups_result.groups)
-
-            # ------------------------------------------------------------------
-            # Layer 2: Python 5s event windowing — collapse near-identical
-            # adjacent frames within each group down to one per bucket.
-            # ------------------------------------------------------------------
-            all_hits = []
-            for group in groups_result.groups:
-                best_frames = _event_deduplicate(group.hits, window_s=EVENT_WINDOW_SECONDS)
-                all_hits.extend(best_frames)
-
-            # Re-sort across files by score, honour limit
-            all_hits.sort(key=lambda p: p.score, reverse=True)
-            # Layer 3: per-directory cap for images (prevents timelapse floods)
-            all_hits = _dir_cap_images(all_hits)
-            final_hits = all_hits[:body.limit]
-            scenes_collapsed = raw_frame_count - len(final_hits)
-
-        else:
-            # dedup=false — raw frame mode (A/B comparison)
-            raw_points = qdrant_client.query_points(
-                collection_name=QDRANT_COLLECTION_NAME,
-                query=query_vector,
-                limit=body.limit,
-                with_payload=True,
-                score_threshold=body.threshold,
-                query_filter=audio_filter,
-            ).points
-            final_hits = raw_points
+            # Attach a dummy score so downstream code is uniform
+            for point in scroll_result:
+                point.score = 1.0
+            final_hits = scroll_result
             raw_frame_count = len(final_hits)
             scenes_collapsed = 0
+        else:
+            # Embed the text query using CLIP
+            query_embedding = model.encode(body.query, convert_to_tensor=False)
+            if isinstance(query_embedding, np.ndarray):
+                query_vector = query_embedding.tolist()
+            else:
+                query_vector = query_embedding
+
+            # When audio filters are active alongside a query, drop the threshold
+            # so filter-matching frames aren't excluded by similarity alone.
+            effective_threshold = 0.0 if audio_filter else body.threshold
+
+            if body.dedup:
+                # ------------------------------------------------------------------
+                # Layer 1: Qdrant search_groups — one group per file, GROUP_SIZE
+                # candidate frames per group returned from the DB.
+                # ------------------------------------------------------------------
+                groups_result = qdrant_client.query_points_groups(
+                    collection_name=QDRANT_COLLECTION_NAME,
+                    query=query_vector,
+                    group_by="file_path",
+                    limit=body.limit,
+                    group_size=SEARCH_GROUP_SIZE,
+                    score_threshold=effective_threshold,
+                    query_filter=audio_filter,
+                    with_payload=True,
+                )
+
+                raw_frame_count = sum(len(g.hits) for g in groups_result.groups)
+
+                # ------------------------------------------------------------------
+                # Layer 2: Python 5s event windowing — collapse near-identical
+                # adjacent frames within each group down to one per bucket.
+                # ------------------------------------------------------------------
+                all_hits = []
+                for group in groups_result.groups:
+                    best_frames = _event_deduplicate(group.hits, window_s=EVENT_WINDOW_SECONDS)
+                    all_hits.extend(best_frames)
+
+                # Re-sort across files by score, honour limit
+                all_hits.sort(key=lambda p: p.score, reverse=True)
+                # Layer 3: per-directory cap for images (prevents timelapse floods)
+                all_hits = _dir_cap_images(all_hits)
+                final_hits = all_hits[:body.limit]
+                scenes_collapsed = raw_frame_count - len(final_hits)
+
+            else:
+                # dedup=false — raw frame mode (A/B comparison)
+                raw_points = qdrant_client.query_points(
+                    collection_name=QDRANT_COLLECTION_NAME,
+                    query=query_vector,
+                    limit=body.limit,
+                    with_payload=True,
+                    score_threshold=effective_threshold,
+                    query_filter=audio_filter,
+                ).points
+                final_hits = raw_points
+                raw_frame_count = len(final_hits)
+                scenes_collapsed = 0
 
         # Build response dicts from whichever path was taken
         results = []

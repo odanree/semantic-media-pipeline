@@ -28,3 +28,10 @@ google-cloud-storage==2.16.0
 ffmpeg-python==0.2.0
 psutil==6.0.0
 prometheus-client==0.20.0
+
+# Audio feature extraction (audio_extractor.py) + segmentation (audio_segmenter.py)
+librosa>=0.10.2
+soundfile>=0.12.1
+scipy>=1.13.0
+# Two-pass audio segmentation pipeline (see requirements.txt for notes)
+faster-whisper>=1.0.0
