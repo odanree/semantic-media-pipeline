@@ -52,6 +52,8 @@ target/
 .env.*.local
 .env.mac-worker
 .env.backfill
+.env.windows-worker-*
+.env.wsl-worker-*
 
 # Working / scratch notes (never commit private task data)
 task-diagnosis.md
