@@ -94,6 +94,7 @@ services:
     command: >
       sh -c "celery -A celery_app worker
       --loglevel=info
+      -E
       --concurrency=$${CELERY_CONCURRENCY:-8}
       --prefetch-multiplier=$${CELERY_WORKER_PREFETCH_MULTIPLIER:-1}
       --max-tasks-per-child=$${CELERY_MAX_TASKS_PER_CHILD:-50}
@@ -149,7 +150,7 @@ services:
       resources:
         limits:
           cpus: '8'
-          memory: 12G
+          memory: 32G
 
   # =========================================================================
   # FastAPI Backend
@@ -172,7 +173,9 @@ services:
       - PROXY_ROOT=/mnt/proxies
       - REDIS_URL=redis://lumen2-redis:6379
       - DATABASE_URL=postgresql://lumen2_user:${DATABASE_PASSWORD_2}@lumen2-postgres:5432/lumen2
-      - CLIP_MODEL_NAME=clip-ViT-B-32
+      - CLIP_MODEL_NAME=clip-ViT-L-14
+      - LUMEN_PATH_MAP_0=/mnt/source/f-downloads:C:/Users/<user>/Downloads/<media-folder>
+      - LUMEN_PATH_MAP_1=/mnt/source/e:E:/Unsorted
       - ALLOWED_ORIGINS=https://lumen.example.com,http://localhost:3000,http://localhost:3001,http://localhost:3002
     command: uvicorn main:app --host 0.0.0.0 --port 8000
     volumes:
@@ -236,6 +239,7 @@ services:
   flower2:
     image: mher/flower:2.0.1
     container_name: lumen2-flower
+    command: celery flower --timezone=America/Los_Angeles
     ports:
       - "5556:5555"
     environment:

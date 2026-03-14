@@ -223,6 +223,25 @@ ALLOWED_ROOTS = [
     os.path.realpath("/data/media"),
 ]
 
+
+def _translate_path(path: str) -> str:
+    """Map Windows/host paths stored in DB to container mount paths.
+    Uses LUMEN_PATH_MAP_n=/linux/prefix:C:/win/path env vars (Linux prefix first,
+    same format as worker). Longest-win-prefix-first matching.
+    No-op if path already starts with an allowed root or no maps are configured.
+    """
+    maps = [
+        v for k, v in os.environ.items() if k.startswith("LUMEN_PATH_MAP_")
+    ]
+    norm = path.replace("\\", "/")
+    for val in sorted(maps, key=lambda v: -len(v.split(":", 1)[1])):
+        linux_prefix, win_prefix = val.split(":", 1)
+        win_norm = win_prefix.replace("\\", "/")
+        if norm.startswith(win_norm):
+            remainder = norm[len(win_norm):]
+            return linux_prefix.rstrip("/") + "/" + remainder.lstrip("/")
+    return path
+
 # Source root for proxy lookup (must match the worker's PROXY_ROOT)
 _SOURCE_ROOT = os.path.realpath("/mnt/source")
 _PROXY_ROOT_DEFAULT = "/mnt/proxies"
@@ -269,7 +288,7 @@ async def stream_media(request: Request, path: str, quality: str = "proxy"):
             )
 
     try:
-        resolved = os.path.realpath(path)
+        resolved = os.path.realpath(_translate_path(path))
 
         if not any(resolved.startswith(root) for root in ALLOWED_ROOTS):
             log.warning(f"[Stream] Access denied: {path}")
@@ -404,7 +423,7 @@ async def get_thumbnail(request: Request, path: str, t: float = 0.0):
                 headers={"Cache-Control": "no-store"},
             )
     else:
-        resolved = os.path.realpath(path)
+        resolved = os.path.realpath(_translate_path(path))
 
         if not any(resolved.startswith(root) for root in ALLOWED_ROOTS):
             log.warning("thumbnail: access denied for path %s", path)

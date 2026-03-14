@@ -6,7 +6,8 @@ services:
   redis:
     image: redis:7.4.8-alpine
     container_name: lumen-redis
-    # No host port — internal Docker network only
+    ports:
+      - "127.0.0.1:6379:6379"   # Exposed for WSL2 native worker (localhost only)
     volumes:
       - redis_data:/data
     healthcheck:
@@ -25,7 +26,8 @@ services:
       POSTGRES_USER: ${DATABASE_USER:-lumen_user}
       POSTGRES_PASSWORD: ${DATABASE_PASSWORD:-secure_password_here}
       POSTGRES_DB: ${DATABASE_NAME:-lumen}
-    # No host port — internal Docker network only
+    ports:
+      - "127.0.0.1:15432:5432"  # Exposed for WSL2 native worker (localhost only; 5432 conflicts with wslrelay)
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./scripts/init-db.sql:/docker-entrypoint-initdb.d/init.sql
@@ -158,8 +160,8 @@ services:
     deploy:
       resources:
         limits:
-          cpus: '4'
-          memory: 6G
+          cpus: '8'
+          memory: 24G
     # -----------------------------------------------------------------------
     # GPU passthrough (currently blocked by Docker Desktop + AMD limitation)
     # DirectML detects AMD GPUs in native WSL2 but Docker Desktop's VM
