@@ -231,7 +231,8 @@ def _translate_path(path: str) -> str:
     No-op if path already starts with an allowed root or no maps are configured.
     """
     maps = [
-        v for k, v in os.environ.items() if k.startswith("LUMEN_PATH_MAP_")
+        v for k, v in os.environ.items()
+        if k.startswith("LUMEN_PATH_MAP_") and ":" in v
     ]
     norm = path.replace("\\", "/")
     for val in sorted(maps, key=lambda v: -len(v.split(":", 1)[1])):
