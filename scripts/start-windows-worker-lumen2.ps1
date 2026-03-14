@@ -27,10 +27,8 @@ Get-Content $ENV_FILE | Where-Object { $_ -notmatch '^\s*#' -and $_ -match '=' }
 Write-Host "==> Testing CUDA (GPU 1)..."
 $cudaTest = & "$VENV_DIR\Scripts\python.exe" -c @"
 import torch
-if torch.cuda.is_available() and torch.cuda.device_count() > 1:
-    print(f'   GPU 1 OK: {torch.cuda.get_device_name(1)} [CUDA ACTIVE]')
-elif torch.cuda.is_available():
-    print(f'   Only 1 GPU found: {torch.cuda.get_device_name(0)} — check if lumen2 should use cuda:0')
+if torch.cuda.is_available():
+    print(f'   GPU OK: {torch.cuda.get_device_name(0)} [CUDA ACTIVE]')
 else:
     print('   CUDA not available — will fall back to CPU')
 "@
