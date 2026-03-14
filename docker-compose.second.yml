@@ -113,7 +113,7 @@ services:
       - QDRANT_COLLECTION_NAME=media_vectors2
       - MEDIA_ROOT=/data/media
       - STORAGE_BACKEND=local
-      - PROXY_ROOT=/mnt/proxies
+      - PROXY_ROOT=
       - PROXY_MAX_DURATION_SECS=${PROXY_MAX_DURATION_SECS:-3600}
       - CELERY_CONCURRENCY=${CELERY_CONCURRENCY:-4}
       - CELERY_WORKER_PREFETCH_MULTIPLIER=${CELERY_WORKER_PREFETCH_MULTIPLIER:-1}
@@ -172,7 +172,7 @@ services:
       - QDRANT_PORT=6333
       - QDRANT_COLLECTION_NAME=media_vectors2
       - MEDIA_ROOT=/data/media
-      - PROXY_ROOT=/mnt/proxies
+      - PROXY_ROOT=
       - REDIS_URL=redis://lumen2-redis:6379
       - DATABASE_URL=postgresql://lumen2_user:${DATABASE_PASSWORD_2}@lumen2-postgres:5432/lumen2
       - CLIP_MODEL_NAME=clip-ViT-L-14
