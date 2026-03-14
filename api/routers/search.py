@@ -275,7 +275,7 @@ async def search_media(request: Request, body: SearchRequest):
         import logging
         logger = logging.getLogger(__name__)
         logger.info(f"[SEARCH] received: query={body.query}, audio_has_speech={body.audio_has_speech}, audio_segment_type={body.audio_segment_type}")
-        
+
         audio_conditions = []
         if body.audio_has_speech is not None:
             logger.info(f"[SEARCH] Adding audio_has_speech filter: {body.audio_has_speech}")
