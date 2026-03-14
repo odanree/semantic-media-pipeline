@@ -482,3 +482,65 @@ def test_search_dir_cap_does_not_affect_video_frames(client, mock_qdrant):
 
     data = client.post("/api/search", json={"query": "action"}).json()
     assert data["count"] == 3
+
+
+# ---------------------------------------------------------------------------
+# /api/search — filter-only (audio filter with empty query)
+# ---------------------------------------------------------------------------
+
+def test_search_filter_only_uses_scroll(client, mock_qdrant):
+    """Empty query + audio filter must route through qdrant.scroll(), not query_points."""
+    point = MagicMock()
+    point.payload = {"file_path": "clip.mp4", "file_type": "video", "timestamp": 5.0}
+    mock_qdrant.scroll.return_value = ([point], None)
+    mock_qdrant.query_points.reset_mock()
+    mock_qdrant.query_points_groups.reset_mock()
+
+    resp = client.post("/api/search", json={"query": "", "audio_has_speech": True})
+    assert resp.status_code == 200
+    mock_qdrant.scroll.assert_called_once()
+    mock_qdrant.query_points.assert_not_called()
+    mock_qdrant.query_points_groups.assert_not_called()
+
+
+def test_search_filter_only_returns_results(client, mock_qdrant):
+    """Filter-only scroll results are returned with score 1.0."""
+    point = MagicMock()
+    point.payload = {"file_path": "speech.mp4", "file_type": "video", "timestamp": 10.0}
+    mock_qdrant.scroll.return_value = ([point], None)
+
+    data = client.post("/api/search", json={"query": "", "audio_has_speech": True}).json()
+    assert data["count"] == 1
+    assert data["results"][0]["similarity"] == 1.0
+    assert data["results"][0]["file_path"] == "speech.mp4"
+
+
+def test_search_empty_query_no_filter_still_returns_400(client):
+    """Empty query without any audio filter still returns 400."""
+    resp = client.post("/api/search", json={"query": ""})
+    assert resp.status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# /api/search — individual audio filter parameters
+# ---------------------------------------------------------------------------
+
+def test_search_min_audio_energy_filter_accepted(client, mock_qdrant):
+    """min_audio_energy filter must be forwarded to qdrant without error."""
+    mock_qdrant.query_points_groups.return_value = MagicMock(groups=[])
+    resp = client.post("/api/search", json={"query": "loud scene", "min_audio_energy": 0.05})
+    assert resp.status_code == 200
+
+
+def test_search_audio_segment_type_filter_accepted(client, mock_qdrant):
+    """audio_segment_type filter must be forwarded to qdrant without error."""
+    mock_qdrant.query_points_groups.return_value = MagicMock(groups=[])
+    resp = client.post("/api/search", json={"query": "speech scene", "audio_segment_type": "speech"})
+    assert resp.status_code == 200
+
+
+def test_search_audio_event_top_filter_accepted(client, mock_qdrant):
+    """audio_event_top filter must be forwarded to qdrant without error."""
+    mock_qdrant.query_points_groups.return_value = MagicMock(groups=[])
+    resp = client.post("/api/search", json={"query": "scary moment", "audio_event_top": "Scream"})
+    assert resp.status_code == 200

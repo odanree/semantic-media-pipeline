@@ -85,12 +85,30 @@ class CLIPEmbedder:
         if device is None:
             self.device = _detect_device()
         else:
+            # If caller explicitly requests DirectML, import torch_directml first —
+            # it must be imported to register the 'privateuseone' backend with PyTorch.
+            if device.startswith("privateuseone"):
+                try:
+                    import torch_directml  # noqa: F401 — registers privateuseone backend
+                except ImportError:
+                    log.warning("torch-directml not installed; falling back to CPU")
+                    device = "cpu"
             self.device = device
 
         log.info("Loading %s on device: %s", model_name, self.device)
         self.model = SentenceTransformer(model_name, device=self.device)
-        # Query the model directly — never hardcode; changes with model name
-        self.embedding_dim = self.model.get_sentence_embedding_dimension()
+        # get_sentence_embedding_dimension() returns None for multimodal CLIP models
+        # (text-only models set this; CLIP models don't). Probe with a dummy image.
+        dim = self.model.get_sentence_embedding_dimension()
+        if dim is None:
+            import tempfile
+            from PIL import Image as _PILImage
+            with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
+                _PILImage.new("RGB", (32, 32)).save(tmp.name)
+                probe = self.model.encode([_PILImage.open(tmp.name)], convert_to_numpy=True)
+                dim = probe.shape[-1]
+            log.info("Probed embedding dimension for %s: %d", model_name, dim)
+        self.embedding_dim = dim
 
     def embed_images(
         self, image_paths: List[str], batch_size: int = 32

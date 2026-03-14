@@ -482,6 +482,298 @@ The `useRef` pattern is preferred because it puts the stability guarantee inside
 
 ---
 
+---
+
+## 12. Celery Proxy Task Blocking the Indexing Queue
+
+**Commit(s):** `feat/windows-native-worker`
+**Component:** `scripts/start-windows-worker-*.ps1`
+**Severity:** High — indexing ground to a halt behind proxy encoding jobs
+
+### What Broke
+
+The Windows Celery worker was started with `--queues=celery,proxies`. The `generate_proxy` task encodes 720p H.265 video to H.264 and took ~13 minutes per file. With a backlog of thousands of videos, proxy jobs monopolised every worker slot. CLIP embedding — the actual indexing work — was queued behind hundreds of encoding jobs and effectively stalled.
+
+### Root Cause
+
+The `celery` and `proxies` queues shared the same worker pool. A long-running CPU-bound task (video encoding) starved the short-running GPU-bound tasks (CLIP embedding). There was no queue priority or dedicated worker separation.
+
+### Fix
+
+Remove `proxies` from the queues argument on all indexing workers:
+
+```powershell
+# Before
+--queues=celery,proxies
+# After
+--queues=celery
+```
+
+A dedicated encoding worker can be spun up separately when proxy generation is explicitly needed.
+
+### Lesson
+
+**Long-running CPU tasks and short-running GPU tasks must never share the same Celery worker pool.** Separate queues are not enough — the workers consuming those queues must also be separate. Treat proxy generation as a background maintenance job, not part of the critical indexing path.
+
+---
+
+## 13. Windows Paths Written Into Qdrant Payload
+
+**Commit(s):** `feat/windows-native-worker`
+**Component:** `worker/tasks.py`
+**Severity:** High — all Windows-indexed media unreachable from Linux API
+
+### What Broke
+
+A `_translate_path()` function was added to map Linux mount paths (`/mnt/source/...`) to Windows drive paths (`J:/lumen-media/...`) so the Windows worker could access files on disk. However, the translation was applied at the top of the task function, mutating `file_path` before the Qdrant upsert:
+
+```python
+file_path = _translate_path(file_path)  # Now a Windows path
+...
+qdrant_client.upsert(payload={"file_path": file_path})  # Stores Windows path
+```
+
+The Linux API later queried Qdrant and got back `J:/lumen-media/...` paths that it could not serve or resolve.
+
+### Root Cause
+
+`file_path` served two roles: the logical identifier stored in the database/Qdrant, and the physical path used for filesystem access. These must be kept separate across platforms.
+
+### Fix
+
+Introduce a `native_path` variable for filesystem access only; `file_path` remains the Linux path throughout:
+
+```python
+native_path = _translate_path(file_path)   # Used for disk I/O only
+# All qdrant upserts and DB writes use file_path (Linux path)
+```
+
+### Lesson
+
+**Never mutate the canonical record identifier to make local filesystem access work.** The stored path is the source of truth for the entire system. Filesystem access is a local concern — introduce a separate variable for it and treat the original `file_path` as immutable within the task.
+
+---
+
+## 14. `docker restart` Does Not Re-Read `env_file`
+
+**Commit(s):** `feat/windows-native-worker`
+**Component:** `docker-compose.yml`, `docker-compose.second.yml`
+**Severity:** Medium — env changes silently ignored after restart
+
+### What Broke
+
+After editing `.env` to change `LLM_PROVIDER` from `openai` to `local`, running `docker restart lumen-api` kept serving the old configuration. The container continued to call OpenAI and throw `OPENAI_API_KEY must be set` errors.
+
+### Root Cause
+
+`docker restart` stops and restarts the existing container with the **same configuration it was created with**. The `env_file` is read at container creation time (`docker compose up`), not at restart time. Restarting reuses the frozen environment.
+
+### Fix
+
+Use `docker compose up -d --no-deps <service>` (with `--no-build` if image rebuild is not needed) to recreate the container with the current env:
+
+```bash
+docker compose up -d --no-build --no-deps api
+```
+
+### Lesson
+
+**`docker restart` ≠ `docker compose up`.** For any configuration change — env vars, volume mounts, port bindings — the container must be recreated, not just restarted. Use `up -d` as the default for applying config changes.
+
+---
+
+## 15. `--no-deps` Puts Container on an Isolated New Network
+
+**Commit(s):** `feat/windows-native-worker`
+**Component:** `docker-compose.second.yml`
+**Severity:** High — service started with `--no-deps` couldn't reach redis/postgres
+
+### What Broke
+
+Running `docker compose up -d --no-deps api2` to start only the API container created a **new** Docker network (`semantic-media-pipeline_lumen2-net`) rather than joining the existing network where `lumen2-redis` and `lumen2-postgres` were running. The API started successfully but every request failed with:
+
+```
+redis.exceptions.ConnectionError: Name or service not known
+```
+
+### Root Cause
+
+`--no-deps` skips dependency container startup but also skips the network join logic. The API container was placed on its own isolated network instead of the shared project network.
+
+### Fix
+
+After starting with `--no-deps`, manually connect to the existing network:
+
+```bash
+docker network connect lumen2_lumen2-net lumen2-api
+```
+
+Or avoid `--no-deps` entirely and use the full `up -d` with all dependencies already running.
+
+### Lesson
+
+**`--no-deps` is a footgun for multi-service stacks.** It is useful for rebuilding a single image without touching others, but it silently skips network joining. The safer alternative is to bring the full stack down and up, or to manually connect the container to the correct network immediately after starting it.
+
+---
+
+## 16. Compose `env_file` Values Not Injected Without `environment:` Section
+
+**Commit(s):** `feat/windows-native-worker`
+**Component:** `docker-compose.second.yml`
+**Severity:** Medium — LLM config from `.env` never reached the API container
+
+### What Broke
+
+`LLM_PROVIDER=local` was set in `.env` and `docker-compose.second.yml` had `env_file: - .env` on the worker service — but the `api2` service used an explicit `environment:` block without any LLM keys. Docker Compose only injects `env_file` values for services that declare `env_file`. The API defaulted to `LLM_PROVIDER=openai` (the code's default) and failed.
+
+### Root Cause
+
+`env_file` and `environment:` are per-service declarations. A value in `.env` is available for variable interpolation in the compose file (`${LLM_PROVIDER}`) but is not automatically injected into container environments — only `env_file:` or explicit `environment:` entries achieve that.
+
+### Fix
+
+Add the variables explicitly to the service's `environment:` block:
+
+```yaml
+environment:
+  - LLM_PROVIDER=${LLM_PROVIDER:-local}
+  - LLM_MODEL=${LLM_MODEL:-qwen3:14b}
+  - LLM_BASE_URL=${LLM_BASE_URL:-http://host.docker.internal:11434/v1}
+```
+
+### Lesson
+
+**`.env` is not a global environment injection mechanism.** It provides defaults for compose variable interpolation (`${VAR}`) and is injected into containers only when the service declares `env_file: - .env`. Always verify with `docker exec <container> env | grep <VAR>` after changing environment config.
+
+---
+
+## 17. Docker Project Name Fragmentation Across Restart Cycles
+
+**Commit(s):** `feat/windows-native-worker`
+**Component:** `docker-compose.yml`, `docker-compose.second.yml`
+**Severity:** High — containers from the same stack spread across 3 different Docker projects
+
+### What Broke
+
+Neither compose file had a `name:` field. Docker Compose derives the project name from the directory name (`semantic-media-pipeline`) by default, but individual container restarts during debugging used different flags (`-p lumen2`) or no project flag at all. The result was containers registered under three different projects simultaneously, causing orphan warnings, network isolation between containers in the same stack, and volume conflicts.
+
+### Root Cause
+
+Without a `name:` field, the Docker project name is directory-derived and can silently change depending on how `docker compose` is invoked. Partial stack restarts (stopping/removing individual containers then recreating them) register new containers under whatever project name was active at that moment.
+
+### Fix
+
+Add `name:` to every compose file:
+
+```yaml
+# docker-compose.yml
+name: lumen1
+
+# docker-compose.second.yml
+name: lumen2
+```
+
+### Lesson
+
+**Every `docker-compose.yml` file should have an explicit `name:` field.** This makes the project name immutable regardless of the working directory, the `-p` flag, or who runs the command. It eliminates orphan warnings, ensures consistent network and volume naming, and makes Docker Desktop's project view clean and readable.
+
+---
+
+## 18. Volume Ownership Conflict When Renaming Docker Project
+
+**Commit(s):** `feat/windows-native-worker`
+**Component:** `docker-compose.yml`, `docker-compose.second.yml`
+**Severity:** High — data loss risk; all lumen2 data became unreachable
+
+### What Broke
+
+Adding `name: lumen2` to `docker-compose.second.yml` changed the Docker project name from `semantic-media-pipeline` to `lumen2`. On the next `up -d`, Docker looked for volumes named `lumen2_qdrant2_data`, `lumen2_postgres2_data`, etc. — not the existing `semantic-media-pipeline_qdrant2_data` volumes. New empty volumes were created, and the old volumes with 916MB of indexed Qdrant data were silently orphaned.
+
+### Root Cause
+
+Docker Compose volume names are prefixed with the project name unless overridden with an explicit `name:` in the volume declaration. Changing the project name effectively changes what volumes are mounted, with no warning about data loss.
+
+### Fix
+
+Pin every named volume to its actual physical volume name using `name:` + `external: true`:
+
+```yaml
+volumes:
+  qdrant2_data:
+    name: lumen2_qdrant2_data   # the real volume name
+    external: true
+  postgres2_data:
+    name: lumen2_postgres2_data
+    external: true
+```
+
+The data was recovered by inspecting which orphaned volume had content (`du -sh /data` via a temporary alpine container) and updating the compose file to reference that volume.
+
+### Lesson
+
+**Before renaming a Docker Compose project, pin all named volumes with `name:` + `external: true`.** Volume names are project-namespaced by default — changing the project name is a silent breaking change for all volumes. When recovering from this situation, use `docker run --rm -v <volume>:/data alpine du -sh /data` to find which volume actually has your data.
+
+---
+
+## 19. JSX Unescaped Entities in Text Content Break Next.js Build
+
+**Commit(s):** `feat/windows-native-worker`
+**Component:** `frontend/components/AskPanel.tsx`
+**Severity:** Medium — frontend Docker image build failed with exit code 1
+
+### What Broke
+
+Transcript snippets in the AskPanel were wrapped in literal quote characters inside JSX text content:
+
+```tsx
+<div>"{src.audio_transcript.slice(0, 80)}"</div>
+```
+
+The ESLint rule `react/no-unescaped-entities` treats bare `"` in JSX text as an error (not a warning), causing `npm run build` to exit with code 1. The Docker build failed silently — the error was buried in build output and only visible with `--progress=plain`.
+
+### Fix
+
+Use JavaScript expressions for special characters in JSX text:
+
+```tsx
+<div>{'"'}{src.audio_transcript.slice(0, 80)}{'"'}</div>
+```
+
+Or use HTML entities: `&quot;`.
+
+### Lesson
+
+**JSX text content is not a string — `"` and `'` must be escaped or expressed as JS.** The build error message (`exit code: 1`) gives no indication of the cause. Always run `docker compose build --progress=plain` to see the full output when a Docker build fails.
+
+---
+
+## 20. Ollama Running on CPU Because GPU Not Initialized at Start Time
+
+**Commit(s):** N/A — operational issue
+**Component:** Ollama / WSL2 GPU passthrough
+**Severity:** High — 8 tok/s instead of 60+ tok/s
+
+### What Broke
+
+Ollama was started before the NVIDIA drivers were fully initialized in WSL2 (or in a Windows-native vs WSL conflict state). It fell back to CPU inference and ran at ~8 tok/s, consuming 100% CPU. The `ollama run` command gave no warning that it was running on CPU.
+
+### Diagnosis
+
+```bash
+nvidia-smi   # Run inside WSL — confirms GPU visibility
+ollama run qwen3:14b "test" --verbose  # Shows eval_rate tok/s
+```
+
+### Fix
+
+Kill the Ollama process, confirm `nvidia-smi` works in WSL, then restart Ollama. GPU inference resumes at 60+ tok/s.
+
+### Lesson
+
+**Always verify `nvidia-smi` inside WSL before starting any GPU-dependent service.** If Ollama starts before the GPU driver is ready, it silently falls back to CPU. After switching from CPU to GPU, `eval_rate` jumps from ~8 to 60+ tok/s — the difference is immediately obvious in the benchmark output. Add `ollama run <model> "" --verbose` to any startup checklist for GPU-accelerated inference.
+
+---
+
 ## Summary Table
 
 | # | Bug | Component | Severity | Introduced | Fixed |
@@ -490,13 +782,22 @@ The `useRef` pattern is preferred because it puts the stability guarantee inside
 | 2 | asyncpg callback using non-existent method | `api/utils/notifications.py` | Critical | `656b40b` | `d0cd069` |
 | 3 | Search router never registered (404) | `api/main.py` | Critical | `656b40b` | `d0cd069` |
 | 4 | API importing worker ML dependencies | `api/routers/search.py` | Critical | `656b40b` | `d0cd069` |
-| 5 | WebSocket URL wrong protocol (http vs ws) | `frontend/hooks/*.ts` | High | `656b40b` | `76743e3` |
+| 5 | WebSocket URL wrong protocol (http vs ws) | `frontend/hooks/*.ts` | High | `656b0b` | `76743e3` |
 | 6 | Infinite WebSocket reconnect, no backoff | `frontend/hooks/*.ts` | High | `656b40b` | `d0cd069` |
 | 7 | JSX in `.ts` file (build error) | `frontend/hooks/useMediaUpdates.ts` | Medium | `656b40b` | `d0cd069` |
 | 8 | Docker hostname not resolvable in browser | `frontend/hooks/useStatusUpdates.ts` | High | `08b128f` | `76743e3` |
 | 9 | CORS credentials+wildcard = 400 on all WS | `api/main.py` | Critical | `08b128f` | `387b50b` |
 | 10 | ASGI double-close RuntimeError | `api/routers/updates.py` | High | `08b128f` | `37ef849` |
 | 11 | useEffect infinite loop (unstable callbacks) | `frontend/hooks/*.ts` | Critical | `08b128f` | `53501da`, `be03473` |
+| 12 | Proxy task blocking indexing queue | `scripts/start-windows-worker-*.ps1` | High | `adbf784` | `feat/windows-native-worker` |
+| 13 | Windows paths written into Qdrant payload | `worker/tasks.py` | High | `feat/windows-native-worker` | `feat/windows-native-worker` |
+| 14 | `docker restart` ignores env_file changes | `docker-compose*.yml` | Medium | ops | ops |
+| 15 | `--no-deps` creates isolated network | `docker-compose*.yml` | High | ops | ops |
+| 16 | env_file values not injected without environment: | `docker-compose.second.yml` | Medium | `feat/windows-native-worker` | `feat/windows-native-worker` |
+| 17 | Docker project name fragmentation | `docker-compose*.yml` | High | ops | `feat/windows-native-worker` |
+| 18 | Volume ownership conflict on project rename | `docker-compose*.yml` | High | `feat/windows-native-worker` | `feat/windows-native-worker` |
+| 19 | JSX unescaped `"` breaks Next.js build | `frontend/components/AskPanel.tsx` | Medium | `feat/windows-native-worker` | `feat/windows-native-worker` |
+| 20 | Ollama falling back to CPU inference | Ollama / WSL2 | High | ops | ops |
 
 ---
 
@@ -516,3 +817,9 @@ Bug #11 is one of the most common advanced React bugs in the industry. It's subt
 
 ### The cost of copy-paste
 Bugs #11 (copied between two hooks), #5, and #6 all appeared in multiple files simultaneously because one was based on the other. When fixing a pattern bug, always search the entire codebase for all instances.
+
+### Docker Compose is not a simple process manager
+Bugs #14–#18 all stem from treating Docker Compose like a system service manager (`restart` ≈ `systemctl restart`). It is not. Container recreation, network membership, volume naming, and environment injection are all creation-time decisions. Partial restarts, missing `name:` fields, and missing `external:` declarations each create subtle configuration drift that compounds over time into a fragmented, inconsistent cluster. Treat `docker compose up -d` as the canonical deployment operation and `docker restart` as reserved for emergency use only.
+
+### Operational changes need the same rigour as code changes
+Bugs #12–#20 were all operational rather than code bugs — wrong queue flags, missing compose fields, Ollama GPU init order. They had the same or greater impact as code bugs but left no git trail and were harder to diagnose. Document every operational change (compose flags, env vars, startup order) in the codebase itself, not just in chat logs.

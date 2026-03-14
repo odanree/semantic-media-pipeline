@@ -21,6 +21,7 @@ Phase-2 note:
   below already handles an optional "caption" key — no other changes needed.
 """
 
+import asyncio
 import os
 import time
 from typing import Optional
@@ -34,6 +35,7 @@ from openai import OpenAI, OpenAIError
 
 from rate_limit import limiter, LIMIT_ASK
 from routers.search import _event_deduplicate, SEARCH_GROUP_SIZE, EVENT_WINDOW_SECONDS
+from agents.audio_agent import audio_agent_run, extract_audio_filters
 
 router = APIRouter()
 
@@ -118,7 +120,12 @@ class SourceResult(BaseModel):
     similarity: float
     frame_index: Optional[int] = None
     timestamp: Optional[float] = None
-    caption: Optional[str] = None  # populated once worker stores BLIP captions
+    caption: Optional[str] = None
+    # Audio metadata — populated when audio intent detected
+    audio_segment_type: Optional[str] = None
+    audio_transcript: Optional[str] = None
+    audio_event_top: Optional[str] = None
+    audio_rms_energy: Optional[float] = None
 
 
 class AskResponse(BaseModel):
@@ -127,8 +134,10 @@ class AskResponse(BaseModel):
     sources: list[SourceResult]
     model_used: str
     retrieval_count: int
+    audio_retrieval_count: int = 0
+    intent: Optional[str] = None
     execution_time_ms: float
-    scenes_collapsed: int = 0  # frames dropped by temporal windowing
+    scenes_collapsed: int = 0
 
 
 # ---------------------------------------------------------------------------
@@ -150,17 +159,24 @@ def _build_context(results: list[dict]) -> str:
     for i, r in enumerate(results, start=1):
         path = r["file_path"] or "unknown"
         ftype = r["file_type"] or "unknown"
-        score = r["similarity"]
-        parts = [f"[{i}] {path} ({ftype}, similarity={score:.2f})"]
+        score = r.get("similarity", 0)
+        source_type = r.get("source", "visual")
+        parts = [f"[{i}] {path} ({ftype}, {source_type} match, similarity={score:.2f})"]
 
         if r.get("timestamp") is not None:
-            parts.append(f"  • Timestamp in video: {r['timestamp']:.1f}s")
+            parts.append(f"  • Timestamp: {r['timestamp']:.1f}s")
         if r.get("caption"):
             parts.append(f"  • Visual description: {r['caption']}")
-        if r.get("audio_has_speech") is not None:
+        if r.get("audio_segment_type"):
+            parts.append(f"  • Audio segment type: {r['audio_segment_type']}")
+        if r.get("audio_event_top"):
+            parts.append(f"  • Audio event: {r['audio_event_top']}")
+        if r.get("audio_transcript"):
+            transcript = r["audio_transcript"][:300]
+            parts.append(f"  • Transcript: \"{transcript}\"")
+        elif r.get("audio_has_speech") is not None:
             speech = "speech detected" if r["audio_has_speech"] else "no speech"
-            energy = r.get("audio_rms_energy", 0)
-            parts.append(f"  • Audio: {speech}, energy={energy:.4f}")
+            parts.append(f"  • Audio: {speech}")
 
         lines.append("\n".join(parts))
 
@@ -169,18 +185,20 @@ def _build_context(results: list[dict]) -> str:
 
 SYSTEM_PROMPT = """\
 You are an intelligent assistant for a personal media library called Lumen.
-You have been given a list of media files retrieved by a semantic visual search.
-Each entry includes the file path, type (image or video), visual similarity score,
-an optional timestamp (for video clips), and an optional visual description.
+You have been given a list of media files retrieved by semantic visual search and/or audio analysis.
+Each entry includes the file path, type (image or video), match type (visual or audio),
+similarity score, an optional timestamp, and — for audio matches — segment type, event label,
+and transcript text.
 
 Your job:
 1. Read the retrieved context carefully.
 2. Answer the user's question based ONLY on the retrieved context.
 3. If the context contains file paths with meaningful folder names or dates, use
    that to infer location, time period, or event — and say so.
-4. If you cannot answer confidently from the context, say so honestly.
-5. Keep the answer concise (2–4 sentences) and cite source numbers like [1], [2].
-6. Do NOT invent visual details that are not in the context.
+4. If audio transcripts are present, use them to answer questions about speech or language.
+5. If you cannot answer confidently from the context, say so honestly.
+6. Keep the answer concise (2–4 sentences) and cite source numbers like [1], [2].
+7. Do NOT invent visual or audio details that are not in the context.
 """
 
 
@@ -208,8 +226,12 @@ async def ask_about_media(request: Request, body: AskRequest):
 
     start = time.time()
 
+    # Detect audio intent upfront so we can run retrieval in parallel
+    audio_filters = extract_audio_filters(body.question)
+    intent = "audio" if audio_filters else "visual"
+
     # ------------------------------------------------------------------
-    # 1. RETRIEVE — CLIP embed the question, query Qdrant
+    # 1. RETRIEVE — CLIP search + audio agent in parallel
     # ------------------------------------------------------------------
     try:
         clip = _get_clip_model()
@@ -220,52 +242,88 @@ async def ask_about_media(request: Request, body: AskRequest):
     if isinstance(query_vec, np.ndarray):
         query_vec = query_vec.tolist()
 
-    try:
-        if body.dedup:
-            # Layer 1: Qdrant query_points_groups — one group per file
-            groups_result = qdrant_client.query_points_groups(
-                collection_name=QDRANT_COLLECTION_NAME,
-                query=query_vec,
-                group_by="file_path",
-                limit=body.limit,
-                group_size=SEARCH_GROUP_SIZE,
-                score_threshold=body.threshold,
-                with_payload=True,
-            )
-            raw_count = sum(len(g.hits) for g in groups_result.groups)
+    async def _clip_search():
+        try:
+            if body.dedup:
+                groups_result = qdrant_client.query_points_groups(
+                    collection_name=QDRANT_COLLECTION_NAME,
+                    query=query_vec,
+                    group_by="file_path",
+                    limit=body.limit,
+                    group_size=SEARCH_GROUP_SIZE,
+                    score_threshold=body.threshold,
+                    with_payload=True,
+                )
+                raw_count = sum(len(g.hits) for g in groups_result.groups)
+                all_hits = []
+                for group in groups_result.groups:
+                    all_hits.extend(_event_deduplicate(group.hits, window_s=EVENT_WINDOW_SECONDS))
+                all_hits.sort(key=lambda p: p.score, reverse=True)
+                pts = all_hits[:body.limit]
+                return pts, raw_count - len(pts)
+            else:
+                pts = qdrant_client.query_points(
+                    collection_name=QDRANT_COLLECTION_NAME,
+                    query=query_vec,
+                    limit=body.limit,
+                    with_payload=True,
+                    score_threshold=body.threshold,
+                ).points
+                return pts, 0
+        except Exception as e:
+            raise HTTPException(status_code=503, detail=f"Qdrant query failed: {e}")
 
-            # Layer 2: 5s event windowing per group
-            all_hits = []
-            for group in groups_result.groups:
-                all_hits.extend(_event_deduplicate(group.hits, window_s=EVENT_WINDOW_SECONDS))
-            all_hits.sort(key=lambda p: p.score, reverse=True)
-            points = all_hits[:body.limit]
-            scenes_collapsed = raw_count - len(points)
-        else:
-            points = qdrant_client.query_points(
-                collection_name=QDRANT_COLLECTION_NAME,
-                query=query_vec,
-                limit=body.limit,
-                with_payload=True,
-                score_threshold=body.threshold,
-            ).points
-            scenes_collapsed = 0
-    except Exception as e:
-        raise HTTPException(status_code=503, detail=f"Qdrant query failed: {e}")
+    # Run CLIP search and audio agent concurrently
+    clip_task = asyncio.create_task(_clip_search())
+    async def _no_audio():
+        return []
 
-    results = [
+    audio_task = asyncio.create_task(
+        audio_agent_run(body.question, limit=body.limit) if audio_filters else _no_audio()
+    )
+    (points, scenes_collapsed), audio_hits = await asyncio.gather(clip_task, audio_task)
+
+    # Build visual results
+    visual_results = [
         {
+            "source": "visual",
             "file_path": p.payload.get("file_path"),
             "file_type": p.payload.get("file_type"),
             "similarity": float(p.score),
             "frame_index": p.payload.get("frame_index"),
             "timestamp": p.payload.get("timestamp"),
-            "caption": p.payload.get("caption"),  # None until Phase 2
+            "caption": p.payload.get("caption"),
             "audio_has_speech": p.payload.get("audio_has_speech"),
             "audio_rms_energy": p.payload.get("audio_rms_energy"),
+            "audio_segment_type": p.payload.get("audio_segment_type"),
+            "audio_transcript": p.payload.get("audio_transcript"),
+            "audio_event_top": p.payload.get("audio_event_top"),
         }
         for p in points
     ]
+
+    # Build audio results (deduplicated against visual by file_path+timestamp)
+    visual_keys = {(r["file_path"], r.get("timestamp")) for r in visual_results}
+    audio_results = [
+        {
+            "source": "audio",
+            "file_path": r.get("file_path"),
+            "file_type": r.get("file_type") or "video",
+            "similarity": 0.0,
+            "timestamp": r.get("timestamp"),
+            "frame_index": None,
+            "caption": None,
+            "audio_segment_type": r.get("audio_segment_type"),
+            "audio_transcript": r.get("audio_transcript"),
+            "audio_event_top": r.get("audio_event_top"),
+            "audio_rms_energy": r.get("audio_rms_energy"),
+        }
+        for r in audio_hits
+        if (r.get("file_path"), r.get("timestamp")) not in visual_keys
+    ]
+
+    # Merge: visual first, then unique audio results
+    results = visual_results + audio_results[:max(0, body.limit - len(visual_results))]
 
     # ------------------------------------------------------------------
     # 2. AUGMENT — build the grounded context block
@@ -304,9 +362,11 @@ async def ask_about_media(request: Request, body: AskRequest):
     return AskResponse(
         question=body.question,
         answer=answer,
-        sources=[SourceResult(**r) for r in results],
+        sources=[SourceResult(**{k: v for k, v in r.items() if k != "source"}) for r in results],
         model_used=LLM_MODEL,
-        retrieval_count=len(results),
+        retrieval_count=len(visual_results),
+        audio_retrieval_count=len(audio_results),
+        intent=intent,
         execution_time_ms=round(elapsed_ms, 1),
         scenes_collapsed=scenes_collapsed,
     )

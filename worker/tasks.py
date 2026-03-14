@@ -9,6 +9,7 @@ import logging
 import os
 import shutil
 import socket
+import sys
 import tempfile
 import time
 import uuid
@@ -46,6 +47,30 @@ from storage import get_storage_backend
 import redis as _redis_sync
 
 log = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Path translation: Linux/Docker paths → Windows paths (no-op on Linux/WSL2)
+# Set LUMEN_PATH_MAP_n env vars (format: /linux/prefix:C:/win/path) to enable.
+# ---------------------------------------------------------------------------
+
+def _translate_path(path: str) -> str:
+    """Map /mnt/source/... paths to Windows-native paths when running on Windows.
+    Reads LUMEN_PATH_MAP_0, LUMEN_PATH_MAP_1, ... from environment. No-op on Linux."""
+    if sys.platform != "win32":
+        return path
+    i = 0
+    maps: list[tuple[str, str]] = []
+    while (mapping := os.environ.get(f"LUMEN_PATH_MAP_{i}")) is not None:
+        parts = mapping.split(":", 1)
+        if len(parts) == 2:
+            maps.append((parts[0], parts[1]))
+        i += 1
+    maps.sort(key=lambda x: -len(x[0]))
+    for linux_prefix, win_prefix in maps:
+        if path.startswith(linux_prefix):
+            remainder = path[len(linux_prefix):]
+            return win_prefix + remainder.replace("/", "\\")
+    return path
 
 # ---------------------------------------------------------------------------
 # Redis pub/sub: publish completion events to WS consumers
@@ -239,14 +264,24 @@ def crawl_and_dispatch(self, media_root: str):
     """
     try:
         print(f"Starting crawl of {media_root}")
+        # On Windows, translate the scan root to a native path for filesystem access.
+        # Discovered paths are reverse-translated back to Linux format for DB storage.
+        scan_root = _translate_path(media_root)
         if IS_S3:
             files = crawl_s3(prefix=media_root)
         else:
-            files = crawl_media(media_root)
+            files = crawl_media(scan_root)
         print(f"Found {len(files)} media files")
 
         # Dispatch a task for each file
         for file_path, file_type in files:
+            # Reverse-translate native paths back to the canonical Linux path
+            # so DB records stay consistent with Docker/API mounts.
+            if scan_root != media_root:
+                fp = file_path.replace("\\", "/")
+                sr = scan_root.replace("\\", "/")
+                if fp.startswith(sr):
+                    file_path = media_root.rstrip("/") + "/" + fp[len(sr):].lstrip("/")
             ingest_media.delay(file_path, file_type)
 
         return {"status": "dispatched", "count": len(files)}
@@ -298,6 +333,8 @@ def ingest_media(self, file_path: str, file_type: str):
             return {"status": "redispatched", "media_record_id": str(stale.id), "task_id": result.id}
 
         # Check file existence and compute size + hash.
+        # Use native_path for filesystem access; file_path (Linux) stays in DB.
+        native_path = _translate_path(file_path)
         if IS_S3:
             # S3: head() for size, read_partial() for hash — no full download needed.
             try:
@@ -309,23 +346,23 @@ def ingest_media(self, file_path: str, file_type: str):
                 print(f"Cannot stat/hash S3 object {file_path}: {e}")
                 return {"status": "skipped", "reason": "cannot_hash_file"}
         else:
-            if not os.path.isfile(file_path):
-                print(f"File not found: {file_path}")
+            if not os.path.isfile(native_path):
+                print(f"File not found: {native_path}")
                 return {"status": "skipped", "reason": "file_not_found"}
 
             # Get file size (fast)
             try:
-                file_size = os.path.getsize(file_path)
+                file_size = os.path.getsize(native_path)
             except Exception as e:
-                print(f"Could not get file size for {file_path}: {e}")
+                print(f"Could not get file size for {native_path}: {e}")
                 return {"status": "skipped", "reason": "cannot_stat_file"}
 
             # Compute hash here — fast (8KB read for video, full read for images)
             # Must be done before INSERT because file_hash is NOT NULL in the schema
             try:
-                file_hash = compute_file_hash(file_path)
+                file_hash = compute_file_hash(native_path)
             except ValueError as e:
-                print(f"Cannot hash file {file_path}: {e}")
+                print(f"Cannot hash file {native_path}: {e}")
                 return {"status": "skipped", "reason": "cannot_hash_file"}
 
         # Check for duplicates before creating a record
@@ -382,6 +419,7 @@ def process_image(self, file_path: str, media_record_id: str):
         file_path: Full path to image file
         media_record_id: ID of the MediaFile record
     """
+    native_path = _translate_path(file_path)  # Windows path for filesystem; file_path stays as Linux path for DB/Qdrant
     db = SyncSessionLocal()
     embedder = get_embedder()
     get_storage_backend()
@@ -401,7 +439,7 @@ def process_image(self, file_path: str, media_record_id: str):
         try:
             from ingest.ffmpeg import normalize_image
 
-            with _local_path(file_path) as _local_img:
+            with _local_path(native_path) as _local_img:
                 normalize_image(_local_img, normalized_path, resolution=224)
 
                 # Extract metadata from image
@@ -506,8 +544,25 @@ def process_video(self, file_path: str, media_record_id: str):
         file_path: Full path to video file
         media_record_id: ID of the MediaFile record
     """
+    native_path = _translate_path(file_path)  # Windows path for filesystem; file_path stays as Linux path for DB/Qdrant
     db = SyncSessionLocal()
     embedder = get_embedder()
+    task_start = time.monotonic()
+    timings: dict[str, float] = {}
+    fname = os.path.basename(native_path)
+
+    def _step(name: str):
+        """Return a context manager that records elapsed seconds for a named step."""
+        from contextlib import contextmanager as _cm
+        @_cm
+        def _ctx():
+            t = time.monotonic()
+            self.update_state(state="PROGRESS", meta={"step": name, "file": fname, "timings": timings})
+            try:
+                yield
+            finally:
+                timings[name] = round(time.monotonic() - t, 2)
+        return _ctx()
 
     try:
         ensure_qdrant_collection()
@@ -518,9 +573,10 @@ def process_video(self, file_path: str, media_record_id: str):
             raise ValueError(f"Media record not found: {media_record_id}")
 
         # Get video metadata
-        print(f"Probing video: {file_path}")
-        with _local_path(file_path) as _probe_local:
-            metadata = probe_media(_probe_local)
+        with _step("probe"):
+            log.warning("Probing video: %s", file_path)
+            with _local_path(native_path) as _probe_local:
+                metadata = probe_media(_probe_local)
         media_record.width = str(metadata["width"])
         media_record.height = str(metadata["height"])
         media_record.duration_secs = str(metadata["duration"])
@@ -532,11 +588,9 @@ def process_video(self, file_path: str, media_record_id: str):
 
         # Faststart proxy: dispatched async to the 'proxies' queue so this
         # task finishes in minutes regardless of source file size.
-        # generate_proxy applies Option 2 (duration threshold) and Option 3
-        # (stream-copy for H264) — see generate_proxy task below.
         proxy_root = os.getenv("PROXY_ROOT", "").strip()
         if proxy_root and not IS_S3 and file_path.startswith("/mnt/source/"):
-            rel = file_path[len("/mnt/source/"):]  # preserve subdirectory tree
+            rel = file_path[len("/mnt/source/"):]
             proxy_path = os.path.join(proxy_root, rel)
             generate_proxy.apply_async(
                 args=[file_path, proxy_path, metadata["duration"], metadata["codec_name"]],
@@ -549,60 +603,55 @@ def process_video(self, file_path: str, media_record_id: str):
             fps = float(os.getenv("KEYFRAME_FPS") or "0.5")
             resolution = int(os.getenv("KEYFRAME_RESOLUTION") or "224")
 
-            # --- Frame cache check ---
+            # --- Frame cache check / extraction ---
             cached = _get_cached_frames(media_record.file_hash, fps, resolution)
             if cached:
                 log.info("[FrameCache] HIT — %d frames for %s", len(cached), file_path)
                 frame_paths = cached
+                timings["frame_extraction"] = 0.0  # cache hit, no extraction cost
             else:
                 log.info("[FrameCache] MISS — extracting frames from %s", file_path)
-                print(f"Extracting frames from video: {file_path}")
-                with _local_path(file_path) as _extract_local:
-                    raw_frame_paths = extract_keyframes(
-                        _extract_local,
-                        temp_dir,
-                        fps=fps,
-                        resolution=resolution,
-                        video_duration=metadata["duration"],
-                    )
-                print(f"Extracted {len(raw_frame_paths)} frames")
-
-                if not raw_frame_paths:
-                    raise FFmpegError(f"No frames extracted from {file_path}")
-
-                frame_paths = _save_frame_cache(media_record.file_hash, fps, resolution, raw_frame_paths)
+                with _step("frame_extraction"):
+                    with _local_path(native_path) as _extract_local:
+                        raw_frame_paths = extract_keyframes(
+                            _extract_local,
+                            temp_dir,
+                            fps=fps,
+                            resolution=resolution,
+                            video_duration=metadata["duration"],
+                        )
+                    log.warning("Extracted %d frames", len(raw_frame_paths))
+                    if not raw_frame_paths:
+                        raise FFmpegError(f"No frames extracted from {file_path}")
+                    frame_paths = _save_frame_cache(media_record.file_hash, fps, resolution, raw_frame_paths)
 
             # --- Audio segmentation (two-pass VAD → Whisper → AST) ---
-            # Segments the audio track into typed windows (speech/non_verbal/music/event).
-            # Each frame vector will receive the features of its containing segment.
-            # Non-fatal: videos without audio tracks return None and ingest continues.
-            with _local_path(file_path) as _audio_local:
-                audio_segments = extract_audio_segments(_audio_local) or []
+            with _step("audio_segmentation"):
+                with _local_path(native_path) as _audio_local:
+                    audio_segments = extract_audio_segments(_audio_local) or []
             if audio_segments:
-                log.info("[Audio] %d segments extracted for %s", len(audio_segments), file_path)
+                log.info("[Audio] %d segments in %.1fs for %s", len(audio_segments), timings.get("audio_segmentation", 0), file_path)
             else:
-                log.debug("[Audio] No audio track or segmentation skipped for %s", file_path)
+                log.debug("[Audio] No audio track for %s", file_path)
 
             # Record cache hit/miss and start embedding
-            cache_hit = cached is not None
-            media_record.frame_cache_hit = cache_hit
+            media_record.frame_cache_hit = cached is not None
             media_record.embedding_started_at = datetime.utcnow()
             media_record.worker_id = WORKER_ID
             db.commit()
 
             # Embed frames in batches
             batch_size = int(os.getenv("EMBEDDING_BATCH_SIZE") or "32")
-            print(f"Embedding {len(frame_paths)} frames with batch size {batch_size}")
-            t0 = time.monotonic()
-            embeddings = embedder.embed_frames(frame_paths, batch_size=batch_size)
-            embedding_ms = int((time.monotonic() - t0) * 1000)
+            log.warning("Embedding %d frames with batch size %d", len(frame_paths), batch_size)
+            with _step("clip_embedding"):
+                embeddings = embedder.embed_frames(frame_paths, batch_size=batch_size)
+            embedding_ms = int(timings.get("clip_embedding", 0) * 1000)
 
             # Prepare Qdrant points (one per frame)
             points = []
             for frame_idx, embedding in enumerate(embeddings):
                 point_id = str(uuid.uuid4())
                 frame_ts = frame_idx / fps
-                # Map this frame's timestamp to its audio segment
                 seg = segment_for_timestamp(audio_segments, frame_ts) if audio_segments else None
                 seg_payload = segment_to_payload(seg, len(audio_segments)) if seg else {}
                 points.append(
@@ -623,10 +672,11 @@ def process_video(self, file_path: str, media_record_id: str):
                 )
 
             # Upsert to Qdrant
-            print(f"Upserting {len(points)} vectors to Qdrant")
-            qdrant_client.upsert(collection_name=QDRANT_COLLECTION_NAME, points=points)
+            with _step("qdrant_upsert"):
+                log.warning("Upserting %d vectors to Qdrant", len(points))
+                qdrant_client.upsert(collection_name=QDRANT_COLLECTION_NAME, points=points)
 
-            # Update database record (use first frame point ID as reference)
+            # Update database record
             if points:
                 media_record.qdrant_point_id = points[0].id
             media_record.processing_status = "done"
@@ -634,6 +684,19 @@ def process_video(self, file_path: str, media_record_id: str):
             media_record.embedding_ms = embedding_ms
             media_record.model_version = os.getenv("CLIP_MODEL_NAME", "unknown")
             db.commit()
+
+            total_s = round(time.monotonic() - task_start, 2)
+            timings["total"] = total_s
+            log.warning(
+                "[Timings] %s | probe=%.1fs frame_extraction=%.1fs audio=%.1fs clip=%.1fs qdrant=%.1fs total=%.1fs",
+                fname,
+                timings.get("probe", 0),
+                timings.get("frame_extraction", 0),
+                timings.get("audio_segmentation", 0),
+                timings.get("clip_embedding", 0),
+                timings.get("qdrant_upsert", 0),
+                total_s,
+            )
 
             _publish_update({
                 "channel": "media_processing",
@@ -644,11 +707,11 @@ def process_video(self, file_path: str, media_record_id: str):
                 "processed_at": media_record.processed_at.isoformat(),
             })
 
-            print(f"Successfully processed video: {file_path}")
             return {
                 "status": "success",
                 "media_record_id": media_record_id,
                 "frames_processed": len(frame_paths),
+                "timings": timings,
             }
 
         finally:
@@ -702,20 +765,24 @@ def generate_proxy(self, file_path: str, proxy_path: str, duration: float, codec
     Set PROXY_MAX_DURATION_SECS env var to control the skip threshold
     (default: 3600 = 1 hour).
     """
+    file_path = _translate_path(file_path)
     max_dur = float(os.getenv("PROXY_MAX_DURATION_SECS") or "3600")
 
     if codec != "h264" and duration > max_dur:
-        print(
-            f"[Proxy] Skipping — non-H264 ({codec}) and duration "
-            f"{duration:.0f}s > threshold {max_dur:.0f}s: {file_path}"
+        log.warning(
+            "[Proxy] Skipping — non-H264 (%s) duration %.0fs > threshold %.0fs: %s",
+            codec, duration, max_dur, file_path,
         )
         return {"status": "skipped", "reason": "duration_threshold", "file_path": file_path}
 
     try:
+        t0 = time.monotonic()
         apply_faststart(file_path, proxy_path, duration, source_codec=codec)
-        return {"status": "success", "file_path": file_path, "proxy_path": proxy_path}
+        elapsed_s = round(time.monotonic() - t0, 2)
+        log.warning("[Proxy] Done in %.1fs: %s", elapsed_s, file_path)
+        return {"status": "success", "file_path": file_path, "proxy_path": proxy_path, "elapsed_s": elapsed_s}
     except FFmpegError as e:
-        print(f"[Proxy] Warning (non-fatal): {e}")
+        log.warning("[Proxy] Warning (non-fatal): %s", e)
         return {"status": "error", "reason": str(e), "file_path": file_path}
 
 
@@ -864,7 +931,8 @@ def backfill_audio_segments(self, dry_run: bool = False):
     Returns a summary dict: {total_files, processed_files, skipped_files, failed_files,
                               total_points, updated_points}.
     """
-    total_files = processed_files = skipped_files = failed_files = 0
+    total_files = 0
+    processed_files = skipped_files = failed_files = 0
     total_points = updated_points = 0
 
     log.info("[AudioBackfill] Starting — dry_run=%s", dry_run)
@@ -899,11 +967,15 @@ def backfill_audio_segments(self, dry_run: bool = False):
             break
         offset = next_offset
 
-    log.info("[AudioBackfill] Found %d unique video files, %d frame points", len(file_points), total_points)
+    total_files = len(file_points)
+    log.info("[AudioBackfill] Scan complete — %d unique video files, %d frame points", total_files, total_points)
+    self.update_state(
+        state="PROGRESS",
+        meta={"phase": "segmenting", "total_files": total_files, "total_points": total_points, "pct": 0},
+    )
 
     # --- Step 2: Re-segment each file and update its frame payloads ---
     for file_path, point_list in file_points.items():
-        total_files += 1
 
         # Skip files already processed with the two-pass method
         # (check the first point's payload)
@@ -958,10 +1030,23 @@ def backfill_audio_segments(self, dry_run: bool = False):
         processed_files += 1
         log.debug("[AudioBackfill] %s → updated %d/%d points", file_path, file_updated, len(point_list))
 
-        if processed_files % 50 == 0:
+        if processed_files % 10 == 0:
+            pct = round(100 * processed_files / total_files) if total_files else 0
             log.info(
-                "[AudioBackfill] Progress — files: %d processed / %d total  points updated: %d",
-                processed_files, total_files, updated_points,
+                "[AudioBackfill] %d%% — %d/%d files | %d pts updated | %d failed",
+                pct, processed_files, total_files, updated_points, failed_files,
+            )
+            self.update_state(
+                state="PROGRESS",
+                meta={
+                    "pct": pct,
+                    "processed_files": processed_files,
+                    "skipped_files": skipped_files,
+                    "failed_files": failed_files,
+                    "total_files": total_files,
+                    "updated_points": updated_points,
+                    "current_file": os.path.basename(file_path),
+                },
             )
 
     summary = {

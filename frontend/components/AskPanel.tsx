@@ -10,6 +10,10 @@ interface Source {
   frame_index?: number
   timestamp?: number
   caption?: string
+  audio_segment_type?: string
+  audio_transcript?: string
+  audio_event_top?: string
+  audio_rms_energy?: number
 }
 
 interface AskResult {
@@ -18,8 +22,19 @@ interface AskResult {
   sources: Source[]
   model_used: string
   retrieval_count: number
+  audio_retrieval_count: number
+  intent?: string
   execution_time_ms: number
   scenes_collapsed: number
+}
+
+const SEGMENT_ICONS: Record<string, string> = {
+  speech: '🗣',
+  music: '🎵',
+  ambient: '🌿',
+  event: '⚡',
+  non_verbal: '💬',
+  silence: '🔇',
 }
 
 /** Parse all [N] citation numbers from the LLM answer text. */
@@ -126,18 +141,33 @@ export default function AskPanel() {
           <div className="bg-gray-800 border border-gray-700 rounded-xl p-6">
             <div className="flex items-start gap-3 mb-4">
               <span className="text-2xl shrink-0">🤖</span>
-              <p className="text-white leading-relaxed whitespace-pre-wrap">{result.answer}</p>
+              <div className="flex-1">
+                {result.intent && (
+                  <div className="mb-2">
+                    <span className="text-xs px-2 py-0.5 rounded-full bg-gray-700 text-gray-400">
+                      {result.intent === 'audio' ? '🎵 Audio query' : result.intent === 'visual' ? '👁 Visual query' : '🔀 Mixed query'}
+                    </span>
+                  </div>
+                )}
+                <p className="text-white leading-relaxed whitespace-pre-wrap">{result.answer}</p>
+              </div>
             </div>
             <div className="flex flex-wrap gap-3 pt-4 border-t border-gray-700 text-xs text-gray-500">
               <span>Model: {result.model_used}</span>
               <span>·</span>
-              <span>{result.retrieval_count} sources retrieved</span>
+              <span>{result.retrieval_count} visual</span>
+              {result.audio_retrieval_count > 0 && (
+                <>
+                  <span>·</span>
+                  <span>{result.audio_retrieval_count} audio</span>
+                </>
+              )}
               <span>·</span>
               <span>{Math.round(result.execution_time_ms)}ms</span>
               {result.scenes_collapsed > 0 && (
                 <>
                   <span>·</span>
-                  <span>{result.scenes_collapsed} duplicate frames collapsed</span>
+                  <span>{result.scenes_collapsed} duplicates collapsed</span>
                 </>
               )}
             </div>
@@ -208,8 +238,20 @@ export default function AskPanel() {
                             {filename}
                           </div>
                           {src.caption && (
-                            <div className="text-gray-400 text-xs truncate">
-                              {src.caption}
+                            <div className="text-gray-400 text-xs truncate">{src.caption}</div>
+                          )}
+                          {src.audio_segment_type && (
+                            <div className="flex items-center gap-1 mt-0.5">
+                              <span className="text-xs">{SEGMENT_ICONS[src.audio_segment_type] ?? '🔊'}</span>
+                              <span className="text-gray-400 text-xs capitalize">{src.audio_segment_type}</span>
+                              {src.audio_event_top && (
+                                <span className="text-gray-500 text-xs">· {src.audio_event_top}</span>
+                              )}
+                            </div>
+                          )}
+                          {src.audio_transcript && (
+                            <div className="text-gray-500 text-xs truncate italic mt-0.5">
+                              {'"'}{src.audio_transcript.slice(0, 80)}{src.audio_transcript.length > 80 ? '…' : ''}{'"'}
                             </div>
                           )}
                         </div>
@@ -220,9 +262,11 @@ export default function AskPanel() {
                           {src.timestamp !== undefined && (
                             <span className="text-gray-500 shrink-0 text-xs">{src.timestamp.toFixed(1)}s</span>
                           )}
-                          <span className="text-green-400 shrink-0 font-medium text-xs">
-                            {(src.similarity * 100).toFixed(0)}%
-                          </span>
+                          {src.similarity > 0 && (
+                            <span className="text-green-400 shrink-0 font-medium text-xs">
+                              {(src.similarity * 100).toFixed(0)}%
+                            </span>
+                          )}
                           {isCited ? (
                             <span className="text-blue-400 shrink-0 text-xs font-semibold px-2 py-1 bg-blue-900/50 rounded">
                               ✓ cited

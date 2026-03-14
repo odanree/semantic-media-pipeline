@@ -30,6 +30,7 @@ class AgentQueryResponse(BaseModel):
     intent: str | None = None
     search_result_count: int = 0
     metadata_result_count: int = 0
+    audio_result_count: int = 0
     vision_result_count: int = 0
     elapsed_ms: float = 0.0
 
@@ -68,6 +69,7 @@ async def agent_query(request: Request, body: AgentQueryRequest):
         intent=final_state.get("intent"),
         search_result_count=len(final_state.get("search_results", [])),
         metadata_result_count=len(final_state.get("metadata_results", [])),
+        audio_result_count=len(final_state.get("audio_results", [])),
         vision_result_count=len(final_state.get("vision_results", [])),
         elapsed_ms=round(elapsed_ms, 1),
     )
