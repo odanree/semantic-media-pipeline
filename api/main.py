@@ -102,6 +102,15 @@ async def startup_event():
     """Initialize on startup"""
     print("Lumen API starting up...")
 
+    # Clear any leftover playlist segments from previous runs.
+    # call_later() cleanup doesn't survive restarts, so sweep on boot.
+    import shutil
+    playlist_dir = "/tmp/lumen_playlists"
+    if os.path.isdir(playlist_dir):
+        shutil.rmtree(playlist_dir, ignore_errors=True)
+        print(f"[Playlist] Cleared stale segments from {playlist_dir}")
+    os.makedirs(playlist_dir, exist_ok=True)
+
     # Fail fast: DATABASE_URL is non-negotiable
     if not os.getenv("DATABASE_URL"):
         print("FATAL: DATABASE_URL is not set. Refusing to start.")
