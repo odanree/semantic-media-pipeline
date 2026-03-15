@@ -4,6 +4,7 @@ Search endpoint - Vector similarity search in Qdrant
 
 import os
 import time
+from collections import defaultdict
 from typing import List, Optional
 
 import numpy as np
@@ -12,7 +13,7 @@ from fastapi import APIRouter, HTTPException, Request
 from rate_limit import limiter, LIMIT_SEARCH, LIMIT_SEARCH_VEC
 from pydantic import BaseModel
 from qdrant_client import QdrantClient
-from qdrant_client.models import Filter, FieldCondition, Range, MatchValue, ScrollRequest
+from qdrant_client.models import Filter, FieldCondition, MatchValue, ScrollRequest
 
 router = APIRouter()
 
@@ -35,6 +36,14 @@ MAX_IMAGES_PER_DIR = int(os.getenv("MAX_IMAGES_PER_DIR", "2"))
 # Dirs contributing fewer images than this are never capped — regular photo
 # series (e.g. 3 vacation shots in the same folder) pass through untouched.
 TIMELAPSE_FLOOD_THRESHOLD = int(os.getenv("TIMELAPSE_FLOOD_THRESHOLD", "4"))
+
+# ---------------------------------------------------------------------------
+# 2-Pass Re-ranker config
+# ---------------------------------------------------------------------------
+# Pass 1 fetches limit * RERANKER_OVERSAMPLE candidates from Qdrant (ANN).
+# Pass 2 re-ranks them with exact cosine on the API server.
+# Set RERANKER_OVERSAMPLE=1 to disable re-ranking (pass-through mode).
+RERANKER_OVERSAMPLE = int(os.getenv("RERANKER_OVERSAMPLE", "5"))
 
 qdrant_client = QdrantClient(
     host=QDRANT_HOST,
@@ -96,12 +105,11 @@ class SearchRequest(BaseModel):
     limit: int = 20
     threshold: float = 0.2
     dedup: bool = True  # False = raw frames (A/B comparison / debug mode)
-    # --- Audio filters (file-level, backward-compatible) ---
-    audio_has_speech: Optional[bool] = None   # True/False to require/exclude speech
-    min_audio_energy: Optional[float] = None  # e.g. 0.05 to require loud audio
-    # --- Segment-level filters (two-pass pipeline) ---
+    # --- Segment-level audio filters ---
     audio_segment_type: Optional[str] = None  # speech | non_verbal | music | ambient | event | silence
     audio_event_top: Optional[str] = None     # e.g. "Scream" — AudioSet top label
+    # --- Re-ranker ---
+    oversample: Optional[int] = None  # override RERANKER_OVERSAMPLE for this request
 
 
 class SearchResult(BaseModel):
@@ -123,25 +131,24 @@ class SearchResponse(BaseModel):
     results: list
     count: int
     execution_time_ms: float
-    scenes_collapsed: int = 0   # frames dropped by temporal windowing
-    raw_frame_count: int = 0    # total frames Qdrant returned before dedup
+    scenes_collapsed: int = 0       # frames dropped by temporal windowing
+    raw_frame_count: int = 0        # total frames Qdrant returned before dedup
+    # Re-ranker diagnostics
+    reranker_candidates: int = 0    # oversample pool size fed into Pass 2
+    pass1_ms: float = 0.0           # Qdrant ANN search time
+    pass2_ms: float = 0.0           # exact cosine re-rank time
 
 
 # ---------------------------------------------------------------------------
 # Temporal deduplication helpers
 # ---------------------------------------------------------------------------
 
-def _event_deduplicate(hits: list, window_s: float = EVENT_WINDOW_SECONDS) -> list:
+def _window_deduplicate(hits: list, window_s: float = EVENT_WINDOW_SECONDS) -> list:
     """
-    From a single file's candidate frames, keep only one frame per temporal window
-    using greedy non-maximum suppression (NMS).
+    Fallback dedup for frames that have no audio_segment_index.
 
-    The highest-scoring frame is kept first, then any frame within window_s seconds
-    of an already-kept frame is suppressed — regardless of fixed-grid bucket boundaries.
-    This avoids the boundary artifact where frames at t=744s and t=748s land in adjacent
-    5-second buckets and are both kept despite being only 4 seconds apart.
-
-    Images (timestamp=None) are always kept — they have no temporal axis.
+    Greedy NMS: keep the highest-scoring frame, suppress any frame within
+    window_s seconds of an already-kept frame. Images (timestamp=None) always pass.
     """
     hits = sorted(hits, key=lambda h: h.score, reverse=True)
 
@@ -156,6 +163,44 @@ def _event_deduplicate(hits: list, window_s: float = EVENT_WINDOW_SECONDS) -> li
             continue
         kept_timestamps.append(float(ts))
         results.append(hit)
+    return results
+
+
+def _segment_deduplicate(hits: list) -> list:
+    """
+    Keep one frame per audio segment per file.
+
+    Hits must be pre-sorted descending by score (Pass 2 cosine re-rank guarantees
+    this). The first frame encountered for each (file_path, audio_segment_index)
+    pair is the highest-scoring one and is kept; all subsequent frames from the
+    same segment are suppressed.
+
+    Frames that carry no audio_segment_index (images, or videos ingested before
+    audio analysis was added) are collected and handled by _window_deduplicate as
+    a fallback, preserving the original NMS behaviour for that media.
+    """
+    seen: set[tuple] = set()
+    fallback: list = []
+    results: list = []
+
+    for hit in hits:  # pre-sorted: highest score first
+        seg_idx = hit.payload.get("audio_segment_index")
+        if seg_idx is None:
+            fallback.append(hit)
+            continue
+        key = (hit.payload.get("file_path", ""), seg_idx)
+        if key not in seen:
+            seen.add(key)
+            results.append(hit)
+
+    # Fallback: window NMS grouped per file (identical semantics to the old path)
+    if fallback:
+        file_groups: dict[str, list] = defaultdict(list)
+        for hit in fallback:
+            file_groups[hit.payload.get("file_path", "")].append(hit)
+        for hits_in_file in file_groups.values():
+            results.extend(_window_deduplicate(hits_in_file))
+
     return results
 
 
@@ -213,6 +258,50 @@ def _dir_cap_images(
     return results
 
 
+# ---------------------------------------------------------------------------
+# Re-ranker helper
+# ---------------------------------------------------------------------------
+
+def _cosine_rerank(points: list, query_vector: list) -> list:
+    """
+    Re-rank a list of Qdrant ScoredPoints by exact cosine similarity.
+
+    Replaces each point's ANN score with the exact dot-product cosine score
+    computed from the stored 768-dim vector vs the query vector.
+    Points are returned sorted descending by exact score.
+
+    Requires points to have been fetched with with_vectors=True.
+    Points missing a vector (should never happen) keep their original score.
+    """
+    if not points:
+        return points
+
+    q = np.array(query_vector, dtype=np.float32)
+    q_norm = np.linalg.norm(q)
+    if q_norm == 0:
+        return points
+
+    vecs = []
+    valid_idx = []
+    for i, p in enumerate(points):
+        if p.vector is not None:
+            vecs.append(p.vector)
+            valid_idx.append(i)
+
+    if not vecs:
+        return points
+
+    V = np.array(vecs, dtype=np.float32)                    # (N, D)
+    norms = np.linalg.norm(V, axis=1)                       # (N,)
+    scores = (V @ q) / (norms * q_norm + 1e-8)              # (N,) exact cosine
+
+    for idx, score in zip(valid_idx, scores):
+        points[idx].score = float(score)
+
+    points.sort(key=lambda p: p.score, reverse=True)
+    return points
+
+
 @router.get("/search-status")
 async def search_status():
     """
@@ -260,20 +349,7 @@ async def search_media(request: Request, body: SearchRequest):
 
         # Build optional audio payload filter first so we can decide whether
         # an empty query is valid (filter-only browse is allowed).
-        import logging
-        logger = logging.getLogger(__name__)
-        logger.info(f"[SEARCH] received: query={body.query}, audio_has_speech={body.audio_has_speech}, audio_segment_type={body.audio_segment_type}")
-
         audio_conditions = []
-        if body.audio_has_speech is not None:
-            logger.info(f"[SEARCH] Adding audio_has_speech filter: {body.audio_has_speech}")
-            audio_conditions.append(
-                FieldCondition(key="audio_has_speech", match=MatchValue(value=body.audio_has_speech))
-            )
-        if body.min_audio_energy is not None:
-            audio_conditions.append(
-                FieldCondition(key="audio_rms_energy", range=Range(gte=body.min_audio_energy))
-            )
         if body.audio_segment_type is not None:
             audio_conditions.append(
                 FieldCondition(key="audio_segment_type", match=MatchValue(value=body.audio_segment_type))
@@ -299,6 +375,10 @@ async def search_media(request: Request, body: SearchRequest):
                     status_code=503,
                     detail=f"CLIP embedder failed to load: {str(e)}"
                 )
+
+        pass1_ms = 0.0
+        pass2_ms = 0.0
+        reranker_candidates = 0
 
         if filter_only:
             # No query — scroll by filter only, no similarity threshold
@@ -326,52 +406,48 @@ async def search_media(request: Request, body: SearchRequest):
             # so filter-matching frames aren't excluded by similarity alone.
             effective_threshold = 0.0 if audio_filter else body.threshold
 
+            oversample = body.oversample if body.oversample is not None else RERANKER_OVERSAMPLE
+            oversample_limit = body.limit * max(1, oversample)
+
+            # ------------------------------------------------------------------
+            # Pass 1: Qdrant ANN search with oversampling.
+            # Fetch oversample_limit candidates with their stored vectors so
+            # Pass 2 can re-rank without a second round-trip to Qdrant.
+            # ------------------------------------------------------------------
+            t_p1 = time.time()
+            raw_points = qdrant_client.query_points(
+                collection_name=QDRANT_COLLECTION_NAME,
+                query=query_vector,
+                limit=oversample_limit,
+                with_payload=True,
+                with_vectors=True,
+                score_threshold=effective_threshold,
+                query_filter=audio_filter,
+            ).points
+            pass1_ms = (time.time() - t_p1) * 1000
+            reranker_candidates = len(raw_points)
+            raw_frame_count = reranker_candidates
+
+            # ------------------------------------------------------------------
+            # Pass 2: Exact cosine re-ranking on the candidate pool.
+            # Sub-millisecond for ≤500 candidates on CPU (pure numpy matmul).
+            # ------------------------------------------------------------------
+            t_p2 = time.time()
+            raw_points = _cosine_rerank(raw_points, query_vector)
+            pass2_ms = (time.time() - t_p2) * 1000
+
             if body.dedup:
-                # ------------------------------------------------------------------
-                # Layer 1: Qdrant search_groups — one group per file, GROUP_SIZE
-                # candidate frames per group returned from the DB.
-                # ------------------------------------------------------------------
-                groups_result = qdrant_client.query_points_groups(
-                    collection_name=QDRANT_COLLECTION_NAME,
-                    query=query_vector,
-                    group_by="file_path",
-                    limit=body.limit,
-                    group_size=SEARCH_GROUP_SIZE,
-                    score_threshold=effective_threshold,
-                    query_filter=audio_filter,
-                    with_payload=True,
-                )
-
-                raw_frame_count = sum(len(g.hits) for g in groups_result.groups)
-
-                # ------------------------------------------------------------------
-                # Layer 2: Python 5s event windowing — collapse near-identical
-                # adjacent frames within each group down to one per bucket.
-                # ------------------------------------------------------------------
-                all_hits = []
-                for group in groups_result.groups:
-                    best_frames = _event_deduplicate(group.hits, window_s=EVENT_WINDOW_SECONDS)
-                    all_hits.extend(best_frames)
-
-                # Re-sort across files by score, honour limit
+                # One frame per audio segment (or per 5 s window for legacy media),
+                # then timelapse dir-cap, then trim to limit.
+                # raw_points is already score-sorted descending from Pass 2.
+                all_hits = _segment_deduplicate(raw_points)
                 all_hits.sort(key=lambda p: p.score, reverse=True)
-                # Layer 3: per-directory cap for images (prevents timelapse floods)
                 all_hits = _dir_cap_images(all_hits)
                 final_hits = all_hits[:body.limit]
                 scenes_collapsed = raw_frame_count - len(final_hits)
-
             else:
-                # dedup=false — raw frame mode (A/B comparison)
-                raw_points = qdrant_client.query_points(
-                    collection_name=QDRANT_COLLECTION_NAME,
-                    query=query_vector,
-                    limit=body.limit,
-                    with_payload=True,
-                    score_threshold=effective_threshold,
-                    query_filter=audio_filter,
-                ).points
-                final_hits = raw_points
-                raw_frame_count = len(final_hits)
+                # dedup=false — raw frame mode (A/B comparison / debug)
+                final_hits = raw_points[:body.limit]
                 scenes_collapsed = 0
 
         # Build response dicts from whichever path was taken
@@ -405,6 +481,9 @@ async def search_media(request: Request, body: SearchRequest):
             execution_time_ms=execution_time_ms,
             scenes_collapsed=scenes_collapsed,
             raw_frame_count=raw_frame_count,
+            reranker_candidates=reranker_candidates,
+            pass1_ms=round(pass1_ms, 2),
+            pass2_ms=round(pass2_ms, 2),
         )
 
     except HTTPException:

@@ -67,14 +67,17 @@ os.environ.setdefault("DATABASE_URL",     "postgresql://test:test@localhost:5432
 os.environ.setdefault("QDRANT_HOST",      "localhost")
 os.environ.setdefault("QDRANT_PORT",      "6333")
 os.environ.setdefault("API_KEY_REQUIRED", "false")
-# Use in-memory rate limiter — no Redis required in the test environment.
-# slowapi/limits supports memory:// as a zero-dependency in-process backend.
-os.environ.setdefault("REDIS_URL",        "memory://")
+# Force in-memory rate limiter for tests — overrides any .env or container env var.
+# CELERY_BROKER_URL is read first by rate_limit.py; setting it to memory:// keeps
+# all rate-limit counters in-process so tests never hit 429 due to Redis state.
+os.environ["CELERY_BROKER_URL"] = "memory://"
+os.environ["REDIS_URL"]         = "memory://"
 os.environ.setdefault("CLIP_MODEL_NAME",  "clip-ViT-L-14")
 os.environ.setdefault("QDRANT_COLLECTION_NAME", "media_vectors")
-# Raise ask rate-limit ceiling so the full test suite never hits 429.
-os.environ.setdefault("RATE_LIMIT_ASK",    "1000/minute")
-os.environ.setdefault("RATE_LIMIT_SEARCH", "1000/minute")
+# Raise rate-limit ceilings so the full test suite never hits 429.
+os.environ["RATE_LIMIT_ASK"]    = "10000/minute"
+os.environ["RATE_LIMIT_SEARCH"] = "10000/minute"
+os.environ["RATE_LIMIT_DEFAULT"] = "10000/minute"
 # Provide a dummy key so ask.py's OpenAI client init doesn't raise RuntimeError.
 os.environ.setdefault("OPENAI_API_KEY",   "test-key")
 # Disable audit middleware DB writes — no PostgreSQL in the test environment.

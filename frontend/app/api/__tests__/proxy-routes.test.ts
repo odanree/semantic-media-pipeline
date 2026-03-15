@@ -148,6 +148,13 @@ describe('GET /api/thumbnail', () => {
     const res = await handler('http://localhost/api/thumbnail?path=demo%2Fvideo.mp4')
     expect(res.status).toBe(404)
   })
+
+  it('omits X-API-Key when BACKEND_API_KEY is unset', async () => {
+    delete process.env.BACKEND_API_KEY
+    vi.mocked(fetch).mockResolvedValue(mockResponse('', 200, { 'content-type': 'image/jpeg' }))
+    await handler('http://localhost/api/thumbnail?path=demo%2Fvideo.mp4&t=5')
+    expect(capturedApiKey()).toBeUndefined()
+  })
 })
 
 // ---------------------------------------------------------------------------
@@ -179,6 +186,13 @@ describe('GET /api/collection', () => {
     const res = await handler()
     expect(res.status).toBe(500)
   })
+
+  it('omits X-API-Key when BACKEND_API_KEY is unset', async () => {
+    delete process.env.BACKEND_API_KEY
+    vi.mocked(fetch).mockResolvedValue(mockResponse({ total: 0 }))
+    await handler()
+    expect(capturedApiKey()).toBeUndefined()
+  })
 })
 
 // ---------------------------------------------------------------------------
@@ -207,6 +221,13 @@ describe('GET /api/status', () => {
     vi.mocked(fetch).mockResolvedValue(mockResponse('error', 503))
     const res = await handler()
     expect(res.status).toBe(503)
+  })
+
+  it('omits X-API-Key when BACKEND_API_KEY is unset', async () => {
+    delete process.env.BACKEND_API_KEY
+    vi.mocked(fetch).mockResolvedValue(mockResponse({ healthy: true }))
+    await handler()
+    expect(capturedApiKey()).toBeUndefined()
   })
 })
 
@@ -257,6 +278,67 @@ describe('POST /api/search', () => {
     vi.mocked(fetch).mockResolvedValue(mockResponse('error', 422))
     const res = await handler({ query: 'dog' })
     expect(res.status).toBe(422)
+  })
+
+  it('forwards audio_segment_type to backend when provided', async () => {
+    vi.mocked(fetch).mockResolvedValue(mockResponse({ results: [] }))
+    await handler({ query: 'speech scene', audio_segment_type: 'speech' })
+    const [, init] = (fetch as ReturnType<typeof vi.fn>).mock.calls[0] as [string, RequestInit]
+    const sent = JSON.parse(init.body as string)
+    expect(sent.audio_segment_type).toBe('speech')
+  })
+
+  it('does not include audio_segment_type when not provided', async () => {
+    vi.mocked(fetch).mockResolvedValue(mockResponse({ results: [] }))
+    await handler({ query: 'dog' })
+    const [, init] = (fetch as ReturnType<typeof vi.fn>).mock.calls[0] as [string, RequestInit]
+    const sent = JSON.parse(init.body as string)
+    expect(sent.audio_segment_type).toBeUndefined()
+  })
+
+  it('forwards audio_event_top to backend when provided', async () => {
+    vi.mocked(fetch).mockResolvedValue(mockResponse({ results: [] }))
+    await handler({ query: 'scary', audio_event_top: 'Scream' })
+    const [, init] = (fetch as ReturnType<typeof vi.fn>).mock.calls[0] as [string, RequestInit]
+    const sent = JSON.parse(init.body as string)
+    expect(sent.audio_event_top).toBe('Scream')
+  })
+
+  it('forwards dedup: false to backend when explicitly set', async () => {
+    vi.mocked(fetch).mockResolvedValue(mockResponse({ results: [] }))
+    await handler({ query: 'dog', dedup: false })
+    const [, init] = (fetch as ReturnType<typeof vi.fn>).mock.calls[0] as [string, RequestInit]
+    const sent = JSON.parse(init.body as string)
+    expect(sent.dedup).toBe(false)
+  })
+
+  it('omits dedup when not provided', async () => {
+    vi.mocked(fetch).mockResolvedValue(mockResponse({ results: [] }))
+    await handler({ query: 'dog' })
+    const [, init] = (fetch as ReturnType<typeof vi.fn>).mock.calls[0] as [string, RequestInit]
+    const sent = JSON.parse(init.body as string)
+    expect(sent.dedup).toBeUndefined()
+  })
+
+  it('returns 200 with audio_segment_type filter and empty query', async () => {
+    vi.mocked(fetch).mockResolvedValue(mockResponse({ results: [] }))
+    const res = await handler({ query: '', audio_segment_type: 'ambient' })
+    expect(res.status).toBe(200)
+  })
+
+  it('uses fallback error message when upstream error body is empty', async () => {
+    vi.mocked(fetch).mockResolvedValue(mockResponse('', 503))
+    const res = await handler({ query: 'dog' })
+    const json = await res.json()
+    expect(res.status).toBe(503)
+    expect(json.error).toBe('Search failed')
+  })
+
+  it('omits X-API-Key when BACKEND_API_KEY is unset', async () => {
+    delete process.env.BACKEND_API_KEY
+    vi.mocked(fetch).mockResolvedValue(mockResponse({ results: [] }))
+    await handler({ query: 'dog' })
+    expect(capturedApiKey()).toBeUndefined()
   })
 })
 
