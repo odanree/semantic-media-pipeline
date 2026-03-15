@@ -190,7 +190,8 @@ def test_search_calls_clip_encode(client, mock_qdrant, mock_clip):
 # /api/search — temporal deduplication tests
 # ---------------------------------------------------------------------------
 
-def _make_video_hit(file_path: str, score: float, timestamp=None, frame_index=None):
+def _make_video_hit(file_path: str, score: float, timestamp=None, frame_index=None,
+                    audio_segment_index=None):
     """Build a mock ScoredPoint-like object for use in dedup-specific tests."""
     h = MagicMock()
     h.score = score
@@ -202,6 +203,7 @@ def _make_video_hit(file_path: str, score: float, timestamp=None, frame_index=No
         "timestamp": timestamp,
         "frame_index": frame_index,
         "caption": None,
+        "audio_segment_index": audio_segment_index,
     }
     return h
 
@@ -383,6 +385,99 @@ def test_search_dedup_window_start_none_for_images(client, mock_qdrant):
     result = data["results"][0]
     assert result["scene_window_start"] is None
     assert result["scene_window_end"] is None
+
+
+# ---------------------------------------------------------------------------
+# Audio segment dedup tests
+# ---------------------------------------------------------------------------
+
+def test_search_segment_dedup_collapses_same_segment(client, mock_qdrant):
+    """Multiple frames from the same audio segment → only the highest-scoring one kept."""
+    hits = [
+        _make_video_hit("video.mp4", 0.9, timestamp=1.0, audio_segment_index=0),
+        _make_video_hit("video.mp4", 0.8, timestamp=1.5, audio_segment_index=0),
+        _make_video_hit("video.mp4", 0.7, timestamp=2.0, audio_segment_index=0),
+    ]
+    mock_qdrant.query_points.return_value = MagicMock(points=hits)
+
+    data = client.post("/api/search", json={"query": "speech"}).json()
+    assert data["count"] == 1
+    assert data["results"][0]["similarity"] == pytest.approx(0.9, rel=1e-3)
+
+
+def test_search_segment_dedup_keeps_different_segments(client, mock_qdrant):
+    """Frames from distinct audio segments in the same file are all kept."""
+    hits = [
+        _make_video_hit("video.mp4", 0.9, timestamp=1.0, audio_segment_index=0),
+        _make_video_hit("video.mp4", 0.8, timestamp=5.0, audio_segment_index=1),
+        _make_video_hit("video.mp4", 0.7, timestamp=12.0, audio_segment_index=2),
+    ]
+    mock_qdrant.query_points.return_value = MagicMock(points=hits)
+
+    data = client.post("/api/search", json={"query": "speech"}).json()
+    assert data["count"] == 3
+
+
+def test_search_segment_dedup_same_segment_idx_different_files_kept(client, mock_qdrant):
+    """segment_index=0 in two different files are independent — both kept."""
+    hits = [
+        _make_video_hit("video1.mp4", 0.9, timestamp=1.0, audio_segment_index=0),
+        _make_video_hit("video2.mp4", 0.8, timestamp=1.0, audio_segment_index=0),
+    ]
+    mock_qdrant.query_points.return_value = MagicMock(points=hits)
+
+    data = client.post("/api/search", json={"query": "speech"}).json()
+    assert data["count"] == 2
+
+
+def test_search_segment_dedup_winner_is_highest_score(client, mock_qdrant):
+    """Frames presented in any order — the highest-scoring one always wins the segment."""
+    hits = [
+        _make_video_hit("video.mp4", 0.5, timestamp=2.0, audio_segment_index=0),
+        _make_video_hit("video.mp4", 0.9, timestamp=1.0, audio_segment_index=0),
+        _make_video_hit("video.mp4", 0.7, timestamp=1.5, audio_segment_index=0),
+    ]
+    # Pass 2 re-rank sorts descending before dedup; simulate that here
+    hits_sorted = sorted(hits, key=lambda h: h.score, reverse=True)
+    mock_qdrant.query_points.return_value = MagicMock(points=hits_sorted)
+
+    data = client.post("/api/search", json={"query": "music"}).json()
+    assert data["count"] == 1
+    assert data["results"][0]["similarity"] == pytest.approx(0.9, rel=1e-3)
+
+
+def test_search_segment_dedup_long_segment_counts_as_one(client, mock_qdrant):
+    """A 30 s speech segment sampled every 2 s would produce many frames;
+    segment dedup collapses all of them to the single best frame."""
+    hits = [
+        _make_video_hit("video.mp4", 0.9 - i * 0.01, timestamp=float(i * 2),
+                        audio_segment_index=0)
+        for i in range(15)  # 15 frames, all segment 0
+    ]
+    mock_qdrant.query_points.return_value = MagicMock(points=hits)
+
+    data = client.post("/api/search", json={"query": "interview"}).json()
+    assert data["count"] == 1
+    assert data["scenes_collapsed"] == 14
+
+
+def test_search_segment_dedup_mixed_legacy_and_audio_analyzed(client, mock_qdrant):
+    """Mix of frames with and without audio_segment_index.
+    Audio-analyzed frames: deduplicated by segment.
+    Legacy frames (no segment_index): fallback to window NMS."""
+    hits = [
+        # Audio-analyzed: 3 frames in segment 0 → collapses to 1
+        _make_video_hit("new.mp4", 0.9, timestamp=1.0, audio_segment_index=0),
+        _make_video_hit("new.mp4", 0.8, timestamp=1.5, audio_segment_index=0),
+        # Legacy video: 2 frames 10 s apart → both kept by NMS
+        _make_video_hit("old.mp4", 0.75, timestamp=0.0),
+        _make_video_hit("old.mp4", 0.65, timestamp=10.0),
+    ]
+    mock_qdrant.query_points.return_value = MagicMock(points=hits)
+
+    data = client.post("/api/search", json={"query": "running"}).json()
+    # 1 from new.mp4 segment + 2 from old.mp4 = 3
+    assert data["count"] == 3
 
 
 # ---------------------------------------------------------------------------

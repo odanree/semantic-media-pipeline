@@ -143,17 +143,12 @@ class SearchResponse(BaseModel):
 # Temporal deduplication helpers
 # ---------------------------------------------------------------------------
 
-def _event_deduplicate(hits: list, window_s: float = EVENT_WINDOW_SECONDS) -> list:
+def _window_deduplicate(hits: list, window_s: float = EVENT_WINDOW_SECONDS) -> list:
     """
-    From a single file's candidate frames, keep only one frame per temporal window
-    using greedy non-maximum suppression (NMS).
+    Fallback dedup for frames that have no audio_segment_index.
 
-    The highest-scoring frame is kept first, then any frame within window_s seconds
-    of an already-kept frame is suppressed — regardless of fixed-grid bucket boundaries.
-    This avoids the boundary artifact where frames at t=744s and t=748s land in adjacent
-    5-second buckets and are both kept despite being only 4 seconds apart.
-
-    Images (timestamp=None) are always kept — they have no temporal axis.
+    Greedy NMS: keep the highest-scoring frame, suppress any frame within
+    window_s seconds of an already-kept frame. Images (timestamp=None) always pass.
     """
     hits = sorted(hits, key=lambda h: h.score, reverse=True)
 
@@ -168,6 +163,44 @@ def _event_deduplicate(hits: list, window_s: float = EVENT_WINDOW_SECONDS) -> li
             continue
         kept_timestamps.append(float(ts))
         results.append(hit)
+    return results
+
+
+def _segment_deduplicate(hits: list) -> list:
+    """
+    Keep one frame per audio segment per file.
+
+    Hits must be pre-sorted descending by score (Pass 2 cosine re-rank guarantees
+    this). The first frame encountered for each (file_path, audio_segment_index)
+    pair is the highest-scoring one and is kept; all subsequent frames from the
+    same segment are suppressed.
+
+    Frames that carry no audio_segment_index (images, or videos ingested before
+    audio analysis was added) are collected and handled by _window_deduplicate as
+    a fallback, preserving the original NMS behaviour for that media.
+    """
+    seen: set[tuple] = set()
+    fallback: list = []
+    results: list = []
+
+    for hit in hits:  # pre-sorted: highest score first
+        seg_idx = hit.payload.get("audio_segment_index")
+        if seg_idx is None:
+            fallback.append(hit)
+            continue
+        key = (hit.payload.get("file_path", ""), seg_idx)
+        if key not in seen:
+            seen.add(key)
+            results.append(hit)
+
+    # Fallback: window NMS grouped per file (identical semantics to the old path)
+    if fallback:
+        file_groups: dict[str, list] = defaultdict(list)
+        for hit in fallback:
+            file_groups[hit.payload.get("file_path", "")].append(hit)
+        for hits_in_file in file_groups.values():
+            results.extend(_window_deduplicate(hits_in_file))
+
     return results
 
 
@@ -404,16 +437,10 @@ async def search_media(request: Request, body: SearchRequest):
             pass2_ms = (time.time() - t_p2) * 1000
 
             if body.dedup:
-                # Group re-ranked candidates by file, apply per-file event NMS,
-                # then merge, cap timelapse dirs, and trim to limit.
-                file_groups: dict[str, list] = defaultdict(list)
-                for hit in raw_points:
-                    file_groups[hit.payload.get("file_path", "")].append(hit)
-
-                all_hits = []
-                for hits_in_file in file_groups.values():
-                    all_hits.extend(_event_deduplicate(hits_in_file, window_s=EVENT_WINDOW_SECONDS))
-
+                # One frame per audio segment (or per 5 s window for legacy media),
+                # then timelapse dir-cap, then trim to limit.
+                # raw_points is already score-sorted descending from Pass 2.
+                all_hits = _segment_deduplicate(raw_points)
                 all_hits.sort(key=lambda p: p.score, reverse=True)
                 all_hits = _dir_cap_images(all_hits)
                 final_hits = all_hits[:body.limit]
