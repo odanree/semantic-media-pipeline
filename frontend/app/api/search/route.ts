@@ -7,9 +7,9 @@ export async function POST(request: NextRequest) {
   try {
     const body = await request.json()
     const { query, limit = 20, threshold, min_similarity, dedup,
-            audio_has_speech, min_audio_energy, audio_segment_type, audio_event_top } = body
+            audio_segment_type, audio_event_top } = body
 
-    if (!query && !audio_has_speech && !min_audio_energy && !audio_segment_type && !audio_event_top) {
+    if (!query && !audio_segment_type && !audio_event_top) {
       return NextResponse.json({ error: 'Query is required' }, { status: 400 })
     }
 
@@ -29,8 +29,6 @@ export async function POST(request: NextRequest) {
         limit,
         threshold: effectiveThreshold,
         ...(dedup === false && { dedup: false }),
-        ...(audio_has_speech != null && { audio_has_speech }),
-        ...(min_audio_energy != null && { min_audio_energy }),
         ...(audio_segment_type && { audio_segment_type }),
         ...(audio_event_top && { audio_event_top }),
       }),

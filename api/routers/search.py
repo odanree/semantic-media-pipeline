@@ -13,7 +13,7 @@ from fastapi import APIRouter, HTTPException, Request
 from rate_limit import limiter, LIMIT_SEARCH, LIMIT_SEARCH_VEC
 from pydantic import BaseModel
 from qdrant_client import QdrantClient
-from qdrant_client.models import Filter, FieldCondition, Range, MatchValue, ScrollRequest
+from qdrant_client.models import Filter, FieldCondition, MatchValue, ScrollRequest
 
 router = APIRouter()
 
@@ -105,10 +105,7 @@ class SearchRequest(BaseModel):
     limit: int = 20
     threshold: float = 0.2
     dedup: bool = True  # False = raw frames (A/B comparison / debug mode)
-    # --- Audio filters (file-level, backward-compatible) ---
-    audio_has_speech: Optional[bool] = None   # True/False to require/exclude speech
-    min_audio_energy: Optional[float] = None  # e.g. 0.05 to require loud audio
-    # --- Segment-level filters (two-pass pipeline) ---
+    # --- Segment-level audio filters ---
     audio_segment_type: Optional[str] = None  # speech | non_verbal | music | ambient | event | silence
     audio_event_top: Optional[str] = None     # e.g. "Scream" — AudioSet top label
     # --- Re-ranker ---
@@ -319,20 +316,7 @@ async def search_media(request: Request, body: SearchRequest):
 
         # Build optional audio payload filter first so we can decide whether
         # an empty query is valid (filter-only browse is allowed).
-        import logging
-        logger = logging.getLogger(__name__)
-        logger.info(f"[SEARCH] received: query={body.query}, audio_has_speech={body.audio_has_speech}, audio_segment_type={body.audio_segment_type}")
-
         audio_conditions = []
-        if body.audio_has_speech is not None:
-            logger.info(f"[SEARCH] Adding audio_has_speech filter: {body.audio_has_speech}")
-            audio_conditions.append(
-                FieldCondition(key="audio_has_speech", match=MatchValue(value=body.audio_has_speech))
-            )
-        if body.min_audio_energy is not None:
-            audio_conditions.append(
-                FieldCondition(key="audio_rms_energy", range=Range(gte=body.min_audio_energy))
-            )
         if body.audio_segment_type is not None:
             audio_conditions.append(
                 FieldCondition(key="audio_segment_type", match=MatchValue(value=body.audio_segment_type))
