@@ -99,7 +99,7 @@ services:
       --pool=solo
       -E
       --prefetch-multiplier=1
-      --queues=celery,proxies"
+      --queues=celery"
     environment:
       - CELERY_BROKER_URL=redis://lumen2-redis:6379/0
       - CELERY_RESULT_BACKEND=redis://lumen2-redis:6379/0
@@ -182,8 +182,9 @@ services:
       - LLM_MODEL=${LLM_MODEL:-qwen3:14b}
       - LLM_BASE_URL=${LLM_BASE_URL:-http://host.docker.internal:11434/v1}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
-    command: uvicorn main:app --host 0.0.0.0 --port 8000
+    command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
     volumes:
+      - ./api:/app                    # live reload — changes take effect without rebuild
       - media2_data:/data/media
       - proxies2_data:/mnt/proxies:ro
       # F: drive — uncomment when drive is reconnected:

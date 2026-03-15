@@ -76,12 +76,6 @@ export default function SearchPage() {
       if (filters.dedup === false) {
         payload.dedup = false
       }
-      if (filters.audioHasAudio) {
-        payload.min_audio_energy = 0.001
-      }
-      if (filters.audioHasSpeech) {
-        payload.audio_has_speech = true
-      }
       if (filters.audioSegmentType) {
         payload.audio_segment_type = filters.audioSegmentType
       }

@@ -34,7 +34,7 @@ from qdrant_client import QdrantClient
 from openai import OpenAI, OpenAIError
 
 from rate_limit import limiter, LIMIT_ASK
-from routers.search import _event_deduplicate, SEARCH_GROUP_SIZE, EVENT_WINDOW_SECONDS
+from routers.search import _window_deduplicate, SEARCH_GROUP_SIZE, EVENT_WINDOW_SECONDS
 from agents.audio_agent import audio_agent_run, extract_audio_filters
 
 router = APIRouter()
@@ -257,7 +257,7 @@ async def ask_about_media(request: Request, body: AskRequest):
                 raw_count = sum(len(g.hits) for g in groups_result.groups)
                 all_hits = []
                 for group in groups_result.groups:
-                    all_hits.extend(_event_deduplicate(group.hits, window_s=EVENT_WINDOW_SECONDS))
+                    all_hits.extend(_window_deduplicate(group.hits, window_s=EVENT_WINDOW_SECONDS))
                 all_hits.sort(key=lambda p: p.score, reverse=True)
                 pts = all_hits[:body.limit]
                 return pts, raw_count - len(pts)
