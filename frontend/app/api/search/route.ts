@@ -6,9 +6,10 @@ export async function POST(request: NextRequest) {
   const BACKEND_API_KEY = process.env.BACKEND_API_KEY || ''
   try {
     const body = await request.json()
-    const { query, limit = 20, threshold, min_similarity, dedup } = body
+    const { query, limit = 20, threshold, min_similarity, dedup,
+            audio_has_speech, min_audio_energy, audio_segment_type, audio_event_top } = body
 
-    if (!query) {
+    if (!query && !audio_has_speech && !min_audio_energy && !audio_segment_type && !audio_event_top) {
       return NextResponse.json({ error: 'Query is required' }, { status: 400 })
     }
 
@@ -23,7 +24,16 @@ export async function POST(request: NextRequest) {
         'Content-Type': 'application/json',
         ...(BACKEND_API_KEY && { 'X-API-Key': BACKEND_API_KEY }),
       },
-      body: JSON.stringify({ query, limit, threshold: effectiveThreshold, ...(dedup === false && { dedup: false }) }),
+      body: JSON.stringify({
+        query,
+        limit,
+        threshold: effectiveThreshold,
+        ...(dedup === false && { dedup: false }),
+        ...(audio_has_speech != null && { audio_has_speech }),
+        ...(min_audio_energy != null && { min_audio_energy }),
+        ...(audio_segment_type && { audio_segment_type }),
+        ...(audio_event_top && { audio_event_top }),
+      }),
     })
 
     if (!response.ok) {
