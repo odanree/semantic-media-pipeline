@@ -2,6 +2,7 @@
 
 import Image from 'next/image'
 import VideoPlayer from './VideoPlayer'
+import HighlightReelPlayer from './HighlightReelPlayer'
 import { useState, useEffect, useRef } from 'react'
 
 interface SearchResult {
@@ -10,6 +11,14 @@ interface SearchResult {
   similarity: number
   frame_index?: number
   timestamp?: number
+  audio_segment_start_sec?: number | null
+  audio_segment_end_sec?: number | null
+}
+
+interface ReelState {
+  playlistUrl: string
+  clipCount: number
+  totalDurationSec: number
 }
 
 interface ResultGridProps {
@@ -26,6 +35,9 @@ export default function ResultGrid({ results }: ResultGridProps) {
   const [selectedImage, setSelectedImage] = useState<SearchResult | null>(null)
   const [currentPage, setCurrentPage] = useState(1)
   const [viewMode, setViewMode] = useState<ViewMode>('grid')
+  const [reel, setReel] = useState<ReelState | null>(null)
+  const [reelLoading, setReelLoading] = useState(false)
+  const [reelError, setReelError] = useState<string | null>(null)
   const itemsPerPage = 20
   const totalPages = Math.ceil(results.length / itemsPerPage)
 
@@ -37,7 +49,46 @@ export default function ResultGrid({ results }: ResultGridProps) {
   // Reset to page 1 when results change
   useEffect(() => {
     setCurrentPage(1)
+    setReel(null)
+    setReelError(null)
   }, [results])
+
+  const videoResults = results.filter((r) => r.file_type === 'video')
+
+  async function playHighlightReel() {
+    if (videoResults.length === 0) return
+    setReelLoading(true)
+    setReelError(null)
+    const CLIP_PADDING = 3 // seconds — fallback when audio boundaries unavailable
+    const clips = videoResults.map((r) => ({
+      file_path: r.file_path,
+      start_sec: r.audio_segment_start_sec ?? Math.max(0, (r.timestamp ?? 0) - CLIP_PADDING),
+      end_sec: r.audio_segment_end_sec ?? ((r.timestamp ?? 0) + CLIP_PADDING),
+    }))
+    try {
+      const res = await fetch('/api/playlist', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ clips }),
+      })
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: 'Unknown error' }))
+        setReelError(err.error || 'Playlist generation failed')
+        return
+      }
+      const data = await res.json()
+      const streamBase = process.env.NEXT_PUBLIC_STREAM_URL || 'http://localhost:8000'
+      setReel({
+        playlistUrl: `${streamBase}${data.playlist_url}`,
+        clipCount: data.clip_count,
+        totalDurationSec: data.total_duration_sec,
+      })
+    } catch (e) {
+      setReelError('Network error — could not generate reel')
+    } finally {
+      setReelLoading(false)
+    }
+  }
 
   // Scroll to top of results on page change
   useEffect(() => {
@@ -64,7 +115,17 @@ export default function ResultGrid({ results }: ResultGridProps) {
           {totalPages > 1 && ` • Page ${currentPage} of ${totalPages}`}
         </div>
 
-        <div className="flex gap-2">
+        <div className="flex gap-2 flex-wrap">
+          {videoResults.length > 0 && (
+            <button
+              onClick={playHighlightReel}
+              disabled={reelLoading}
+              className="px-3 py-2 rounded text-sm font-semibold transition bg-purple-700 hover:bg-purple-600 disabled:opacity-50 disabled:cursor-wait text-white"
+              aria-label="Play highlight reel of all video results"
+            >
+              {reelLoading ? '⏳ Compiling…' : `▶ Reel (${videoResults.length})`}
+            </button>
+          )}
           <button
             onClick={() => setViewMode('grid')}
             className={`px-3 py-2 rounded text-sm font-semibold transition ${
@@ -88,6 +149,9 @@ export default function ResultGrid({ results }: ResultGridProps) {
             ☰ List
           </button>
         </div>
+        {reelError && (
+          <p className="text-xs text-red-400 mt-1">{reelError}</p>
+        )}
       </div>
 
       {/* Results Grid/List */}
@@ -170,6 +234,15 @@ export default function ResultGrid({ results }: ResultGridProps) {
             Showing {itemsPerPage} results per page
           </div>
         </div>
+      )}
+
+      {reel && (
+        <HighlightReelPlayer
+          playlistUrl={reel.playlistUrl}
+          clipCount={reel.clipCount}
+          totalDurationSec={reel.totalDurationSec}
+          onClose={() => setReel(null)}
+        />
       )}
 
       {selectedVideo && (

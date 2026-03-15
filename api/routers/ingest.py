@@ -3,13 +3,16 @@ Ingest, processing, and media serving endpoints
 """
 
 import asyncio
+import io
+import logging
+import math
 import mimetypes
 import os
 import re
-from datetime import datetime
-
-import io
-import logging
+import shutil
+import uuid
+from datetime import datetime, timedelta
+from typing import List
 
 import aiofiles
 import boto3
@@ -17,7 +20,7 @@ from botocore.exceptions import ClientError
 from celery import Celery
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import RedirectResponse, Response, StreamingResponse
-from rate_limit import limiter, LIMIT_STREAM, LIMIT_THUMBNAIL
+from rate_limit import limiter, LIMIT_STREAM, LIMIT_THUMBNAIL, LIMIT_PLAYLIST
 from PIL import Image as PILImage
 from pydantic import BaseModel
 
@@ -496,5 +499,250 @@ async def get_thumbnail(request: Request, path: str, t: float = 0.0):
         headers={
             # Cache in browser for 24 h — thumbnails are deterministic
             "Cache-Control": "public, max-age=86400",
+        },
+    )
+
+
+# ===========================================================================
+# HLS Highlight Reel playlist generation
+# ===========================================================================
+
+PLAYLIST_DIR = "/tmp/lumen_playlists"
+PLAYLIST_TTL_SECS = 3600
+_MAX_CONCURRENT_SEGMENTS = 4
+
+
+class ClipSpec(BaseModel):
+    file_path: str
+    start_sec: float
+    end_sec: float
+
+
+class PlaylistRequest(BaseModel):
+    clips: List[ClipSpec]
+    clip_padding_sec: float = 3.0
+    title: str = "Highlight Reel"
+
+
+class PlaylistResponse(BaseModel):
+    playlist_url: str
+    token: str
+    clip_count: int
+    total_duration_sec: float
+    expires_at: str
+
+
+async def _extract_segment(resolved_path: str, start_sec: float, duration: float, out_path: str) -> bool:
+    """
+    Extract a single .ts segment from a video file using ffmpeg.
+    Tries stream-copy first (fast, lossless). On failure retries with
+    NVENC (h264_nvenc) then CPU (libx264) with -vsync cfr -r 30 to lock
+    frame rate across mixed-fps sources (DJI 30fps vs Pixel 9 60fps).
+    Returns True on success.
+    """
+    # --- Pass 1: stream-copy (fast, no quality loss) ---
+    cmd_copy = [
+        "ffmpeg", "-y",
+        "-ss", str(start_sec), "-t", str(duration),
+        "-i", resolved_path,
+        "-c", "copy",
+        "-avoid_negative_ts", "make_zero",
+        "-f", "mpegts",
+        out_path,
+    ]
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd_copy,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        _, stderr = await asyncio.wait_for(proc.communicate(), timeout=60)
+        if proc.returncode == 0:
+            return True
+        log.warning("[Playlist] stream-copy failed for %s: %s", resolved_path,
+                    stderr[-300:].decode(errors="replace"))
+    except asyncio.TimeoutError:
+        log.warning("[Playlist] stream-copy timed out for %s", resolved_path)
+    except Exception as e:
+        log.warning("[Playlist] stream-copy exec error for %s: %s", resolved_path, e)
+
+    # --- Pass 2: re-encode — NVENC (GPU) then libx264 (CPU) ---
+    encode_attempts = [
+        # (codec, extra_flags_before_input)
+        ("h264_nvenc", ["-hwaccel", "cuda"]),
+        ("libx264",    []),
+    ]
+    for codec, pre_input in encode_attempts:
+        cmd_enc = [
+            "ffmpeg", "-y",
+            *pre_input,
+            "-ss", str(start_sec), "-t", str(duration),
+            "-i", resolved_path,
+            "-c:v", codec,
+            *([ "-preset", "p1", "-tune", "hq"] if codec == "h264_nvenc" else ["-preset", "veryfast", "-crf", "23"]),
+            "-vsync", "cfr", "-r", "30",
+            "-c:a", "aac", "-b:a", "128k",
+            "-f", "mpegts",
+            out_path,
+        ]
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd_enc,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            _, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
+            if proc.returncode == 0:
+                log.info("[Playlist] re-encoded with %s for %s", codec, resolved_path)
+                return True
+            log.warning("[Playlist] %s failed for %s: %s", codec, resolved_path,
+                        stderr[-200:].decode(errors="replace"))
+        except asyncio.TimeoutError:
+            log.warning("[Playlist] %s timed out for %s", codec, resolved_path)
+        except Exception as e:
+            log.warning("[Playlist] %s exec error for %s: %s", codec, resolved_path, e)
+
+    return False
+
+
+@router.post("/playlist")
+@limiter.limit(LIMIT_PLAYLIST)
+async def create_playlist(request: Request, body: PlaylistRequest):
+    """
+    Compile a list of clip specs into a single HLS VOD playlist.
+
+    Each ClipSpec's file_path is resolved + path-translated, the proxy is
+    preferred over the original (same logic as /api/stream), and ffmpeg
+    extracts each clip as a standards-compliant .ts segment.  A proper
+    M3U8 manifest is written and served from /api/playlist/serve/{token}/.
+
+    Clip boundaries should come from audio_segment_start/end_sec (VAD-aligned).
+    Legacy media without those fields falls back to clip_padding_sec around
+    the matched timestamp (handled by the caller — this endpoint just uses
+    whatever start_sec/end_sec it receives).
+    """
+    if not body.clips:
+        raise HTTPException(status_code=400, detail="No clips provided")
+
+    token = str(uuid.uuid4())
+    token_dir = os.path.join(PLAYLIST_DIR, token)
+    os.makedirs(token_dir, exist_ok=True)
+
+    proxy_root = os.getenv("PROXY_ROOT", _PROXY_ROOT_DEFAULT).strip()
+
+    # Resolve and validate each clip path, prefer proxy
+    resolved_clips: list[tuple[str, ClipSpec]] = []
+    for clip in body.clips:
+        resolved = os.path.realpath(_translate_path(clip.file_path))
+        if not any(resolved.startswith(root) for root in ALLOWED_ROOTS):
+            log.warning("[Playlist] access denied: %s", clip.file_path)
+            continue
+        if proxy_root and resolved.startswith(_SOURCE_ROOT + os.sep):
+            rel = resolved[len(_SOURCE_ROOT) + 1:]
+            proxy_candidate = os.path.join(proxy_root, rel)
+            if os.path.isfile(proxy_candidate):
+                resolved = proxy_candidate
+        if not os.path.isfile(resolved):
+            log.warning("[Playlist] file not found: %s (resolved: %s)", clip.file_path, resolved)
+            continue
+        resolved_clips.append((resolved, clip))
+
+    if not resolved_clips:
+        shutil.rmtree(token_dir, ignore_errors=True)
+        raise HTTPException(status_code=400, detail="No accessible clip files found")
+
+    # Extract segments with bounded concurrency
+    sem = asyncio.Semaphore(_MAX_CONCURRENT_SEGMENTS)
+
+    async def extract_one(idx: int, resolved: str, clip: ClipSpec):
+        duration = max(0.1, clip.end_sec - clip.start_sec)
+        out_path = os.path.join(token_dir, f"seg_{idx:03d}.ts")
+        async with sem:
+            ok = await _extract_segment(resolved, clip.start_sec, duration, out_path)
+        return idx, duration, ok
+
+    results = await asyncio.gather(*[
+        extract_one(i, res, clip) for i, (res, clip) in enumerate(resolved_clips)
+    ])
+
+    successful = [(idx, dur) for idx, dur, ok in results if ok]
+    if not successful:
+        shutil.rmtree(token_dir, ignore_errors=True)
+        raise HTTPException(status_code=500, detail="All segment extractions failed")
+
+    total_duration = sum(dur for _, dur in successful)
+    max_duration = max(dur for _, dur in successful)
+
+    # Write HLS VOD manifest
+    lines = [
+        "#EXTM3U",
+        "#EXT-X-VERSION:3",
+        f"#EXT-X-TARGETDURATION:{math.ceil(max_duration)}",
+        "#EXT-X-MEDIA-SEQUENCE:0",
+        "#EXT-X-PLAYLIST-TYPE:VOD",
+    ]
+    for idx, dur in successful:
+        clip = resolved_clips[idx][1]
+        label = clip.file_path.split("/")[-1]
+        lines.append(f"#EXTINF:{dur:.6f},{label} @ {clip.start_sec:.1f}s")
+        lines.append(f"/api/playlist/serve/{token}/seg_{idx:03d}.ts")
+    lines.append("#EXT-X-ENDLIST")
+
+    with open(os.path.join(token_dir, "playlist.m3u8"), "w") as f:
+        f.write("\n".join(lines) + "\n")
+
+    # Auto-cleanup after TTL — also swept on API startup
+    loop = asyncio.get_event_loop()
+    loop.call_later(PLAYLIST_TTL_SECS, lambda: shutil.rmtree(token_dir, ignore_errors=True))
+
+    return PlaylistResponse(
+        playlist_url=f"/api/playlist/serve/{token}/playlist.m3u8",
+        token=token,
+        clip_count=len(successful),
+        total_duration_sec=round(total_duration, 2),
+        expires_at=(datetime.utcnow() + timedelta(seconds=PLAYLIST_TTL_SECS)).isoformat(),
+    )
+
+
+@router.get("/playlist/serve/{token}/{filename}")
+async def serve_playlist_file(token: str, filename: str):
+    """
+    Serve the M3U8 manifest or .ts segment files for a generated playlist.
+    Token UUID is the sole access control — no path traversal is possible
+    since both token and filename are validated before path construction.
+    """
+    try:
+        uuid.UUID(token)  # Raises ValueError if not a valid UUID
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid token")
+
+    if "/" in filename or "\\" in filename or filename.startswith("."):
+        raise HTTPException(status_code=400, detail="Invalid filename")
+
+    file_path = os.path.join(PLAYLIST_DIR, token, filename)
+    if not os.path.isfile(file_path):
+        raise HTTPException(status_code=404, detail="Playlist file not found or expired")
+
+    if filename.endswith(".m3u8"):
+        media_type = "application/vnd.apple.mpegurl"
+    elif filename.endswith(".ts"):
+        media_type = "video/mp2t"
+    else:
+        media_type = "application/octet-stream"
+
+    async def sender():
+        async with aiofiles.open(file_path, "rb") as f:
+            while True:
+                chunk = await f.read(STREAM_CHUNK_SIZE)
+                if not chunk:
+                    break
+                yield chunk
+
+    return StreamingResponse(
+        sender(),
+        media_type=media_type,
+        headers={
+            "Cache-Control": "public, max-age=3600",
+            "Access-Control-Allow-Origin": "*",
         },
     )
