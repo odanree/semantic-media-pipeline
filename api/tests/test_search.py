@@ -110,6 +110,7 @@ def _make_hit(file_path: str, file_type: str, score: float) -> MagicMock:
     """Helper: build a mock Qdrant ScoredPoint."""
     hit = MagicMock()
     hit.score = score
+    hit.vector = None  # no vector — _cosine_rerank skips, original score kept
     hit.payload = {"file_path": file_path, "file_type": file_type}
     return hit
 
@@ -148,12 +149,11 @@ def test_search_result_has_similarity(client, mock_qdrant):
 # ---------------------------------------------------------------------------
 
 def test_search_limit_forwarded_to_qdrant(client, mock_qdrant):
-    """limit=5 must be passed to qdrant.query_points() when dedup=false."""
+    """limit=5 with oversample=1 must pass limit=5 to qdrant.query_points()."""
     mock_qdrant.query_points.return_value = MagicMock(points=[])
-    client.post("/api/search", json={"query": "yoga", "limit": 5, "dedup": False})
+    client.post("/api/search", json={"query": "yoga", "limit": 5, "dedup": False, "oversample": 1})
     call_kwargs = mock_qdrant.query_points.call_args
     assert call_kwargs is not None
-    # limit can be a positional or keyword arg — check both
     args, kwargs = call_kwargs
     assert kwargs.get("limit") == 5 or (len(args) >= 3 and args[2] == 5)
 
@@ -195,6 +195,7 @@ def _make_video_hit(file_path: str, score: float, timestamp=None, frame_index=No
     h = MagicMock()
     h.score = score
     h.id = f"{file_path}-{frame_index or 0}"
+    h.vector = None  # no vector — _cosine_rerank skips, original score kept
     h.payload = {
         "file_path": file_path,
         "file_type": "video" if timestamp is not None else "image",
@@ -212,16 +213,16 @@ def _make_group(hits):
     return g
 
 
-def test_search_dedup_default_uses_query_points_groups(client, mock_qdrant):
-    """dedup=true (default) must route through query_points_groups, not query_points."""
-    mock_qdrant.query_points_groups.return_value = MagicMock(groups=[])
+def test_search_dedup_default_uses_query_points(client, mock_qdrant):
+    """dedup=true (default) routes through query_points with oversampling (2-pass reranker)."""
+    mock_qdrant.query_points.return_value = MagicMock(points=[])
     mock_qdrant.query_points.reset_mock()
     mock_qdrant.query_points_groups.reset_mock()
 
     resp = client.post("/api/search", json={"query": "birthday party"})
     assert resp.status_code == 200
-    mock_qdrant.query_points_groups.assert_called_once()
-    mock_qdrant.query_points.assert_not_called()
+    mock_qdrant.query_points.assert_called_once()
+    mock_qdrant.query_points_groups.assert_not_called()
 
 
 def test_search_dedup_false_uses_query_points(client, mock_qdrant):
@@ -243,7 +244,7 @@ def test_search_dedup_collapses_frames_in_same_window(client, mock_qdrant):
         _make_video_hit("video.mp4", 0.8, timestamp=2.5),
         _make_video_hit("video.mp4", 0.7, timestamp=4.9),
     ]
-    mock_qdrant.query_points_groups.return_value = MagicMock(groups=[_make_group(hits)])
+    mock_qdrant.query_points.return_value = MagicMock(points=hits)
 
     resp = client.post("/api/search", json={"query": "running"})
     data = resp.json()
@@ -258,7 +259,7 @@ def test_search_dedup_keeps_frames_in_different_windows(client, mock_qdrant):
         _make_video_hit("video.mp4", 0.8, timestamp=6.5),
         _make_video_hit("video.mp4", 0.7, timestamp=12.5),
     ]
-    mock_qdrant.query_points_groups.return_value = MagicMock(groups=[_make_group(hits)])
+    mock_qdrant.query_points.return_value = MagicMock(points=hits)
 
     resp = client.post("/api/search", json={"query": "running"})
     data = resp.json()
@@ -277,7 +278,7 @@ def test_search_dedup_collapses_frames_straddling_bucket_boundary(client, mock_q
         _make_video_hit("video.mp4", 0.281, timestamp=744.0),  # 4 s away — suppressed
         _make_video_hit("video.mp4", 0.275, timestamp=750.0),  # 2 s away — suppressed
     ]
-    mock_qdrant.query_points_groups.return_value = MagicMock(groups=[_make_group(hits)])
+    mock_qdrant.query_points.return_value = MagicMock(points=hits)
 
     data = client.post("/api/search", json={"query": "frontyard"}).json()
     assert data["count"] == 1
@@ -291,7 +292,7 @@ def test_search_dedup_images_never_collapsed(client, mock_qdrant):
         _make_video_hit("photo1.jpg", 0.9, timestamp=None),
         _make_video_hit("photo1.jpg", 0.8, timestamp=None),
     ]
-    mock_qdrant.query_points_groups.return_value = MagicMock(groups=[_make_group(hits)])
+    mock_qdrant.query_points.return_value = MagicMock(points=hits)
 
     resp = client.post("/api/search", json={"query": "landscape"})
     data = resp.json()
@@ -301,14 +302,14 @@ def test_search_dedup_images_never_collapsed(client, mock_qdrant):
 
 def test_search_dedup_response_has_scenes_collapsed_field(client, mock_qdrant):
     """SearchResponse must include the scenes_collapsed field."""
-    mock_qdrant.query_points_groups.return_value = MagicMock(groups=[])
+    mock_qdrant.query_points.return_value = MagicMock(points=[])
     data = client.post("/api/search", json={"query": "cat"}).json()
     assert "scenes_collapsed" in data
 
 
 def test_search_dedup_response_has_raw_frame_count_field(client, mock_qdrant):
     """SearchResponse must include the raw_frame_count field."""
-    mock_qdrant.query_points_groups.return_value = MagicMock(groups=[])
+    mock_qdrant.query_points.return_value = MagicMock(points=[])
     data = client.post("/api/search", json={"query": "dog"}).json()
     assert "raw_frame_count" in data
 
@@ -321,7 +322,7 @@ def test_search_dedup_scenes_collapsed_correct_count(client, mock_qdrant):
         _make_video_hit("clip.mp4", 0.8, timestamp=2.0),
         _make_video_hit("clip.mp4", 0.7, timestamp=3.0),
     ]
-    mock_qdrant.query_points_groups.return_value = MagicMock(groups=[_make_group(hits)])
+    mock_qdrant.query_points.return_value = MagicMock(points=hits)
 
     data = client.post("/api/search", json={"query": "walking"}).json()
     assert data["scenes_collapsed"] == 2
@@ -345,7 +346,7 @@ def test_search_dedup_representative_is_highest_score(client, mock_qdrant):
         _make_video_hit("video.mp4", 0.9, timestamp=1.0),  # high score, same bucket
         _make_video_hit("video.mp4", 0.7, timestamp=2.5),  # mid score, same bucket
     ]
-    mock_qdrant.query_points_groups.return_value = MagicMock(groups=[_make_group(hits)])
+    mock_qdrant.query_points.return_value = MagicMock(points=hits)
 
     data = client.post("/api/search", json={"query": "jump"}).json()
     assert data["count"] == 1
@@ -355,7 +356,7 @@ def test_search_dedup_representative_is_highest_score(client, mock_qdrant):
 def test_search_dedup_scene_window_start_set_on_video(client, mock_qdrant):
     """scene_window_start must be set for video hits when dedup=true."""
     hits = [_make_video_hit("clip.mp4", 0.8, timestamp=7.3)]
-    mock_qdrant.query_points_groups.return_value = MagicMock(groups=[_make_group(hits)])
+    mock_qdrant.query_points.return_value = MagicMock(points=hits)
 
     data = client.post("/api/search", json={"query": "swim"}).json()
     result = data["results"][0]
@@ -366,7 +367,7 @@ def test_search_dedup_scene_window_start_set_on_video(client, mock_qdrant):
 def test_search_dedup_scene_window_end_equals_start_plus_five(client, mock_qdrant):
     """scene_window_end must equal scene_window_start + 5."""
     hits = [_make_video_hit("clip.mp4", 0.8, timestamp=7.3)]
-    mock_qdrant.query_points_groups.return_value = MagicMock(groups=[_make_group(hits)])
+    mock_qdrant.query_points.return_value = MagicMock(points=hits)
 
     data = client.post("/api/search", json={"query": "swim"}).json()
     result = data["results"][0]
@@ -376,7 +377,7 @@ def test_search_dedup_scene_window_end_equals_start_plus_five(client, mock_qdran
 def test_search_dedup_window_start_none_for_images(client, mock_qdrant):
     """scene_window_start and scene_window_end must be None for images (no timestamp)."""
     hits = [_make_video_hit("photo.jpg", 0.8, timestamp=None)]
-    mock_qdrant.query_points_groups.return_value = MagicMock(groups=[_make_group(hits)])
+    mock_qdrant.query_points.return_value = MagicMock(points=hits)
 
     data = client.post("/api/search", json={"query": "portrait"}).json()
     result = data["results"][0]
@@ -388,14 +389,13 @@ def test_search_dedup_window_start_none_for_images(client, mock_qdrant):
 # Directory-cap image dedup tests (timelapse flood prevention)
 # ---------------------------------------------------------------------------
 
-def _make_timelapse_group(dir_path: str, filenames: list[str], base_score: float = 0.9):
-    """Helper: build separate single-hit groups for each timelapse JPG file."""
-    groups = []
+def _make_timelapse_hits(dir_path: str, filenames: list[str], base_score: float = 0.9):
+    """Helper: build flat list of scored hits for each timelapse JPG file."""
+    hits = []
     for i, name in enumerate(filenames):
         path = f"{dir_path}/{name}"
-        hit = _make_video_hit(path, base_score - i * 0.01, timestamp=None)
-        groups.append(_make_group([hit]))
-    return groups
+        hits.append(_make_video_hit(path, base_score - i * 0.01, timestamp=None))
+    return hits
 
 
 def test_search_dir_cap_limits_timelapse_images(client, mock_qdrant):
@@ -404,12 +404,12 @@ def test_search_dir_cap_limits_timelapse_images(client, mock_qdrant):
     MAX_IMAGES_PER_DIR (default 2) when the directory contributes >=
     TIMELAPSE_FLOOD_THRESHOLD (default 4) images.
     """
-    groups = _make_timelapse_group(
+    hits = _make_timelapse_hits(
         "/mnt/source/DJI/TIMELAPSE/001",
         ["TIMELAPSE_0688.JPG", "TIMELAPSE_0689.JPG", "TIMELAPSE_0690.JPG",
          "TIMELAPSE_0691.JPG", "TIMELAPSE_0692.JPG"],
     )
-    mock_qdrant.query_points_groups.return_value = MagicMock(groups=groups)
+    mock_qdrant.query_points.return_value = MagicMock(points=hits)
 
     data = client.post("/api/search", json={"query": "frontyard"}).json()
     # 5 images >= flood_threshold(4) → capped to MAX_IMAGES_PER_DIR=2
@@ -420,13 +420,13 @@ def test_search_dir_cap_limits_timelapse_images(client, mock_qdrant):
 def test_search_dir_cap_keeps_best_scoring_images(client, mock_qdrant):
     """The images kept from a capped directory are the highest-scoring ones."""
     # 5 images so the flood threshold (4) is triggered
-    groups = _make_timelapse_group(
+    hits = _make_timelapse_hits(
         "/mnt/source/DJI/TIMELAPSE/001",
         ["TIMELAPSE_0688.JPG", "TIMELAPSE_0689.JPG", "TIMELAPSE_0690.JPG",
          "TIMELAPSE_0691.JPG", "TIMELAPSE_0692.JPG"],
         base_score=0.9,  # scores: 0.90, 0.89, 0.88, 0.87, 0.86
     )
-    mock_qdrant.query_points_groups.return_value = MagicMock(groups=groups)
+    mock_qdrant.query_points.return_value = MagicMock(points=hits)
 
     data = client.post("/api/search", json={"query": "frontyard"}).json()
     assert data["count"] == 2
@@ -440,12 +440,12 @@ def test_search_dir_cap_does_not_affect_small_photo_series(client, mock_qdrant):
     be capped — all images pass through regardless of MAX_IMAGES_PER_DIR.
     E.g. 3 vacation shots in the same album folder.
     """
-    groups = _make_timelapse_group(
+    hits = _make_timelapse_hits(
         "/mnt/source/Pixel 9 Nov 2025",
         ["PXL_001.JPG", "PXL_002.JPG", "PXL_003.JPG"],  # 3 < flood_threshold(4)
         base_score=0.9,
     )
-    mock_qdrant.query_points_groups.return_value = MagicMock(groups=groups)
+    mock_qdrant.query_points.return_value = MagicMock(points=hits)
 
     data = client.post("/api/search", json={"query": "frontyard"}).json()
     # 3 < flood_threshold → all 3 pass through, cap never activates
@@ -454,15 +454,15 @@ def test_search_dir_cap_does_not_affect_small_photo_series(client, mock_qdrant):
 
 def test_search_dir_cap_does_not_affect_different_directories(client, mock_qdrant):
     """Two separate timelapse directories are each capped independently."""
-    groups = (
-        _make_timelapse_group("/mnt/source/DJI/TIMELAPSE/001",
-                              ["T_0001.JPG", "T_0002.JPG", "T_0003.JPG",
-                               "T_0004.JPG", "T_0005.JPG"])
-        + _make_timelapse_group("/mnt/source/DJI/TIMELAPSE/002",
-                                ["T_0001.JPG", "T_0002.JPG", "T_0003.JPG",
-                                 "T_0004.JPG", "T_0005.JPG"])
+    hits = (
+        _make_timelapse_hits("/mnt/source/DJI/TIMELAPSE/001",
+                             ["T_0001.JPG", "T_0002.JPG", "T_0003.JPG",
+                              "T_0004.JPG", "T_0005.JPG"])
+        + _make_timelapse_hits("/mnt/source/DJI/TIMELAPSE/002",
+                               ["T_0001.JPG", "T_0002.JPG", "T_0003.JPG",
+                                "T_0004.JPG", "T_0005.JPG"])
     )
-    mock_qdrant.query_points_groups.return_value = MagicMock(groups=groups)
+    mock_qdrant.query_points.return_value = MagicMock(points=hits)
 
     data = client.post("/api/search", json={"query": "frontyard"}).json()
     # 2 kept from dir 001 + 2 kept from dir 002 = 4
@@ -476,9 +476,7 @@ def test_search_dir_cap_does_not_affect_video_frames(client, mock_qdrant):
         _make_video_hit("/mnt/source/video/clip.mp4", 0.8, timestamp=20.0),
         _make_video_hit("/mnt/source/video/clip.mp4", 0.7, timestamp=30.0),
     ]
-    mock_qdrant.query_points_groups.return_value = MagicMock(
-        groups=[_make_group([h]) for h in hits]
-    )
+    mock_qdrant.query_points.return_value = MagicMock(points=hits)
 
     data = client.post("/api/search", json={"query": "action"}).json()
     assert data["count"] == 3
@@ -527,20 +525,20 @@ def test_search_empty_query_no_filter_still_returns_400(client):
 
 def test_search_min_audio_energy_filter_accepted(client, mock_qdrant):
     """min_audio_energy filter must be forwarded to qdrant without error."""
-    mock_qdrant.query_points_groups.return_value = MagicMock(groups=[])
+    mock_qdrant.query_points.return_value = MagicMock(points=[])
     resp = client.post("/api/search", json={"query": "loud scene", "min_audio_energy": 0.05})
     assert resp.status_code == 200
 
 
 def test_search_audio_segment_type_filter_accepted(client, mock_qdrant):
     """audio_segment_type filter must be forwarded to qdrant without error."""
-    mock_qdrant.query_points_groups.return_value = MagicMock(groups=[])
+    mock_qdrant.query_points.return_value = MagicMock(points=[])
     resp = client.post("/api/search", json={"query": "speech scene", "audio_segment_type": "speech"})
     assert resp.status_code == 200
 
 
 def test_search_audio_event_top_filter_accepted(client, mock_qdrant):
     """audio_event_top filter must be forwarded to qdrant without error."""
-    mock_qdrant.query_points_groups.return_value = MagicMock(groups=[])
+    mock_qdrant.query_points.return_value = MagicMock(points=[])
     resp = client.post("/api/search", json={"query": "scary moment", "audio_event_top": "Scream"})
     assert resp.status_code == 200

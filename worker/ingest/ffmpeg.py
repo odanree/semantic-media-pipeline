@@ -31,7 +31,7 @@ def probe_media(file_path: str) -> Dict:
             [
                 "ffprobe",
                 "-v",
-                "quiet",
+                "error",
                 "-print_format",
                 "json",
                 "-show_format",
