@@ -99,7 +99,7 @@ services:
       --pool=solo
       -E
       --prefetch-multiplier=1
-      --queues=celery,proxies"
+      --queues=celery"
     environment:
       - CELERY_BROKER_URL=redis://lumen2-redis:6379/0
       - CELERY_RESULT_BACKEND=redis://lumen2-redis:6379/0
