@@ -106,7 +106,7 @@ services:
       --concurrency=$${CELERY_CONCURRENCY:-4}
       --prefetch-multiplier=$${CELERY_WORKER_PREFETCH_MULTIPLIER:-1}
       --max-tasks-per-child=$${CELERY_MAX_TASKS_PER_CHILD:-50}
-      --queues=celery,proxies"
+      --queues=celery"
     env_file:
       - .env
     environment:
@@ -123,7 +123,7 @@ services:
       - CELERY_WORKER_PREFETCH_MULTIPLIER=${CELERY_WORKER_PREFETCH_MULTIPLIER:-1}
       - CELERY_MAX_TASKS_PER_CHILD=${CELERY_MAX_TASKS_PER_CHILD:-50}
       - CELERY_MAX_MEMORY_PER_CHILD=${CELERY_MAX_MEMORY_PER_CHILD:-1500000}
-      - PROXY_ROOT=${PROXY_ROOT:-/mnt/proxies}
+      - PROXY_ROOT=
       - PROXY_MAX_DURATION_SECS=${PROXY_MAX_DURATION_SECS:-3600}
       - WORKER_ID=${WORKER_ID:-windows-1}
       - FRAME_CACHE_DIR=/mnt/frame_cache

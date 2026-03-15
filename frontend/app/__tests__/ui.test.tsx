@@ -234,34 +234,32 @@ describe('SearchBar', () => {
     audioSwitches.forEach(s => expect(s.getAttribute('aria-checked')).toBe('false'))
   })
 
-  it('toggling Has audio switch flips its aria-checked', () => {
+  it('selecting an audio segment type updates the dropdown value', () => {
     render(<SearchBar onSearch={vi.fn()} />)
     fireEvent.click(screen.getByRole('button', { name: /toggle search filters/i }))
-    const hasAudioSwitch = screen.getByRole('switch', { name: /has audio/i })
-    expect(hasAudioSwitch.getAttribute('aria-checked')).toBe('false')
-    fireEvent.click(hasAudioSwitch)
-    expect(hasAudioSwitch.getAttribute('aria-checked')).toBe('true')
-    fireEvent.click(hasAudioSwitch)
-    expect(hasAudioSwitch.getAttribute('aria-checked')).toBe('false')
+    const select = screen.getByRole('combobox') as HTMLSelectElement
+    fireEvent.change(select, { target: { value: 'speech' } })
+    expect(select.value).toBe('speech')
   })
 
-  it('toggling Has speech switch flips its aria-checked', () => {
+  it('audio segment type dropdown contains expected options', () => {
     render(<SearchBar onSearch={vi.fn()} />)
     fireEvent.click(screen.getByRole('button', { name: /toggle search filters/i }))
-    const hasSpeechSwitch = screen.getByRole('switch', { name: /has speech/i })
-    expect(hasSpeechSwitch.getAttribute('aria-checked')).toBe('false')
-    fireEvent.click(hasSpeechSwitch)
-    expect(hasSpeechSwitch.getAttribute('aria-checked')).toBe('true')
+    const select = screen.getByRole('combobox') as HTMLSelectElement
+    const values = Array.from(select.options).map(o => o.value)
+    expect(values).toContain('speech')
+    expect(values).toContain('ambient')
+    expect(values).toContain('music')
+    expect(values).toContain('silence')
   })
 
-  it('reset filters sets audio toggles back to false', () => {
+  it('reset filters clears audio segment type back to Any', () => {
     render(<SearchBar onSearch={vi.fn()} />)
     fireEvent.click(screen.getByRole('button', { name: /toggle search filters/i }))
-    fireEvent.click(screen.getByRole('switch', { name: /has audio/i }))
-    fireEvent.click(screen.getByRole('switch', { name: /has speech/i }))
+    const select = screen.getByRole('combobox') as HTMLSelectElement
+    fireEvent.change(select, { target: { value: 'music' } })
     fireEvent.click(screen.getByRole('button', { name: /reset filters/i }))
-    expect(screen.getByRole('switch', { name: /has audio/i }).getAttribute('aria-checked')).toBe('false')
-    expect(screen.getByRole('switch', { name: /has speech/i }).getAttribute('aria-checked')).toBe('false')
+    expect(select.value).toBe('')
   })
 })
 
@@ -396,7 +394,7 @@ describe('SearchPage', () => {
     await act(async () => { await Promise.resolve() })
   })
 
-  it('sends min_audio_energy when Has audio filter is enabled', async () => {
+  it('sends audio_segment_type when selected from the dropdown', async () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve(collectionResponse) })
       .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ results: [] }) })
@@ -405,10 +403,8 @@ describe('SearchPage', () => {
       render(<SearchPage />)
       await Promise.resolve()
     })
-    // Open filters and enable Has audio
     fireEvent.click(screen.getByRole('button', { name: /toggle search filters/i }))
-    fireEvent.click(screen.getByRole('switch', { name: /has audio/i }))
-    // Submit search
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'speech' } })
     const input = document.querySelector('input[type="text"]') as HTMLInputElement
     fireEvent.change(input, { target: { value: 'concert footage' } })
     await act(async () => {
@@ -416,11 +412,12 @@ describe('SearchPage', () => {
       await Promise.resolve()
     })
     const body = JSON.parse(fetchMock.mock.calls[1][1].body)
-    expect(body.min_audio_energy).toBe(0.001)
+    expect(body.audio_segment_type).toBe('speech')
+    expect(body.min_audio_energy).toBeUndefined()
     expect(body.audio_has_speech).toBeUndefined()
   })
 
-  it('sends audio_has_speech when Has speech filter is enabled', async () => {
+  it('does not send audio_segment_type when dropdown is on Any', async () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve(collectionResponse) })
       .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ results: [] }) })
@@ -429,8 +426,6 @@ describe('SearchPage', () => {
       render(<SearchPage />)
       await Promise.resolve()
     })
-    fireEvent.click(screen.getByRole('button', { name: /toggle search filters/i }))
-    fireEvent.click(screen.getByRole('switch', { name: /has speech/i }))
     const input = document.querySelector('input[type="text"]') as HTMLInputElement
     fireEvent.change(input, { target: { value: 'interview clips' } })
     await act(async () => {
@@ -438,8 +433,7 @@ describe('SearchPage', () => {
       await Promise.resolve()
     })
     const body = JSON.parse(fetchMock.mock.calls[1][1].body)
-    expect(body.audio_has_speech).toBe(true)
-    expect(body.min_audio_energy).toBeUndefined()
+    expect(body.audio_segment_type).toBeUndefined()
   })
 
   it('does not send audio params when filters are off', async () => {
