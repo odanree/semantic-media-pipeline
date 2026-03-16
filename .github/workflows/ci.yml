@@ -83,6 +83,11 @@ jobs:
           NEXT_PUBLIC_API_URL: http://localhost:8000
           NEXT_PUBLIC_STREAM_URL: http://localhost:8000
           MEDIA_SOURCE_PATH: /tmp/media
+          MEDIA_SOURCE_PATH_2: /tmp/media
+          MEDIA_SOURCE_PATH_3: /tmp/media
+          MEDIA_SOURCE_PATH_4: /tmp/media
+          MEDIA_SOURCE_PATH_5: /tmp/media
+          MEDIA_SOURCE_PATH_6: /tmp/media
           DATABASE_USER: lumen_user
           DATABASE_PASSWORD: secure_password_here
           DATABASE_NAME: lumen
