@@ -2,12 +2,14 @@
 Search endpoint - Vector similarity search in Qdrant
 """
 
+import hashlib
 import os
 import time
 from collections import defaultdict
 from typing import List, Optional
 
 import numpy as np
+import redis
 import torch
 from fastapi import APIRouter, HTTPException, Request
 from rate_limit import limiter, LIMIT_SEARCH, LIMIT_SEARCH_VEC
@@ -51,6 +53,50 @@ qdrant_client = QdrantClient(
     grpc_port=QDRANT_GRPC_PORT,
     prefer_grpc=QDRANT_PREFER_GRPC,
 )
+
+# ---------------------------------------------------------------------------
+# Query embedding cache (Redis)
+# ---------------------------------------------------------------------------
+_EMBED_CACHE_TTL = int(os.getenv("EMBED_CACHE_TTL", str(7 * 24 * 3600)))  # 7 days
+
+_redis_url = (
+    os.getenv("CELERY_BROKER_URL")
+    or os.getenv("REDIS_URL", "redis://lumen-redis:6379")
+)
+# Strip Celery DB suffix if present (e.g. redis://host:6379/0 → db 0 is fine)
+try:
+    _embed_cache: Optional[redis.Redis] = redis.Redis.from_url(_redis_url, decode_responses=False)
+    _embed_cache.ping()
+except Exception:
+    _embed_cache = None
+
+
+def _cache_key(query: str) -> str:
+    digest = hashlib.sha256(query.lower().strip().encode()).hexdigest()[:24]
+    return f"clip_emb:{digest}"
+
+
+def _get_query_embedding(query: str, model) -> list:
+    """Encode query with CLIP, using Redis cache to skip re-encoding repeated queries."""
+    if _embed_cache is not None:
+        key = _cache_key(query)
+        try:
+            cached = _embed_cache.get(key)
+            if cached is not None:
+                return np.frombuffer(cached, dtype=np.float32).tolist()
+        except Exception:
+            pass  # cache read failure → fall through to encode
+
+    embedding = model.encode(query, convert_to_tensor=False)
+    vec = embedding if isinstance(embedding, np.ndarray) else np.array(embedding, dtype=np.float32)
+
+    if _embed_cache is not None:
+        try:
+            _embed_cache.set(key, vec.astype(np.float32).tobytes(), ex=_EMBED_CACHE_TTL)
+        except Exception:
+            pass  # cache write failure is non-fatal
+
+    return vec.tolist()
 
 
 # Initialize CLIP embedder (lazy-loaded)
@@ -395,12 +441,8 @@ async def search_media(request: Request, body: SearchRequest):
             raw_frame_count = len(final_hits)
             scenes_collapsed = 0
         else:
-            # Embed the text query using CLIP
-            query_embedding = model.encode(body.query, convert_to_tensor=False)
-            if isinstance(query_embedding, np.ndarray):
-                query_vector = query_embedding.tolist()
-            else:
-                query_vector = query_embedding
+            # Embed the text query using CLIP (Redis-cached)
+            query_vector = _get_query_embedding(body.query, model)
 
             # When audio filters are active alongside a query, drop the threshold
             # so filter-matching frames aren't excluded by similarity alone.
