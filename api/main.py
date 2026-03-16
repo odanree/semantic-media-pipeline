@@ -72,6 +72,7 @@ app.add_middleware(
 # WebSocket routes (updates) are excluded from auth: APIKeyHeader uses HTTP Request
 # scope which is incompatible with WebSocket connections. WS routes are internal.
 app.include_router(health.router,   prefix="/api", tags=["health"],        dependencies=[Depends(require_api_key)])
+app.include_router(ingest.public_router, prefix="/api", tags=["ingest"])   # UUID-token auth, no API key
 app.include_router(ingest.router,   prefix="/api", tags=["ingest"],        dependencies=[Depends(require_api_key)])
 app.include_router(search.router,   prefix="/api", tags=["search"],        dependencies=[Depends(require_api_key)])
 app.include_router(ask.router,      prefix="/api", tags=["rag"],           dependencies=[Depends(require_api_key)])

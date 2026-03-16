@@ -36,9 +36,9 @@ jobs:
           echo "Changed files: $CHANGED"
 
           SERVICES=""
-          echo "$CHANGED" | grep -qE '^api/|^Dockerfile'  && SERVICES="$SERVICES api"
-          echo "$CHANGED" | grep -qE '^worker/'            && SERVICES="$SERVICES worker"
-          echo "$CHANGED" | grep -qE '^frontend/'          && SERVICES="$SERVICES frontend"
+          echo "$CHANGED" | grep -qE '^api/|^Dockerfile'    && SERVICES="$SERVICES api"
+          echo "$CHANGED" | grep -qE '^worker/'             && SERVICES="$SERVICES worker"
+          echo "$CHANGED" | grep -qE '^frontend/'           && SERVICES="$SERVICES frontend"
 
           if [ -n "$SERVICES" ]; then
             BUILD_CMD="docker compose build --no-cache $SERVICES"
@@ -68,6 +68,13 @@ jobs:
             git fetch origin main
             git checkout main
             git reset --hard origin/main
+
+            echo "=== Syncing Caddyfile ==="
+            if [ -f /opt/lumen/Caddyfile ]; then
+              cp /opt/lumen/Caddyfile /etc/caddy/Caddyfile
+              caddy reload --config /etc/caddy/Caddyfile 2>/dev/null || true
+              echo "Caddy reloaded ✓"
+            fi
 
             echo "=== Rebuilding changed services ==="
             ${{ steps.script.outputs.build_cmd }}

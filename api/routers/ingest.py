@@ -115,6 +115,9 @@ def _placeholder_video_stub() -> bytes:
     return b""
 
 router = APIRouter()
+# Public router — no API key required. Endpoints here use their own
+# access control (e.g. UUID tokens) and must be safe to call unauthenticated.
+public_router = APIRouter()
 
 # Initialize Celery client
 celery_app = Celery(
@@ -788,7 +791,7 @@ async def create_playlist(request: Request, body: PlaylistRequest):
     )
 
 
-@router.get("/playlist/serve/{token}/{filename}")
+@public_router.get("/playlist/serve/{token}/{filename}")
 async def serve_playlist_file(token: str, filename: str):
     """
     Serve the M3U8 manifest or .ts segment files for a generated playlist.
