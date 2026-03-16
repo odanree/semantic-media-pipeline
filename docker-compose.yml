@@ -136,7 +136,7 @@ services:
       - proxies_data:/mnt/proxies
       - /usr/lib/wsl/lib:/usr/lib/wsl/lib
       - ${MEDIA_SOURCE_PATH}:/mnt/source:ro
-      - ${MEDIA_SOURCE_PATH_6}:/mnt/i-media:ro
+      - ${MEDIA_SOURCE_PATH_6:-/tmp}:/mnt/i-media:ro
       - ${FRAME_CACHE_DIR:-/tmp/lumen_frame_cache}:/mnt/frame_cache
     depends_on:
       redis:
@@ -180,7 +180,7 @@ services:
       - media_data:/data/media
       - proxies_data:/mnt/proxies:ro
       - ${MEDIA_SOURCE_PATH}:/mnt/source:ro
-      - ${MEDIA_SOURCE_PATH_6}:/mnt/i-media:ro
+      - ${MEDIA_SOURCE_PATH_6:-/tmp}:/mnt/i-media:ro
       - ./api:/app
       - hf_cache:/root/.cache/huggingface
     depends_on:
@@ -219,7 +219,7 @@ services:
     volumes:
       - media_data:/data/media
       - ${MEDIA_SOURCE_PATH}:/mnt/source:ro
-      - ${MEDIA_SOURCE_PATH_6}:/mnt/i-media:ro
+      - ${MEDIA_SOURCE_PATH_6:-/tmp}:/mnt/i-media:ro
     depends_on:
       - api
     networks:
