@@ -10,7 +10,7 @@
 #   Grafana     127.0.0.1:3004  (lumen1: 3001, lumen2: 3003)
 #
 # Requires both lumen1 and lumen2 stacks to be up for all targets to resolve.
-# Prod (PROD_HOST_REDACTED) is scraped directly over the internet.
+# Prod is scraped directly over the internet (see prometheus.monitoring.yml).
 # ============================================================================
 
 name: lumen-monitoring
@@ -23,6 +23,7 @@ services:
       - "127.0.0.1:9092:9090"
     volumes:
       - ./prometheus.monitoring.yml:/etc/prometheus/prometheus.yml
+      - ./prometheus-sd:/etc/prometheus/sd:ro
       - prometheus_monitoring_data:/prometheus
     command:
       - '--config.file=/etc/prometheus/prometheus.yml'

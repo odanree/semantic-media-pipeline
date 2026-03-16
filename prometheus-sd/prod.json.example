@@ -1,0 +1,8 @@
+[
+  {
+    "targets": ["your-prod-host:8000"],
+    "labels": {
+      "environment": "prod"
+    }
+  }
+]
