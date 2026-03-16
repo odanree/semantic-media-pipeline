@@ -2,10 +2,10 @@
 **Internal Codename: Lumen**
 
 ![CI](https://github.com/odanree/semantic-media-pipeline/actions/workflows/ci.yml/badge.svg?branch=main)
-![Version](https://img.shields.io/badge/version-v2.2.0-blue)
-![Tests](https://img.shields.io/badge/tests-459%20passing-brightgreen)
+![Version](https://img.shields.io/badge/version-v2.3.0-blue)
+![Tests](https://img.shields.io/badge/tests-488%20passing-brightgreen)
 ![Backend Coverage](https://img.shields.io/badge/backend%20coverage-79%25-green)
-![Frontend Coverage](https://img.shields.io/badge/frontend%20coverage-79%25-green)
+![Frontend Coverage](https://img.shields.io/badge/frontend%20coverage-77%25-green)
 
 > See [CHANGELOG.md](CHANGELOG.md) for full release history.
 
@@ -208,28 +208,27 @@ pytest --cov=api --cov-report=term-missing -q
 
 | File | Tests | What it covers |
 |------|-------|----------------|
-| `test_health.py` | 10 | `/api/health`, `/` root, Qdrant degraded-graceful |
-| `test_search.py` | 20 | Input validation, response schema, result schema, parameter forwarding |
+| `test_health.py` | 12 | `/api/health`, `/` root, Qdrant degraded-graceful |
+| `test_search.py` | 50 | Input validation, response schema, audio/ANN filters, Redis embedding cache, reranker |
 | `test_search_vector.py` | 14 | `POST /search-vector` body/schema/params, CLIP load failure → 503 |
 | `test_stats.py` | 15 | `/stats/summary`, `/stats/collection`, topic tags fallback |
 | `test_stats_processing.py` | 21 | `/stats/processing`, session detection algorithm, `_compute_topic_tags` CLIP path |
-| `test_ingest.py` | 14 | `POST /ingest`, task status GET, Celery task dispatch |
+| `test_ingest.py` | 25 | `POST /ingest`, task status GET, Celery task dispatch, HLS playlist endpoint |
 | `test_ingest_media.py` | 13 | Stream/thumbnail placeholder safety, S3 redirect, access-denied, ffmpeg-absent |
-| `test_auth.py` | 7 | Auth disabled, correct/wrong/missing key, unconfigured 503 |
+| `test_auth.py` | 10 | Auth disabled, correct/wrong/missing key, unconfigured 503 |
 | `test_utils.py` | 11 | `get_env_bool/int/float` all branches |
 
-**Backend total: 335 tests, 79% coverage** (threshold: 77%)
+**Backend total: 347 tests, 79% coverage** (threshold: 77%)
 
 ### Frontend tests (vitest)
 
 | File | Tests | What it covers |
 |------|-------|----------------|
-| `ui.test.tsx` | 43 | SearchBar, ResultGrid, VideoPlayer, StatusPanel, SearchPage — rendering, filters, search payload |
-| `proxy-routes.test.ts` | 56 | All 8 Next.js API proxy routes — success, error, network failure paths |
+| `ui.test.tsx` | 54 | SearchBar, ResultGrid, VideoPlayer, StatusPanel, SearchPage — rendering, filters, audio toggles, search payload |
+| `proxy-routes.test.ts` | 69 | All Next.js API proxy routes — success, error, network failure, playlist endpoint paths |
 | `hooks.test.ts` | 18 | `useMediaUpdates`, `useStatusUpdates` — WebSocket lifecycle, reconnect logic |
-| `ui.test.tsx` (audio) | 7 | Audio toggle state, reset, `min_audio_energy` / `audio_has_speech` payload params |
 
-**Frontend total: 124 tests, 79% statements / 73.8% branches** (thresholds enforced in `vitest.config.ts`)
+**Frontend total: 141 tests, 77% statements / 73% branches** (thresholds enforced in `vitest.config.ts`)
 
 CI enforces `--cov-fail-under=77` (backend) and vitest coverage thresholds. The deploy workflow only fires when CI passes.
 
