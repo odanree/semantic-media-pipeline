@@ -76,15 +76,15 @@ jobs:
             docker compose up -d
 
             echo "=== Health check ==="
-            for i in $(seq 1 18); do
+            for i in $(seq 1 36); do
               if curl -sf http://localhost:8000/api/ping > /dev/null 2>&1; then
                 echo "API healthy ✓"
                 break
               fi
-              if [ "$i" -eq 18 ]; then
-                echo "Health check failed after 90s" && exit 1
+              if [ "$i" -eq 36 ]; then
+                echo "Health check failed after 180s" && exit 1
               fi
-              echo "Waiting for API... ($i/18)"
+              echo "Waiting for API... ($i/36)"
               sleep 5
             done
 
