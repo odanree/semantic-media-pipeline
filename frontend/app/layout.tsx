@@ -30,12 +30,12 @@ export default function RootLayout({
           <p className="mt-1">
             Created by{' '}
             <a
-              href="https://example.com"
+              href="https://danhle.net"
               target="_blank"
               rel="noopener noreferrer"
               className="text-gray-300 hover:text-white underline transition-colors"
             >
-              example.com
+              danhle.net
             </a>
           </p>
         </footer>
