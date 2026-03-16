@@ -1,0 +1,120 @@
+{
+  "title": "Lumen API Performance",
+  "uid": "lumen-api-perf",
+  "version": 2,
+  "schemaVersion": 38,
+  "refresh": "30s",
+  "time": { "from": "now-6h", "to": "now" },
+  "templating": {
+    "list": [
+      {
+        "name": "job",
+        "label": "Service",
+        "type": "query",
+        "datasource": { "uid": "lumen-prometheus" },
+        "query": "label_values(http_request_duration_seconds_count, job)",
+        "multi": true,
+        "includeAll": true,
+        "current": { "selected": true, "text": "All", "value": "$__all" },
+        "refresh": 2,
+        "sort": 1
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Request Rate (req/s)",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 0, "w": 12, "h": 8 },
+      "datasource": { "uid": "lumen-prometheus" },
+      "targets": [
+        {
+          "expr": "sum by (job, handler) (rate(http_request_duration_seconds_count{job=~\"$job\"}[2m]))",
+          "legendFormat": "{{job}} {{handler}}"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "reqps", "custom": { "lineWidth": 2 } } }
+    },
+    {
+      "id": 2,
+      "title": "P95 Latency by Endpoint (s)",
+      "type": "timeseries",
+      "gridPos": { "x": 12, "y": 0, "w": 12, "h": 8 },
+      "datasource": { "uid": "lumen-prometheus" },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum by (job, handler, le) (rate(http_request_duration_seconds_bucket{job=~\"$job\"}[5m])))",
+          "legendFormat": "{{job}} {{handler}}"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "s", "custom": { "lineWidth": 2 } } }
+    },
+    {
+      "id": 3,
+      "title": "P50 Latency by Endpoint (s)",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 8, "w": 12, "h": 8 },
+      "datasource": { "uid": "lumen-prometheus" },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum by (job, handler, le) (rate(http_request_duration_seconds_bucket{job=~\"$job\"}[5m])))",
+          "legendFormat": "{{job}} {{handler}}"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "s", "custom": { "lineWidth": 2 } } }
+    },
+    {
+      "id": 4,
+      "title": "Error Rate (4xx + 5xx req/s)",
+      "type": "timeseries",
+      "gridPos": { "x": 12, "y": 8, "w": 12, "h": 8 },
+      "datasource": { "uid": "lumen-prometheus" },
+      "targets": [
+        {
+          "expr": "sum by (job, handler) (rate(http_request_duration_seconds_count{job=~\"$job\", status_code=~\"4..|5..\"}[2m]))",
+          "legendFormat": "{{job}} {{handler}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "color": { "fixedColor": "red", "mode": "fixed" },
+          "custom": { "lineWidth": 2 }
+        }
+      }
+    },
+    {
+      "id": 5,
+      "title": "Playlist Generation Duration (s)",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 16, "w": 24, "h": 8 },
+      "datasource": { "uid": "lumen-prometheus" },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum by (job, le) (rate(http_request_duration_seconds_bucket{job=~\"$job\", handler=\"/api/playlist\"}[10m])))",
+          "legendFormat": "{{job}} p95"
+        },
+        {
+          "expr": "histogram_quantile(0.50, sum by (job, le) (rate(http_request_duration_seconds_bucket{job=~\"$job\", handler=\"/api/playlist\"}[10m])))",
+          "legendFormat": "{{job}} p50"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "s", "custom": { "lineWidth": 2 } } }
+    },
+    {
+      "id": 6,
+      "title": "Search Latency Comparison (p95)",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 24, "w": 24, "h": 8 },
+      "datasource": { "uid": "lumen-prometheus" },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum by (job, le) (rate(http_request_duration_seconds_bucket{job=~\"$job\", handler=\"/api/search\"}[5m])))",
+          "legendFormat": "{{job}} search p95"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "s", "custom": { "lineWidth": 2 } } }
+    }
+  ]
+}

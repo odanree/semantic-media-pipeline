@@ -10,8 +10,24 @@ scrape_configs:
 
   - job_name: 'lumen2-api'
     static_configs:
-      - targets: ['api2:8000']   # internal container port (host-mapped: 8001)
+      - targets: ['api2:8000']
+        labels:
+          environment: 'lumen2'
     metrics_path: '/metrics'
+
+  - job_name: 'lumen-api'
+    static_configs:
+      - targets: ['host.docker.internal:8000']   # lumen1 api on host
+        labels:
+          environment: 'lumen1'
+    metrics_path: '/metrics'
+
+  - job_name: 'lumen-prod'
+    static_configs:
+      - targets: ['65.108.243.192:8000']
+        labels:
+          environment: 'prod'
+    metrics_path: '/metrics/'
 
   - job_name: 'lumen2-flower'
     static_configs:
