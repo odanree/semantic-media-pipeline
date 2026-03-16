@@ -224,6 +224,7 @@ ALLOWED_ROOTS = [
     os.path.realpath("/mnt/source"),
     os.path.realpath("/mnt/proxies"),
     os.path.realpath("/data/media"),
+    os.path.realpath("/mnt/i-media"),
 ]
 
 
@@ -510,6 +511,9 @@ async def get_thumbnail(request: Request, path: str, t: float = 0.0):
 PLAYLIST_DIR = "/tmp/lumen_playlists"
 PLAYLIST_TTL_SECS = 3600
 _MAX_CONCURRENT_SEGMENTS = 4
+# Global semaphore — shared across ALL concurrent playlist requests so total
+# ffmpeg processes are capped regardless of how many reels are being compiled.
+_PLAYLIST_SEM = asyncio.Semaphore(_MAX_CONCURRENT_SEGMENTS)
 
 
 class ClipSpec(BaseModel):
@@ -532,75 +536,138 @@ class PlaylistResponse(BaseModel):
     expires_at: str
 
 
-async def _extract_segment(resolved_path: str, start_sec: float, duration: float, out_path: str) -> bool:
+async def _probe_video_codec(path: str) -> str:
+    """Return the video codec name ('h264', 'hevc', 'av1', …) or '' on failure.
+
+    -probesize 10M limits reads to the first 10 MB of the file so ffprobe
+    returns immediately from the container header instead of seeking to the
+    moov atom at the end of large non-faststart DJI files on slow 9P mounts.
     """
-    Extract a single .ts segment from a video file using ffmpeg.
-    Tries stream-copy first (fast, lossless). On failure retries with
-    NVENC (h264_nvenc) then CPU (libx264) with -vsync cfr -r 30 to lock
-    frame rate across mixed-fps sources (DJI 30fps vs Pixel 9 60fps).
-    Returns True on success.
-    """
-    # --- Pass 1: stream-copy (fast, no quality loss) ---
-    cmd_copy = [
-        "ffmpeg", "-y",
-        "-ss", str(start_sec), "-t", str(duration),
-        "-i", resolved_path,
-        "-c", "copy",
-        "-avoid_negative_ts", "make_zero",
-        "-f", "mpegts",
-        out_path,
+    cmd = [
+        "ffprobe", "-v", "quiet",
+        "-probesize", "10M",
+        "-analyzeduration", "0",
+        "-select_streams", "v:0",
+        "-show_entries", "stream=codec_name",
+        "-of", "default=noprint_wrappers=1:nokey=1",
+        path,
     ]
     try:
         proc = await asyncio.create_subprocess_exec(
-            *cmd_copy,
+            *cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        _, stderr = await asyncio.wait_for(proc.communicate(), timeout=60)
-        if proc.returncode == 0:
-            return True
-        log.warning("[Playlist] stream-copy failed for %s: %s", resolved_path,
-                    stderr[-300:].decode(errors="replace"))
-    except asyncio.TimeoutError:
-        log.warning("[Playlist] stream-copy timed out for %s", resolved_path)
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=15)
+        return stdout.decode().strip().lower()
     except Exception as e:
-        log.warning("[Playlist] stream-copy exec error for %s: %s", resolved_path, e)
+        log.warning("[Playlist] ffprobe failed for %s: %s", path, e)
+        return ""
 
-    # --- Pass 2: re-encode — NVENC (GPU) then libx264 (CPU) ---
-    encode_attempts = [
-        # (codec, extra_flags_before_input)
-        ("h264_nvenc", ["-hwaccel", "cuda"]),
-        ("libx264",    []),
-    ]
-    for codec, pre_input in encode_attempts:
-        cmd_enc = [
+
+async def _extract_segment(resolved_path: str, start_sec: float, duration: float, out_path: str) -> bool:
+    """
+    Extract a single .ts segment from a video file using ffmpeg.
+
+    Pass 1 — stream-copy (fast, lossless):
+      Probes the codec first so we apply the correct MP4→Annex B bitstream
+      filter for the container format:
+        h264 → -bsf:v h264_mp4toannexb
+        hevc → -bsf:v hevc_mp4toannexb
+        other (av1, vp9…) → no bsf (direct remux)
+      -map 0:v:0 -map 0:a:0? prevents track_id mismatches when mixing
+      multi-track DJI files with single-track Pixel 9 files.
+
+    Pass 2 — libx264 re-encode (CPU fallback):
+      Used when stream-copy fails (codec incompatible with TS mux, or
+      mismatched profiles across clips). -vsync cfr -r 30 locks frame
+      rate across mixed DJI (30fps) / Pixel 9 (60fps) sources to prevent
+      black flicker between segments.
+      Note: NVENC is intentionally omitted — the API container has no GPU.
+    """
+    # Codec-specific MP4→Annex B bitstream filter required for MPEG-TS muxing
+    _BSF_MAP = {"h264": "h264_mp4toannexb", "hevc": "hevc_mp4toannexb"}
+
+    codec = await _probe_video_codec(resolved_path)
+
+    if not codec:
+        # ffprobe couldn't read codec within probesize limit — moov atom is
+        # likely at the end of a large non-faststart file on a slow 9P mount.
+        # Both stream-copy and re-encode would hang waiting for moov; skip.
+        log.warning("[Playlist] skipping %s — codec probe failed (non-faststart/slow mount)", resolved_path)
+        return False
+
+    # Only H264 can be stream-copied into MPEG-TS and decoded by Chrome/Edge via
+    # MSE. HEVC stream-copy produces valid .ts but browsers display black video
+    # (audio only) without hardware HEVC decoder. Go straight to re-encode for
+    # any non-H264 codec.
+    if codec == "h264":
+        bsf = _BSF_MAP["h264"]
+        cmd_copy = [
             "ffmpeg", "-y",
-            *pre_input,
             "-ss", str(start_sec), "-t", str(duration),
             "-i", resolved_path,
-            "-c:v", codec,
-            *([ "-preset", "p1", "-tune", "hq"] if codec == "h264_nvenc" else ["-preset", "veryfast", "-crf", "23"]),
-            "-vsync", "cfr", "-r", "30",
-            "-c:a", "aac", "-b:a", "128k",
+            "-map", "0:v:0",
+            "-map", "0:a:0?",
+            "-c", "copy",
+            "-bsf:v", bsf,
+            "-avoid_negative_ts", "make_zero",
+            "-muxdelay", "0",
             "-f", "mpegts",
             out_path,
         ]
         try:
             proc = await asyncio.create_subprocess_exec(
-                *cmd_enc,
+                *cmd_copy,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
-            _, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
+            _, stderr = await asyncio.wait_for(proc.communicate(), timeout=90)
             if proc.returncode == 0:
-                log.info("[Playlist] re-encoded with %s for %s", codec, resolved_path)
                 return True
-            log.warning("[Playlist] %s failed for %s: %s", codec, resolved_path,
-                        stderr[-200:].decode(errors="replace"))
+            log.warning("[Playlist] stream-copy failed for %s: %s",
+                        resolved_path, stderr[-300:].decode(errors="replace"))
         except asyncio.TimeoutError:
-            log.warning("[Playlist] %s timed out for %s", codec, resolved_path)
+            log.warning("[Playlist] stream-copy timed out for %s", resolved_path)
         except Exception as e:
-            log.warning("[Playlist] %s exec error for %s: %s", codec, resolved_path, e)
+            log.warning("[Playlist] stream-copy exec error for %s: %s", resolved_path, e)
+    else:
+        log.info("[Playlist] skipping stream-copy for %s (codec=%s, re-encoding to H264)", resolved_path, codec)
+
+    # --- Pass 2: libx264 re-encode (CPU only — API has no GPU) ---
+    # -pix_fmt yuv420p: force 8-bit 4:2:0 — required for browser MSE compat
+    # when source is 10-bit HEVC (Pixel 9) or other high-bit-depth formats.
+    cmd_enc = [
+        "ffmpeg", "-y",
+        "-ss", str(start_sec), "-t", str(duration),
+        "-i", resolved_path,
+        "-map", "0:v:0",
+        "-map", "0:a:0?",
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
+        "-pix_fmt", "yuv420p",
+        "-fps_mode", "cfr", "-r", "30",
+        "-c:a", "aac", "-b:a", "128k",
+        "-avoid_negative_ts", "make_zero",
+        "-muxdelay", "0",
+        "-f", "mpegts",
+        out_path,
+    ]
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd_enc,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        _, stderr = await asyncio.wait_for(proc.communicate(), timeout=90)
+        if proc.returncode == 0:
+            log.info("[Playlist] re-encoded with libx264 for %s", resolved_path)
+            return True
+        log.warning("[Playlist] libx264 failed for %s: %s", resolved_path,
+                    stderr[-200:].decode(errors="replace"))
+    except asyncio.TimeoutError:
+        log.warning("[Playlist] libx264 timed out for %s", resolved_path)
+    except Exception as e:
+        log.warning("[Playlist] libx264 exec error for %s: %s", resolved_path, e)
 
     return False
 
@@ -651,8 +718,9 @@ async def create_playlist(request: Request, body: PlaylistRequest):
         shutil.rmtree(token_dir, ignore_errors=True)
         raise HTTPException(status_code=400, detail="No accessible clip files found")
 
-    # Extract segments with bounded concurrency
-    sem = asyncio.Semaphore(_MAX_CONCURRENT_SEGMENTS)
+    # Extract segments — use global semaphore to cap total ffmpeg processes
+    # across all concurrent playlist requests (not just this one)
+    sem = _PLAYLIST_SEM
 
     async def extract_one(idx: int, resolved: str, clip: ClipSpec):
         duration = max(0.1, clip.end_sec - clip.start_sec)
@@ -681,9 +749,13 @@ async def create_playlist(request: Request, body: PlaylistRequest):
         "#EXT-X-MEDIA-SEQUENCE:0",
         "#EXT-X-PLAYLIST-TYPE:VOD",
     ]
-    for idx, dur in successful:
+    for i, (idx, dur) in enumerate(successful):
         clip = resolved_clips[idx][1]
         label = clip.file_path.split("/")[-1]
+        # Every clip comes from a different file/position so timestamps reset.
+        # EXT-X-DISCONTINUITY tells HLS.js not to expect contiguous DTS.
+        if i > 0:
+            lines.append("#EXT-X-DISCONTINUITY")
         lines.append(f"#EXTINF:{dur:.6f},{label} @ {clip.start_sec:.1f}s")
         lines.append(f"/api/playlist/serve/{token}/seg_{idx:03d}.ts")
     lines.append("#EXT-X-ENDLIST")

@@ -3,9 +3,10 @@
 import Image from 'next/image'
 import VideoPlayer from './VideoPlayer'
 import HighlightReelPlayer from './HighlightReelPlayer'
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useMemo } from 'react'
 
 interface SearchResult {
+  id: string
   file_path: string
   file_type: string
   similarity: number
@@ -13,6 +14,7 @@ interface SearchResult {
   timestamp?: number
   audio_segment_start_sec?: number | null
   audio_segment_end_sec?: number | null
+  audio_rms_energy?: number | null
 }
 
 interface ReelState {
@@ -26,6 +28,7 @@ interface ResultGridProps {
 }
 
 type ViewMode = 'grid' | 'list'
+type SortKey = 'similarity_desc' | 'similarity_asc' | 'rms_desc' | 'rms_asc'
 
 // Stream directly from FastAPI - bypasses Next.js proxy, no Node.js buffering
 const STREAM_BASE = process.env.NEXT_PUBLIC_STREAM_URL || 'http://localhost:8000'
@@ -35,35 +38,53 @@ export default function ResultGrid({ results }: ResultGridProps) {
   const [selectedImage, setSelectedImage] = useState<SearchResult | null>(null)
   const [currentPage, setCurrentPage] = useState(1)
   const [viewMode, setViewMode] = useState<ViewMode>('grid')
+  const [sortKey, setSortKey] = useState<SortKey>('similarity_desc')
   const [reel, setReel] = useState<ReelState | null>(null)
+  const [reelOpen, setReelOpen] = useState(false)
   const [reelLoading, setReelLoading] = useState(false)
   const [reelError, setReelError] = useState<string | null>(null)
   const itemsPerPage = 20
-  const totalPages = Math.ceil(results.length / itemsPerPage)
+
+  const sortedResults = useMemo(() => [...results].sort((a, b) => {
+    switch (sortKey) {
+      case 'similarity_asc': return a.similarity - b.similarity
+      // ↑ = highest first, ↓ = lowest first
+      case 'rms_desc': return (b.audio_rms_energy ?? -1) - (a.audio_rms_energy ?? -1)
+      case 'rms_asc':  return (a.audio_rms_energy ?? Infinity) - (b.audio_rms_energy ?? Infinity)
+      default: return b.similarity - a.similarity
+    }
+  }), [results, sortKey])
+
+  const totalPages = Math.ceil(sortedResults.length / itemsPerPage)
 
   // Calculate pagination
   const startIndex = (currentPage - 1) * itemsPerPage
   const endIndex = startIndex + itemsPerPage
-  const currentResults = results.slice(startIndex, endIndex)
+  const currentResults = sortedResults.slice(startIndex, endIndex)
 
-  // Reset to page 1 when results change
+  // Reset to page 1 when results change; clear stale reel
   useEffect(() => {
     setCurrentPage(1)
+    setSortKey('similarity_desc')
     setReel(null)
+    setReelOpen(false)
     setReelError(null)
   }, [results])
 
-  const videoResults = results.filter((r) => r.file_type === 'video')
+  const currentVideoResults = currentResults.filter((r) => r.file_type === 'video')
 
   async function playHighlightReel() {
-    if (videoResults.length === 0) return
+    if (currentVideoResults.length === 0) return
+    // Reopen cached reel without recompiling
+    if (reel) {
+      setReelOpen(true)
+      return
+    }
     setReelLoading(true)
     setReelError(null)
-    const CLIP_PADDING = 3 // seconds — fallback when audio boundaries unavailable
-    const clips = videoResults.map((r) => ({
+    const clips = currentVideoResults.map((r) => ({
       file_path: r.file_path,
-      start_sec: r.audio_segment_start_sec ?? Math.max(0, (r.timestamp ?? 0) - CLIP_PADDING),
-      end_sec: r.audio_segment_end_sec ?? ((r.timestamp ?? 0) + CLIP_PADDING),
+      ...clipBounds(r),
     }))
     try {
       const res = await fetch('/api/playlist', {
@@ -83,6 +104,7 @@ export default function ResultGrid({ results }: ResultGridProps) {
         clipCount: data.clip_count,
         totalDurationSec: data.total_duration_sec,
       })
+      setReelOpen(true)
     } catch (e) {
       setReelError('Network error — could not generate reel')
     } finally {
@@ -111,19 +133,30 @@ export default function ResultGrid({ results }: ResultGridProps) {
       {/* View Mode Toggle + Pagination Info */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-6">
         <div className="text-sm text-gray-400">
-          Showing {startIndex + 1}-{Math.min(endIndex, results.length)} of {results.length} results
+          Showing {startIndex + 1}-{Math.min(endIndex, sortedResults.length)} of {sortedResults.length} results
           {totalPages > 1 && ` • Page ${currentPage} of ${totalPages}`}
         </div>
 
-        <div className="flex gap-2 flex-wrap">
-          {videoResults.length > 0 && (
+        <div className="flex gap-2 flex-wrap items-center">
+          <select
+            value={sortKey}
+            onChange={(e) => { setSortKey(e.target.value as SortKey); setCurrentPage(1) }}
+            className="px-2 py-2 rounded text-sm bg-gray-700 text-gray-300 border border-gray-600 hover:border-gray-500 focus:outline-none cursor-pointer"
+            aria-label="Sort results"
+          >
+            <option value="similarity_desc">Similarity ↑</option>
+            <option value="similarity_asc">Similarity ↓</option>
+            <option value="rms_desc">Energy ↑</option>
+            <option value="rms_asc">Energy ↓</option>
+          </select>
+          {currentVideoResults.length > 0 && (
             <button
               onClick={playHighlightReel}
               disabled={reelLoading}
               className="px-3 py-2 rounded text-sm font-semibold transition bg-purple-700 hover:bg-purple-600 disabled:opacity-50 disabled:cursor-wait text-white"
               aria-label="Play highlight reel of all video results"
             >
-              {reelLoading ? '⏳ Compiling…' : `▶ Reel (${videoResults.length})`}
+              {reelLoading ? '⏳ Compiling…' : `▶ Reel (${currentVideoResults.length})`}
             </button>
           )}
           <button
@@ -166,7 +199,7 @@ export default function ResultGrid({ results }: ResultGridProps) {
       >
         {currentResults.map((result) => (
           <ResultItem
-            key={`${result.file_path}-${result.frame_index || 0}`}
+            key={result.id}
             result={result}
             viewMode={viewMode}
             onSelect={() => {
@@ -236,12 +269,12 @@ export default function ResultGrid({ results }: ResultGridProps) {
         </div>
       )}
 
-      {reel && (
+      {reel && reelOpen && (
         <HighlightReelPlayer
           playlistUrl={reel.playlistUrl}
           clipCount={reel.clipCount}
           totalDurationSec={reel.totalDurationSec}
-          onClose={() => setReel(null)}
+          onClose={() => setReelOpen(false)}
         />
       )}
 
@@ -287,6 +320,30 @@ export default function ResultGrid({ results }: ResultGridProps) {
 }
 
 // Lazy-loaded result item component
+const CLIP_PADDING = 3
+
+function clipBounds(r: SearchResult): { start_sec: number; end_sec: number } {
+  const ts = r.timestamp ?? 0
+  // Only use audio segment if it actually contains the matched timestamp.
+  // The nearest VAD segment can be thousands of seconds away from the visual match.
+  const contained =
+    r.audio_segment_start_sec != null &&
+    r.audio_segment_end_sec != null &&
+    r.audio_segment_start_sec <= ts &&
+    ts <= r.audio_segment_end_sec
+  return contained
+    ? { start_sec: r.audio_segment_start_sec!, end_sec: r.audio_segment_end_sec! }
+    : { start_sec: Math.max(0, ts - CLIP_PADDING), end_sec: ts + CLIP_PADDING }
+}
+
+function segmentDuration(result: SearchResult): string | null {
+  if (result.file_type !== 'video') return null
+  const { start_sec, end_sec } = clipBounds(result)
+  const secs = Math.round(end_sec - start_sec)
+  if (secs < 60) return `${secs}s clip`
+  return `${Math.floor(secs / 60)}m ${secs % 60}s clip`
+}
+
 function ResultItem({
   result,
   viewMode,
@@ -375,11 +432,36 @@ function ResultItem({
           <p className="text-xs text-gray-400 truncate">{result.file_path.split('/').pop()}</p>
           <p className="text-xs text-gray-500 mt-1">
             {result.file_type === 'video' && result.frame_index !== undefined
-              ? `Frame ${result.frame_index} @ ${(result.timestamp || 0).toFixed(1)}s`
+              ? `Frame ${result.frame_index} @ ${(result.timestamp || 0).toFixed(1)}s${segmentDuration(result) ? ` · ${segmentDuration(result)}` : ''}`
               : result.file_type === 'video'
               ? 'Video'
               : 'Image'}
           </p>
+          {result.file_type === 'video' && (() => {
+            const bounds = clipBounds(result)
+            const aligned = result.audio_segment_start_sec != null && bounds.start_sec === result.audio_segment_start_sec
+            return (
+              <p className={`text-xs mt-0.5 ${aligned ? 'text-blue-400' : 'text-yellow-500'}`}>
+                reel: {bounds.start_sec.toFixed(1)}s – {bounds.end_sec.toFixed(1)}s
+                {result.audio_segment_start_sec != null && !aligned && (
+                  <span className="text-gray-600 ml-1">(seg {result.audio_segment_start_sec.toFixed(1)}–{result.audio_segment_end_sec!.toFixed(1)})</span>
+                )}
+              </p>
+            )
+          })()}
+          {result.audio_rms_energy != null && (
+            <div className="mt-1.5 flex items-center gap-1.5">
+              <div className="flex-1 h-1 bg-gray-700 rounded-full overflow-hidden">
+                <div
+                  className="h-full bg-green-500 rounded-full"
+                  style={{ width: `${Math.min(100, result.audio_rms_energy * 1000)}%` }}
+                />
+              </div>
+              <span className="text-xs text-gray-500 shrink-0">
+                {result.audio_rms_energy < 0.01 ? 'quiet' : result.audio_rms_energy < 0.04 ? 'low' : result.audio_rms_energy < 0.08 ? 'mid' : 'loud'}
+              </span>
+            </div>
+          )}
         </div>
       </div>
     )
@@ -440,10 +522,10 @@ function ResultItem({
           <p className="text-sm text-gray-400 mt-1">{result.file_type.toUpperCase()}</p>
           <p className="text-xs text-gray-500 mt-1">
             {result.file_type === 'video' && result.frame_index !== undefined
-              ? `Frame ${result.frame_index} @ ${(result.timestamp || 0).toFixed(1)}s`
+              ? `Frame ${result.frame_index} @ ${(result.timestamp || 0).toFixed(1)}s${segmentDuration(result) ? ` · ${segmentDuration(result)}` : ''}`
               : result.file_type === 'video'
-              ? 'Full video'
-              : 'Full image'}
+              ? 'Video'
+              : 'Image'}
           </p>
           <div className="mt-2 flex items-center gap-2">
             <div className="flex-1 h-1.5 bg-gray-700 rounded-full overflow-hidden">
@@ -456,6 +538,20 @@ function ResultItem({
               {(result.similarity * 100).toFixed(1)}% match
             </span>
           </div>
+          {result.audio_rms_energy != null && (
+            <div className="mt-1 flex items-center gap-2">
+              <div className="flex-1 h-1 bg-gray-700 rounded-full overflow-hidden">
+                <div
+                  className="h-full bg-green-500 rounded-full"
+                  style={{ width: `${Math.min(100, result.audio_rms_energy * 1000)}%` }}
+                />
+              </div>
+              <span className="text-xs text-gray-500 whitespace-nowrap">
+                {result.audio_rms_energy < 0.01 ? 'quiet' : result.audio_rms_energy < 0.04 ? 'low' : result.audio_rms_energy < 0.08 ? 'mid' : 'loud'} energy
+              </span>
+            </div>
+          )}
+
         </div>
 
         {/* Action Indicator */}

@@ -17,7 +17,7 @@ scrape_configs:
 
   - job_name: 'lumen-api'
     static_configs:
-      - targets: ['host.docker.internal:8000']   # lumen1 api on host
+      - targets: ['api:8000']   # lumen1 api via shared lumen1-net
         labels:
           environment: 'lumen1'
     metrics_path: '/metrics'

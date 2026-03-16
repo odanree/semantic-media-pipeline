@@ -473,6 +473,7 @@ async def search_media(request: Request, body: SearchRequest):
                 # Clip boundary fields — None for legacy media ingested before audio analysis
                 "audio_segment_start_sec": payload.get("audio_segment_start_sec"),
                 "audio_segment_end_sec": payload.get("audio_segment_end_sec"),
+                "audio_rms_energy": payload.get("audio_rms_energy"),
             })
 
         execution_time_ms = (time.time() - start_time) * 1000
