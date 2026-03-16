@@ -701,17 +701,29 @@ async def create_playlist(request: Request, body: PlaylistRequest):
     resolved_clips: list[tuple[str, ClipSpec]] = []
     for clip in body.clips:
         resolved = os.path.realpath(_translate_path(clip.file_path))
+        is_url = False
         if not any(resolved.startswith(root) for root in ALLOWED_ROOTS):
-            log.warning("[Playlist] access denied: %s", clip.file_path)
-            continue
-        if proxy_root and resolved.startswith(_SOURCE_ROOT + os.sep):
-            rel = resolved[len(_SOURCE_ROOT) + 1:]
-            proxy_candidate = os.path.join(proxy_root, rel)
-            if os.path.isfile(proxy_candidate):
-                resolved = proxy_candidate
-        if not os.path.isfile(resolved):
-            log.warning("[Playlist] file not found: %s (resolved: %s)", clip.file_path, resolved)
-            continue
+            # S3/R2-backed files are stored as bare object keys (no leading /).
+            # Generate a presigned URL so ffmpeg can stream directly from R2.
+            if IS_S3 and not clip.file_path.startswith("/"):
+                try:
+                    resolved = _s3_presign(clip.file_path, expires=1800)
+                    is_url = True
+                except Exception as e:
+                    log.warning("[Playlist] S3 presign failed for %s: %s", clip.file_path, e)
+                    continue
+            else:
+                log.warning("[Playlist] access denied: %s", clip.file_path)
+                continue
+        if not is_url:
+            if proxy_root and resolved.startswith(_SOURCE_ROOT + os.sep):
+                rel = resolved[len(_SOURCE_ROOT) + 1:]
+                proxy_candidate = os.path.join(proxy_root, rel)
+                if os.path.isfile(proxy_candidate):
+                    resolved = proxy_candidate
+            if not os.path.isfile(resolved):
+                log.warning("[Playlist] file not found: %s (resolved: %s)", clip.file_path, resolved)
+                continue
         resolved_clips.append((resolved, clip))
 
     if not resolved_clips:
