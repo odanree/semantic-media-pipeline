@@ -6,6 +6,37 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/). Version
 
 ---
 
+## [v2.3.0] — 2026-03-16
+
+### Added
+- **HLS highlight reel** — `POST /api/playlist` compiles search results into a VOD HLS playlist; ffprobe-routed extraction (stream-copy for H264@30fps, libx264 re-encode otherwise) with `EXT-X-DISCONTINUITY` between clips; `HighlightReelPlayer.tsx` modal with hls.js for Chromium and native HLS for Safari
+- **Standalone monitoring stack** — `docker-compose.monitoring.yml` with Prometheus + Grafana independent of app stacks; scrapes lumen1, lumen2, and prod; Grafana dashboards provisioned for request rate, P50/P95 latency, error rate, and playlist generation duration
+- **Windows-native worker** — GPU-accelerated Celery worker running natively on Windows (no WSL); supports `cuda:N` device selection for Whisper + AST inference, DirectML for CLIP
+- **Agentic audio search** — LangGraph-based audio analysis agent; classifies intent and routes to Whisper transcription + AST audio event classification
+- **Audio segment type / event filters** — `audio_segment_type` (speech, music, ambient, event, silence) and `audio_event_top` (AudioSet label) filter params added to `POST /api/search` and exposed in the frontend filter UI
+- **2-pass ANN + exact cosine re-ranker** — Qdrant returns `limit × RERANKER_OVERSAMPLE` candidates (default 5×); exact cosine re-rank via numpy matmul on the API server before trimming to `limit` (#69)
+- **Redis CLIP query embedding cache** — repeated search queries skip ViT-L/14 CPU encode (~800ms → <5ms on cache hit); 7-day TTL, keyed on `sha256(query.lower().strip())` (#74)
+- **Multi-stack backfill** — `scripts/backfill_audio.py` supports `--stack` flag for lumen, lumen2, prod, and prod-internal targets (#67)
+
+### Fixed
+- **Qdrant ports bound to localhost** — changed `0.0.0.0:6333` → `127.0.0.1:6333` on lumen1 and lumen2; Qdrant had no auth configured (#72)
+- **Qdrant healthcheck endpoint** — corrected Docker healthcheck from `/` (404) to `/healthz`
+- **Prod deploy `MEDIA_SOURCE_PATH_6` not set** — defaulted to `/tmp` when unset to prevent invalid volume spec error (#71)
+- **Deploy health check timeout** — increased from 90s → 180s to accommodate CLIP model load on container recreate (#73)
+- **Prod IP removed from git history** — scrubbed `65.108.243.192` from all committed files and rewrote repo history via `git filter-repo`; prod target now uses gitignored `prometheus-sd/prod.json` via `file_sd_configs`
+
+### Performance
+- ViT-L/14 search latency on repeated queries reduced from ~896ms → <10ms with Redis embedding cache
+- HLS segment extraction reduced from 3 ffmpeg attempts (copy→NVENC→libx264) to 1–2 (ffprobe→direct route)
+- Global playlist semaphore (`_PLAYLIST_SEM`) caps concurrent ffmpeg processes across all requests
+
+### Changed
+- Monitoring stack decoupled from app stacks; Prometheus joins lumen1/lumen2 Docker networks as external networks
+- Deploy pipeline no longer auto-triggers ingest on startup (ingest triggered manually per environment)
+- `_MAX_CONCURRENT_SEGMENTS` scales with `os.cpu_count()` (min 4)
+
+---
+
 ## [v2.2.0] — 2026-03-12
 
 ### Added
@@ -164,6 +195,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/). Version
 - **Docker Compose orchestration** — `api`, `worker`, `frontend` containers with shared Redis/PostgreSQL/Qdrant
 - Validated against 2,271+ media items
 
+[v2.3.0]: https://github.com/odanree/semantic-media-pipeline/releases/tag/v2.3.0
+[v2.2.0]: https://github.com/odanree/semantic-media-pipeline/releases/tag/v2.2.0
+[v2.1.0]: https://github.com/odanree/semantic-media-pipeline/releases/tag/v2.1.0
+[v2.0.0]: https://github.com/odanree/semantic-media-pipeline/releases/tag/v2.0.0
+[v1.7.2]: https://github.com/odanree/semantic-media-pipeline/releases/tag/v1.7.2
+[v1.7.1]: https://github.com/odanree/semantic-media-pipeline/releases/tag/v1.7.1
+[v1.7.0]: https://github.com/odanree/semantic-media-pipeline/releases/tag/v1.7.0
 [v1.6.0]: https://github.com/odanree/semantic-media-pipeline/releases/tag/v1.6.0
 [v1.5.0]: https://github.com/odanree/semantic-media-pipeline/releases/tag/v1.5.0
 [v1.1.0]: https://github.com/odanree/semantic-media-pipeline/releases/tag/v1.1.0
