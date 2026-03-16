@@ -747,3 +747,42 @@ describe('POST /api/playlist', () => {
     expect(res.status).toBe(400)
   })
 })
+
+// app/api/playlist/serve/[...path]/route.ts
+// ---------------------------------------------------------------------------
+
+describe('GET /api/playlist/serve/[...path]', () => {
+  it('proxies .m3u8 manifest with correct content-type', async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(mockResponse('', 200, { 'content-type': 'application/vnd.apple.mpegurl' }))
+    const { GET } = await import('../playlist/serve/[...path]/route')
+    const req = new NextRequest('http://localhost/api/playlist/serve/abc/playlist.m3u8')
+    const res = await GET(req, { params: Promise.resolve({ path: ['abc', 'playlist.m3u8'] }) })
+    expect(res.status).toBe(200)
+    expect(res.headers.get('content-type')).toContain('application/vnd.apple.mpegurl')
+  })
+
+  it('proxies .ts segment with correct content-type', async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(mockResponse('', 200, {}))
+    const { GET } = await import('../playlist/serve/[...path]/route')
+    const req = new NextRequest('http://localhost/api/playlist/serve/abc/seg_000.ts')
+    const res = await GET(req, { params: Promise.resolve({ path: ['abc', 'seg_000.ts'] }) })
+    expect(res.status).toBe(200)
+    expect(res.headers.get('content-type')).toBe('video/mp2t')
+  })
+
+  it('forwards upstream 404 when segment not found', async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(mockResponse('', 404, {}))
+    const { GET } = await import('../playlist/serve/[...path]/route')
+    const req = new NextRequest('http://localhost/api/playlist/serve/abc/seg_000.ts')
+    const res = await GET(req, { params: Promise.resolve({ path: ['abc', 'seg_000.ts'] }) })
+    expect(res.status).toBe(404)
+  })
+
+  it('returns 500 on fetch error', async () => {
+    vi.mocked(fetch).mockRejectedValueOnce(new Error('network error'))
+    const { GET } = await import('../playlist/serve/[...path]/route')
+    const req = new NextRequest('http://localhost/api/playlist/serve/abc/playlist.m3u8')
+    const res = await GET(req, { params: Promise.resolve({ path: ['abc', 'playlist.m3u8'] }) })
+    expect(res.status).toBe(500)
+  })
+})
