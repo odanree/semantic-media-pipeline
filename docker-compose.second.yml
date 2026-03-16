@@ -67,8 +67,8 @@ services:
     image: qdrant/qdrant:v1.17.0
     container_name: lumen2-qdrant
     ports:
-      - "6340:6333"
-      - "6341:6334"
+      - "127.0.0.1:6340:6333"
+      - "127.0.0.1:6341:6334"
     volumes:
       - qdrant2_data:/qdrant/storage
     environment:
