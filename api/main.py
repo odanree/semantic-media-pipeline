@@ -33,7 +33,7 @@ from rate_limit import limiter, LIMIT_DEFAULT
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
-from prometheus_client import make_asgi_app as _make_metrics_app
+from prometheus_fastapi_instrumentator import Instrumentator
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -82,8 +82,11 @@ app.include_router(agent_router.router, prefix="/api", tags=["agents"],    depen
 app.include_router(detect_router.router, prefix="/api", tags=["vision"],   dependencies=[Depends(require_api_key)])
 
 
-# Mount Prometheus scrape endpoint — unauthenticated, internal-only
-app.mount("/metrics", _make_metrics_app())
+# Instrument all HTTP routes and expose /metrics for Prometheus scraping
+Instrumentator(
+    should_group_status_codes=False,
+    excluded_handlers=["/metrics", "/api/ping", "/api/health"],
+).instrument(app).expose(app, endpoint="/metrics", include_in_schema=False)
 
 
 @app.get("/api/ping", tags=["health"], include_in_schema=False)
@@ -101,6 +104,15 @@ async def ping() -> dict:
 async def startup_event():
     """Initialize on startup"""
     print("Lumen API starting up...")
+
+    # Clear any leftover playlist segments from previous runs.
+    # call_later() cleanup doesn't survive restarts, so sweep on boot.
+    import shutil
+    playlist_dir = "/tmp/lumen_playlists"
+    if os.path.isdir(playlist_dir):
+        shutil.rmtree(playlist_dir, ignore_errors=True)
+        print(f"[Playlist] Cleared stale segments from {playlist_dir}")
+    os.makedirs(playlist_dir, exist_ok=True)
 
     # Fail fast: DATABASE_URL is non-negotiable
     if not os.getenv("DATABASE_URL"):

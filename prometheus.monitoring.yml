@@ -1,0 +1,46 @@
+# Prometheus config — standalone monitoring stack
+# Scrapes all three Lumen environments: lumen1, lumen2, prod
+# prometheus-monitoring container is attached to both lumen1-net and lumen2-net
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+  - job_name: 'lumen1-api'
+    static_configs:
+      - targets: ['api:8000']
+        labels:
+          environment: 'lumen1'
+    metrics_path: '/metrics'
+
+  - job_name: 'lumen2-api'
+    static_configs:
+      - targets: ['api2:8000']
+        labels:
+          environment: 'lumen2'
+    metrics_path: '/metrics'
+
+  - job_name: 'lumen-prod'
+    # Target loaded from prometheus-sd/prod.json (gitignored — set your prod host there)
+    file_sd_configs:
+      - files: ['/etc/prometheus/sd/prod.json']
+        refresh_interval: 5m
+    metrics_path: '/metrics/'
+
+  - job_name: 'lumen1-flower'
+    static_configs:
+      - targets: ['lumen-flower:5555']
+        labels:
+          environment: 'lumen1'
+    metrics_path: '/metrics'
+
+  - job_name: 'lumen2-flower'
+    static_configs:
+      - targets: ['lumen2-flower:5555']
+        labels:
+          environment: 'lumen2'
+    metrics_path: '/metrics'
