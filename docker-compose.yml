@@ -110,8 +110,8 @@ services:
     env_file:
       - .env
     environment:
-      - CELERY_BROKER_URL=${CELERY_BROKER_URL:-redis://lumen-redis:6379/0}
-      - CELERY_RESULT_BACKEND=${CELERY_RESULT_BACKEND:-redis://lumen-redis:6379/0}
+      - CELERY_BROKER_URL=redis://lumen-redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://lumen-redis:6379/0
       - DATABASE_URL=${DATABASE_URL}
       - DATABASE_ASYNC_URL=${DATABASE_ASYNC_URL}
       - QDRANT_HOST=${QDRANT_HOST:-lumen-qdrant}
@@ -134,6 +134,7 @@ services:
       - proxies_data:/mnt/proxies
       - /usr/lib/wsl/lib:/usr/lib/wsl/lib
       - ${MEDIA_SOURCE_PATH}:/mnt/source:ro
+      - ${MEDIA_SOURCE_PATH_6}:/mnt/i-media:ro
       - ${FRAME_CACHE_DIR:-/tmp/lumen_frame_cache}:/mnt/frame_cache
     depends_on:
       redis:
@@ -170,11 +171,14 @@ services:
       - QDRANT_PORT=${QDRANT_PORT:-6333}
       - MEDIA_ROOT=${MEDIA_ROOT:-/data/media}
       - PROXY_ROOT=${PROXY_ROOT:-/mnt/proxies}
+      - LUMEN_PATH_MAP_0=/mnt/source:J:/lumen-media
+      - LUMEN_PATH_MAP_1=/mnt/i-media:I:/I-media
     command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
     volumes:
       - media_data:/data/media
       - proxies_data:/mnt/proxies:ro
       - ${MEDIA_SOURCE_PATH}:/mnt/source:ro
+      - ${MEDIA_SOURCE_PATH_6}:/mnt/i-media:ro
       - ./api:/app
       - hf_cache:/root/.cache/huggingface
     depends_on:
@@ -213,6 +217,7 @@ services:
     volumes:
       - media_data:/data/media
       - ${MEDIA_SOURCE_PATH}:/mnt/source:ro
+      - ${MEDIA_SOURCE_PATH_6}:/mnt/i-media:ro
     depends_on:
       - api
     networks:
@@ -272,6 +277,7 @@ services:
       - GF_SECURITY_ADMIN_PASSWORD=${GF_SECURITY_ADMIN_PASSWORD:?GF_SECURITY_ADMIN_PASSWORD must be set}
     volumes:
       - grafana_data:/var/lib/grafana
+      - ./grafana/lumen1/provisioning:/etc/grafana/provisioning:ro
     depends_on:
       - prometheus
     networks:
