@@ -416,7 +416,7 @@ def test_topic_tags_with_real_vectors(client, mock_db_session, mock_qdrant, mock
     _restore(mock_db_session)
 
 
-def test_topic_tags_qdrant_empty_falls_back_to_vocab(mock_db_session, mock_qdrant):
+def test_topic_tags_qdrant_empty_falls_back_to_vocab(mock_db_session, mock_qdrant, mock_clip):
     """retrieve() returns [] → fallback to first k vocabulary entries."""
     import routers.stats as stats_mod
     stats_mod._topic_vecs_cache = None
@@ -428,7 +428,8 @@ def test_topic_tags_qdrant_empty_falls_back_to_vocab(mock_db_session, mock_qdran
     db_for_ids.execute.return_value.fetchall.return_value = id_rows
     mock_qdrant.retrieve.return_value = []
 
-    with patch("routers.stats._get_session", return_value=db_for_ids):
+    with patch("routers.stats._get_session", return_value=db_for_ids), \
+         patch("routers.search.get_clip_model", return_value=mock_clip):
         result = stats_mod._compute_topic_tags(k=5)
 
     assert result == stats_mod._TOPIC_VOCABULARY[:5]
