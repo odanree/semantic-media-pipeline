@@ -34,6 +34,7 @@ LIMIT_SEARCH_VEC = os.getenv("RATE_LIMIT_SEARCH_VEC", "60/minute")
 LIMIT_STREAM     = os.getenv("RATE_LIMIT_STREAM",     "60/minute")
 LIMIT_THUMBNAIL  = os.getenv("RATE_LIMIT_THUMBNAIL",  "120/minute")
 LIMIT_ASK        = os.getenv("RATE_LIMIT_ASK",        "10/minute")
+LIMIT_PLAYLIST   = os.getenv("RATE_LIMIT_PLAYLIST",   "5/minute")
 LIMIT_DEFAULT    = os.getenv("RATE_LIMIT_DEFAULT",    "200/minute")
 
 limiter = Limiter(

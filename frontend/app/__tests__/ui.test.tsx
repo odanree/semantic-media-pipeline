@@ -76,13 +76,18 @@ afterEach(() => {
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 function makeResult(overrides?: Partial<{
+  id: string
   file_path: string
   file_type: string
   similarity: number
   timestamp: number
   frame_index: number
+  audio_segment_start_sec: number | null
+  audio_segment_end_sec: number | null
+  audio_rms_energy: number | null
 }>) {
   return {
+    id: 'test-id',
     file_path: '/media/test.mp4',
     file_type: 'video',
     similarity: 0.85,
@@ -135,6 +140,50 @@ describe('ResultGrid', () => {
     ]
     const { container } = render(<ResultGrid results={results} />)
     expect(container.firstChild).toBeTruthy()
+  })
+
+  it('shows reel bounds debug line for video results', () => {
+    const results = [makeResult({ file_type: 'video', timestamp: 10 })]
+    render(<ResultGrid results={results} />)
+    // Debug line shows "reel: X.Xs – Y.Ys" for video results
+    expect(screen.getByText(/reel:/)).toBeInTheDocument()
+  })
+
+  it('shows audio segment bounds when timestamp is contained', () => {
+    const results = [makeResult({
+      file_type: 'video',
+      timestamp: 10,
+      audio_segment_start_sec: 8,
+      audio_segment_end_sec: 15,
+    })]
+    render(<ResultGrid results={results} />)
+    // When contained, reel uses segment bounds (8.0s – 15.0s)
+    expect(screen.getByText(/8\.0s/)).toBeInTheDocument()
+  })
+
+  it('falls back to timestamp padding when segment does not contain timestamp', () => {
+    const results = [makeResult({
+      file_type: 'video',
+      timestamp: 10,
+      audio_segment_start_sec: 20,
+      audio_segment_end_sec: 30,
+    })]
+    render(<ResultGrid results={results} />)
+    // Fallback: timestamp ± padding, segment shown in grey
+    expect(screen.getByText(/seg 20\.0/)).toBeInTheDocument()
+  })
+
+  it('shows reel bounds with no audio segment (pure timestamp fallback)', () => {
+    const results = [makeResult({
+      file_type: 'video',
+      timestamp: 5,
+      audio_segment_start_sec: null,
+      audio_segment_end_sec: null,
+    })]
+    render(<ResultGrid results={results} />)
+    expect(screen.getByText(/reel:/)).toBeInTheDocument()
+    // No segment annotation shown
+    expect(screen.queryByText(/seg/)).not.toBeInTheDocument()
   })
 })
 

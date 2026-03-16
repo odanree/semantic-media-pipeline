@@ -719,3 +719,31 @@ describe('GET /api/debug', () => {
     expect(body.apiUrl).toBe('http://api:8000')
   })
 })
+
+// ---------------------------------------------------------------------------
+// app/api/playlist/route.ts
+// ---------------------------------------------------------------------------
+
+describe('POST /api/playlist', () => {
+  it('returns 400 when clips array is missing', async () => {
+    const { POST } = await import('../playlist/route')
+    const req = new NextRequest('http://localhost/api/playlist', {
+      method: 'POST',
+      body: JSON.stringify({ clips: [] }),
+      headers: { 'content-type': 'application/json' },
+    })
+    const res = await POST(req)
+    expect(res.status).toBe(400)
+  })
+
+  it('returns 400 for invalid JSON body', async () => {
+    const { POST } = await import('../playlist/route')
+    const req = new NextRequest('http://localhost/api/playlist', {
+      method: 'POST',
+      body: 'not-json',
+      headers: { 'content-type': 'application/json' },
+    })
+    const res = await POST(req)
+    expect(res.status).toBe(400)
+  })
+})

@@ -154,3 +154,98 @@ def test_task_status_has_timestamp(client):
     with patch("celery.result.AsyncResult", return_value=mock_result):
         data = client.get("/api/task/t-001").json()
     assert "timestamp" in data
+
+
+# ---------------------------------------------------------------------------
+# POST /api/playlist — validation paths (no ffmpeg required)
+# ---------------------------------------------------------------------------
+
+def test_playlist_empty_clips_returns_400(client):
+    resp = client.post("/api/playlist", json={"clips": []})
+    assert resp.status_code == 400
+
+
+def test_playlist_missing_clips_field_returns_422(client):
+    resp = client.post("/api/playlist", json={})
+    assert resp.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# GET /api/playlist/serve/{token}/{filename} — validation paths
+# ---------------------------------------------------------------------------
+
+def test_serve_playlist_invalid_token_returns_400(client):
+    resp = client.get("/api/playlist/serve/not-a-uuid/index.m3u8")
+    assert resp.status_code == 400
+
+
+def test_serve_playlist_path_traversal_returns_400(client):
+    import uuid as uuid_mod
+    token = str(uuid_mod.uuid4())
+    resp = client.get(f"/api/playlist/serve/{token}/../secret")
+    # FastAPI will URL-decode the path — traversal via ".." in filename segment
+    assert resp.status_code in (400, 404)
+
+
+def test_serve_playlist_missing_file_returns_404(client):
+    import uuid as uuid_mod
+    token = str(uuid_mod.uuid4())
+    resp = client.get(f"/api/playlist/serve/{token}/index.m3u8")
+    assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# _translate_path — pure function, no external deps
+# ---------------------------------------------------------------------------
+
+def test_translate_path_no_maps_noop():
+    from routers.ingest import _translate_path
+    with patch.dict(os.environ, {}, clear=False):
+        # Remove any LUMEN_PATH_MAP_ vars for this test
+        env = {k: v for k, v in os.environ.items() if not k.startswith("LUMEN_PATH_MAP_")}
+        with patch.dict(os.environ, env, clear=True):
+            assert _translate_path("/mnt/source/foo.mp4") == "/mnt/source/foo.mp4"
+
+
+def test_translate_path_maps_windows_to_linux():
+    from routers.ingest import _translate_path
+    maps = {"LUMEN_PATH_MAP_0": "/mnt/source:C:/media"}
+    with patch.dict(os.environ, maps):
+        result = _translate_path("C:/media/clip.mp4")
+    assert result == "/mnt/source/clip.mp4"
+
+
+def test_translate_path_longest_prefix_wins():
+    from routers.ingest import _translate_path
+    maps = {
+        "LUMEN_PATH_MAP_0": "/mnt/a:C:/media",
+        "LUMEN_PATH_MAP_1": "/mnt/b:C:/media/sub",
+    }
+    with patch.dict(os.environ, maps):
+        result = _translate_path("C:/media/sub/clip.mp4")
+    assert result == "/mnt/b/clip.mp4"
+
+
+def test_translate_path_backslash_normalised():
+    from routers.ingest import _translate_path
+    maps = {"LUMEN_PATH_MAP_0": "/mnt/source:C:/media"}
+    with patch.dict(os.environ, maps):
+        result = _translate_path("C:\\media\\clip.mp4")
+    assert result == "/mnt/source/clip.mp4"
+
+
+# ---------------------------------------------------------------------------
+# _placeholder_jpeg / _placeholder_video_stub — sanity checks
+# ---------------------------------------------------------------------------
+
+def test_placeholder_jpeg_returns_bytes():
+    from routers.ingest import _placeholder_jpeg
+    data = _placeholder_jpeg()
+    assert isinstance(data, bytes)
+    assert len(data) > 0
+
+
+def test_placeholder_video_stub_returns_bytes():
+    from routers.ingest import _placeholder_video_stub
+    data = _placeholder_video_stub()
+    assert isinstance(data, bytes)

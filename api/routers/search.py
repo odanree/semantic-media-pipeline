@@ -470,6 +470,10 @@ async def search_media(request: Request, body: SearchRequest):
                 "scene_window_start": window_start,
                 "scene_window_end": window_end,
                 "updated_at": payload.get("updated_at"),
+                # Clip boundary fields — None for legacy media ingested before audio analysis
+                "audio_segment_start_sec": payload.get("audio_segment_start_sec"),
+                "audio_segment_end_sec": payload.get("audio_segment_end_sec"),
+                "audio_rms_energy": payload.get("audio_rms_energy"),
             })
 
         execution_time_ms = (time.time() - start_time) * 1000
