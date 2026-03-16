@@ -25,10 +25,10 @@ scrape_configs:
     metrics_path: '/metrics'
 
   - job_name: 'lumen-prod'
-    static_configs:
-      - targets: ['65.108.243.192:8000']
-        labels:
-          environment: 'prod'
+    # Target loaded from prometheus-sd/prod.json (gitignored — set your prod host there)
+    file_sd_configs:
+      - files: ['/etc/prometheus/sd/prod.json']
+        refresh_interval: 5m
     metrics_path: '/metrics/'
 
   - job_name: 'lumen1-flower'

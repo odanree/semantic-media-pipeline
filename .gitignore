@@ -300,3 +300,4 @@ test_results.txt
 temp-scripts/frame_cache/
 temp-scripts/frame_cache.tar.gz
 scripts/dispatch_*.py
+prometheus-sd/prod.json

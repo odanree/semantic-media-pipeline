@@ -24,7 +24,7 @@ scrape_configs:
 
   - job_name: 'lumen-prod'
     static_configs:
-      - targets: ['65.108.243.192:8000']
+      - targets: ['${PROD_METRICS_HOST}:8000']
         labels:
           environment: 'prod'
     metrics_path: '/metrics/'
