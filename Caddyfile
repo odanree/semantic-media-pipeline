@@ -1,0 +1,23 @@
+lumen.danhle.net {
+	# WebSockets go directly to FastAPI (Next.js can't proxy WS natively)
+	handle /api/ws/* {
+		reverse_proxy localhost:8000
+	}
+
+	# Playlist segments served directly from FastAPI — bypasses Next.js for
+	# HLS streaming; token-based UUID access control is in FastAPI, not API key
+	handle /api/playlist/serve/* {
+		reverse_proxy localhost:8000
+	}
+
+	# Everything else through Next.js (incl. /api/* proxy routes with auth)
+	handle {
+		reverse_proxy localhost:3000
+	}
+
+	header {
+		X-Frame-Options DENY
+		X-Content-Type-Options nosniff
+		Referrer-Policy strict-origin-when-cross-origin
+	}
+}
