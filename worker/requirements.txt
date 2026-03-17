@@ -43,3 +43,7 @@ ultralytics>=8.0.0
 # Uncomment if desired:
 # pytesseract>=0.3.10
 prometheus-client==0.20.0
+
+# ONNX export + INT8 quantization (scripts/export_onnx.py + CLIP_BACKEND=onnx)
+onnx>=1.16.0
+onnxruntime>=1.19.0
