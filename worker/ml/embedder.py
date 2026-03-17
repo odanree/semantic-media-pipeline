@@ -182,20 +182,91 @@ class CLIPEmbedder:
         return self.embedding_dim
 
 
+class OnnxCLIPEmbedder:
+    """
+    ONNX Runtime backend for CLIP image embedding.
+
+    Faster than PyTorch on CPU — typically 2–3× speedup with INT8 quantization.
+    Text embedding falls back to PyTorch (text encoder not exported to ONNX).
+
+    Activated by setting CLIP_BACKEND=onnx in the environment.
+    Model path controlled by CLIP_ONNX_MODEL_PATH (required when backend=onnx).
+    """
+
+    def __init__(self, onnx_model_path: str, model_name: str = "clip-ViT-L-14"):
+        import onnxruntime as ort
+        from sentence_transformers import SentenceTransformer
+
+        self.model_name = model_name
+        self.onnx_model_path = onnx_model_path
+
+        log.info("Loading ONNX CLIP model from %s", onnx_model_path)
+        self.session = ort.InferenceSession(
+            onnx_model_path, providers=["CPUExecutionProvider"]
+        )
+
+        # Load processor for image preprocessing + text fallback
+        log.info("Loading %s processor for preprocessing...", model_name)
+        self._st_model = SentenceTransformer(model_name, device="cpu")
+        clip_module = self._st_model._modules["0"]
+        self.processor = clip_module.processor
+        self.embedding_dim = 768  # ViT-L-14
+
+    def embed_images(self, image_paths: List[str], batch_size: int = 32) -> np.ndarray:
+        from PIL import Image as _PIL
+
+        all_embeddings = []
+        for i in range(0, len(image_paths), batch_size):
+            batch_paths = image_paths[i : i + batch_size]
+            images = []
+            for p in batch_paths:
+                try:
+                    images.append(_PIL.open(p).convert("RGB"))
+                except Exception as e:
+                    log.warning("Skipping unreadable image %s: %s", p, e)
+
+            if not images:
+                continue
+
+            inputs = self.processor(images=images, return_tensors="np")
+            pixel_values = inputs["pixel_values"].astype(np.float32)
+            embeds = self.session.run(None, {"pixel_values": pixel_values})[0]
+            all_embeddings.append(embeds)
+
+        return np.concatenate(all_embeddings, axis=0).astype(np.float32) if all_embeddings else np.empty((0, self.embedding_dim), dtype=np.float32)
+
+    def embed_text(self, text: Union[str, List[str]]) -> np.ndarray:
+        # Text encoder not exported — use PyTorch fallback
+        if isinstance(text, str):
+            text = [text]
+        embeddings = self._st_model.encode(text, convert_to_numpy=True)
+        return embeddings.astype(np.float32)
+
+    def embed_frames(self, frame_paths: List[str], batch_size: int = 32, **_) -> np.ndarray:
+        return self.embed_images(frame_paths, batch_size=batch_size)
+
+    def get_embedding_dimension(self) -> int:
+        return self.embedding_dim
+
+
 # Global embedder instance (lazy-loaded)
 _embedder = None
 
 
-def get_embedder(model_name: Optional[str] = None) -> CLIPEmbedder:
+def get_embedder(model_name: Optional[str] = None) -> Union[CLIPEmbedder, OnnxCLIPEmbedder]:
     """
     Get or create the global CLIP embedder instance.
     Uses lazy loading to avoid loading the model until needed.
+
+    Backend is controlled by CLIP_BACKEND env var:
+      - "pytorch" (default): CLIPEmbedder via SentenceTransformer
+      - "onnx": OnnxCLIPEmbedder via ONNX Runtime (requires CLIP_ONNX_MODEL_PATH)
 
     Args:
         model_name: Model name (default: from env var CLIP_MODEL_NAME)
 
     Returns:
-        CLIPEmbedder instance
+        CLIPEmbedder or OnnxCLIPEmbedder instance
     """
     global _embedder
 
@@ -212,7 +283,16 @@ def get_embedder(model_name: Optional[str] = None) -> CLIPEmbedder:
         _embedder = None
 
     if _embedder is None:
-        device = os.getenv("EMBEDDING_DEVICE", "").strip() or None
-        _embedder = CLIPEmbedder(resolved_name, device)
+        backend = os.getenv("CLIP_BACKEND", "pytorch").strip().lower()
+        if backend == "onnx":
+            onnx_path = os.getenv("CLIP_ONNX_MODEL_PATH", "").strip()
+            if not onnx_path:
+                raise ValueError(
+                    "CLIP_BACKEND=onnx requires CLIP_ONNX_MODEL_PATH to be set"
+                )
+            _embedder = OnnxCLIPEmbedder(onnx_path, resolved_name)
+        else:
+            device = os.getenv("EMBEDDING_DEVICE", "").strip() or None
+            _embedder = CLIPEmbedder(resolved_name, device)
 
     return _embedder
