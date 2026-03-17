@@ -1,0 +1,49 @@
+name: RAG Eval
+
+on:
+  schedule:
+    - cron: '0 3 * * *'   # 3am UTC daily
+  workflow_dispatch:
+    inputs:
+      faithfulness:
+        description: 'faithfulness threshold (default: 0.70)'
+        default: '0.70'
+      answer_relevancy:
+        description: 'answer_relevancy threshold (default: 0.75)'
+        default: '0.75'
+
+jobs:
+  evaluate:
+    name: RAGAS Evaluation
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: production
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install eval dependencies
+        run: pip install ragas==0.4.3 datasets httpx langchain-openai
+
+      - name: Run RAGAS evaluation
+        env:
+          API_BASE_URL: ${{ secrets.EVAL_API_BASE_URL }}
+          API_KEY: ${{ secrets.API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          python scripts/evaluate_rag.py \
+            --output scripts/eval_results.json \
+            --faithfulness ${{ inputs.faithfulness || '0.70' }} \
+            --answer-relevancy ${{ inputs.answer_relevancy || '0.75' }}
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-results-${{ github.run_id }}
+          path: scripts/eval_results.json
+          retention-days: 30
