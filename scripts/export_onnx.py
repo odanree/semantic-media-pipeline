@@ -75,6 +75,7 @@ def export_onnx(model_name: str, output_dir: Path) -> Path:
                 "embeddings": {0: "batch_size"},
             },
             opset_version=17,
+            dynamo=False,  # legacy TorchScript exporter avoids onnxscript/Unicode issues
         )
 
     size_mb = onnx_path.stat().st_size / 1024 / 1024
@@ -93,6 +94,9 @@ def quantize_int8(fp32_path: Path) -> Path:
         str(fp32_path),
         str(int8_path),
         weight_type=QuantType.QInt8,
+        # Quantize only transformer weight ops — Conv (patch embedding) lacks
+        # a ConvInteger kernel in ONNX Runtime CPU and must be excluded.
+        op_types_to_quantize=["MatMul", "Gemm"],
     )
 
     size_mb = int8_path.stat().st_size / 1024 / 1024
@@ -108,7 +112,10 @@ def _load_bench_images(bench_dir: str, processor, n: int = 20):
     """Load up to n images from bench_dir, preprocessed to pixel_values."""
     from PIL import Image
 
-    paths = list(Path(bench_dir).glob("*.jpg"))[:n] + list(Path(bench_dir).glob("*.png"))[:n]
+    bench_path = Path(bench_dir)
+    paths = []
+    for ext in ("*.jpg", "*.JPG", "*.jpeg", "*.JPEG", "*.png", "*.PNG"):
+        paths.extend(bench_path.glob(ext))
     paths = paths[:n]
     if not paths:
         raise FileNotFoundError(f"No jpg/png images found in {bench_dir}")
