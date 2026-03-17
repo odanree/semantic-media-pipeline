@@ -8,6 +8,11 @@ on:
     types: [completed]
     branches: [main]
   workflow_dispatch:
+    inputs:
+      no_cache:
+        description: 'Force --no-cache rebuild (use when pip deps are stale)'
+        type: boolean
+        default: false
 
 jobs:
   deploy:
@@ -40,8 +45,11 @@ jobs:
           echo "$CHANGED" | grep -qE '^worker/'             && SERVICES="$SERVICES worker"
           echo "$CHANGED" | grep -qE '^frontend/'           && SERVICES="$SERVICES frontend"
 
+          NO_CACHE_FLAG=""
+          [ "${{ inputs.no_cache }}" = "true" ] && NO_CACHE_FLAG="--no-cache"
+
           if [ -n "$SERVICES" ]; then
-            BUILD_CMD="DOCKER_BUILDKIT=1 docker compose build --parallel $SERVICES"
+            BUILD_CMD="DOCKER_BUILDKIT=1 docker compose build --parallel $NO_CACHE_FLAG $SERVICES"
           else
             BUILD_CMD="echo 'No image rebuild needed'"
           fi
