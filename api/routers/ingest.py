@@ -615,7 +615,6 @@ async def _extract_segment(resolved_path: str, start_sec: float, duration: float
             "-c", "copy",
             "-bsf:v", bsf,
             "-avoid_negative_ts", "make_zero",
-            "-muxdelay", "0",
             "-f", "mpegts",
             out_path,
         ]
@@ -651,7 +650,6 @@ async def _extract_segment(resolved_path: str, start_sec: float, duration: float
         "-fps_mode", "cfr", "-r", "30",
         "-c:a", "aac", "-b:a", "128k",
         "-avoid_negative_ts", "make_zero",
-        "-muxdelay", "0",
         "-f", "mpegts",
         out_path,
     ]

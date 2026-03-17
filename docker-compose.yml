@@ -59,7 +59,7 @@ services:
       # MinIO writes only a small .minio.sys metadata folder to J:\.
       # All media files are served in-place from J:\.
       # Requires J:\ to be shared in Docker Desktop → Resources → File Sharing.
-      - ${MEDIA_SOURCE_PATH:-J:/}:/data
+      - ${L1_MEDIA_1:-J:/}:/data
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
       interval: 15s
@@ -82,7 +82,7 @@ services:
     environment:
       QDRANT_API_KEY: ""
     healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:6333/healthz || exit 1"]
+      test: ["CMD-SHELL", "bash -c '</dev/tcp/localhost/6333' 2>/dev/null"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -105,6 +105,7 @@ services:
     command: >
       sh -c "celery -A celery_app worker
       --loglevel=info
+      --pool=solo
       --concurrency=$${CELERY_CONCURRENCY:-4}
       --prefetch-multiplier=$${CELERY_WORKER_PREFETCH_MULTIPLIER:-1}
       --max-tasks-per-child=$${CELERY_MAX_TASKS_PER_CHILD:-50}
@@ -129,14 +130,15 @@ services:
       - PROXY_MAX_DURATION_SECS=${PROXY_MAX_DURATION_SECS:-3600}
       - WORKER_ID=${WORKER_ID:-windows-1}
       - FRAME_CACHE_DIR=/mnt/frame_cache
+      - EMBEDDING_DEVICE=cpu
     user: root
     volumes:
       - media_data:/data/media
       - worker_tmp:/tmp/lumen_frames
       - proxies_data:/mnt/proxies
       - /usr/lib/wsl/lib:/usr/lib/wsl/lib
-      - ${MEDIA_SOURCE_PATH}:/mnt/source:ro
-      - ${MEDIA_SOURCE_PATH_6:-/tmp}:/mnt/i-media:ro
+      - ${L1_MEDIA_1}:/mnt/source:ro
+      - ${L1_MEDIA_2:-/tmp}:/mnt/i-media:ro
       - ${FRAME_CACHE_DIR:-/tmp/lumen_frame_cache}:/mnt/frame_cache
     depends_on:
       redis:
@@ -179,8 +181,8 @@ services:
     volumes:
       - media_data:/data/media
       - proxies_data:/mnt/proxies:ro
-      - ${MEDIA_SOURCE_PATH}:/mnt/source:ro
-      - ${MEDIA_SOURCE_PATH_6:-/tmp}:/mnt/i-media:ro
+      - ${L1_MEDIA_1}:/mnt/source:ro
+      - ${L1_MEDIA_2:-/tmp}:/mnt/i-media:ro
       - ./api:/app
       - hf_cache:/root/.cache/huggingface
     depends_on:
@@ -218,8 +220,8 @@ services:
       - BACKEND_API_KEY=${BACKEND_API_KEY:-}
     volumes:
       - media_data:/data/media
-      - ${MEDIA_SOURCE_PATH}:/mnt/source:ro
-      - ${MEDIA_SOURCE_PATH_6:-/tmp}:/mnt/i-media:ro
+      - ${L1_MEDIA_1}:/mnt/source:ro
+      - ${L1_MEDIA_2:-/tmp}:/mnt/i-media:ro
     depends_on:
       - api
     networks:

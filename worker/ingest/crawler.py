@@ -2,6 +2,7 @@
 Media Crawler - Recursive directory scanning for media files
 """
 
+import fnmatch
 import logging
 import os
 from pathlib import Path
@@ -118,6 +119,13 @@ def crawl_media(
 
     exclude_inodes = _build_exclude_inodes(exclude_paths)
 
+    # Filename glob patterns to skip (case-insensitive), e.g. TIMELAPSE_*.JPG
+    exclude_patterns: List[str] = []
+    crawl_exclude_patterns_env = os.getenv("CRAWL_EXCLUDE_PATTERNS", "").strip()
+    if crawl_exclude_patterns_env:
+        exclude_patterns = [p.strip() for p in crawl_exclude_patterns_env.split(",") if p.strip()]
+        log.info("Crawler: %d filename exclusion pattern(s): %s", len(exclude_patterns), exclude_patterns)
+
     if exclude_inodes:
         log.info("Crawler: %d directory exclusion(s) active", len(exclude_inodes))
 
@@ -140,6 +148,11 @@ def crawl_media(
                     if entry.is_file(follow_symlinks=False):
                         # Skip Mac OS artifact files and other junk
                         if entry.name.startswith("._") or entry.name in {".DS_Store", "Thumbs.db"}:
+                            continue
+                        # Skip files matching any CRAWL_EXCLUDE_PATTERNS glob
+                        if exclude_patterns and any(
+                            fnmatch.fnmatch(entry.name.upper(), p.upper()) for p in exclude_patterns
+                        ):
                             continue
                         file_ext = Path(entry.name).suffix.lower()
                         if file_ext in SUPPORTED_EXTENSIONS:

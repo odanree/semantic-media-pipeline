@@ -82,12 +82,13 @@ jobs:
           STORAGE_BACKEND: s3
           NEXT_PUBLIC_API_URL: http://localhost:8000
           NEXT_PUBLIC_STREAM_URL: http://localhost:8000
-          MEDIA_SOURCE_PATH: /tmp/media
-          MEDIA_SOURCE_PATH_2: /tmp/media
-          MEDIA_SOURCE_PATH_3: /tmp/media
-          MEDIA_SOURCE_PATH_4: /tmp/media
-          MEDIA_SOURCE_PATH_5: /tmp/media
-          MEDIA_SOURCE_PATH_6: /tmp/media
+          L1_MEDIA_1: /tmp/media
+          L1_MEDIA_2: /tmp/media
+          L2_MEDIA_1: /tmp/media
+          L2_MEDIA_2: /tmp/media
+          L2_MEDIA_3: /tmp/media
+          L2_MEDIA_4: /tmp/media
+          L2_MEDIA_5: /tmp/media
           DATABASE_USER: lumen_user
           DATABASE_PASSWORD: secure_password_here
           DATABASE_NAME: lumen
@@ -185,9 +186,10 @@ jobs:
         run: pip install pip-audit
 
       - name: Audit api/requirements.txt
-        run: pip-audit -r api/requirements.txt --ignore-vuln CVE-2025-69872
+        run: pip-audit -r api/requirements.txt --ignore-vuln CVE-2025-69872 --ignore-vuln CVE-2026-28500
         # CVE-2025-69872 affects diskcache (transitive dep via mlflow). No fix version
         # available upstream as of 2026-03-11. Re-evaluate when diskcache >5.6.3 ships.
+        # CVE-2026-28500 affects onnx 1.20.1. No fix version available as of 2026-03-16.
 
   # -------------------------------------------------------------------------
   # Secret scanning (trufflehog — detects leaked credentials in git history)
