@@ -73,6 +73,11 @@ services:
       - qdrant2_data:/qdrant/storage
     environment:
       QDRANT_API_KEY: ""
+      # Use mmap for segments above 20MB — avoids loading full index into RAM.
+      # Reduces resident memory significantly at the cost of slightly slower
+      # cold-start searches (data is paged in from disk on first access).
+      QDRANT__STORAGE__MMAP_THRESHOLD_KB: "20000"
+    mem_limit: 6g
     healthcheck:
       test: ["CMD-SHELL", "bash -c '</dev/tcp/localhost/6333' 2>/dev/null"]
       interval: 10s
