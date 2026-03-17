@@ -17,6 +17,9 @@ A living record of every significant bug, outage, and architectural misstep enco
 9. [CORS Invalid Combination Silently Killed All WebSocket Connections](#9-cors-invalid-combination-silently-killed-all-websocket-connections)
 10. [ASGI Double-Close RuntimeError](#10-asgi-double-close-runtimeerror)
 11. [React useEffect Infinite Loop From Unstable Callback Dependencies](#11-react-useeffect-infinite-loop-from-unstable-callback-dependencies)
+23. [Playlist 400 — S3 Object Keys Not in ALLOWED_ROOTS](#23-playlist-400--s3-object-keys-not-in-allowed_roots)
+24. [Celery Prefork + CUDA → "Cannot Re-initialize CUDA in Forked Subprocess"](#24-celery-prefork--cuda--cannot-re-initialize-cuda-in-forked-subprocess)
+25. [Qdrant Healthcheck Always Fails — No `curl` or `wget` in Image](#25-qdrant-healthcheck-always-fails--no-curl-or-wget-in-image)
 
 ---
 
@@ -913,6 +916,9 @@ Additionally: **add `in_memory_fallback_enabled=True` to any slowapi `Limiter` t
 | 20 | Ollama falling back to CPU inference | Ollama / WSL2 | High | ops | ops |
 | 21 | Manual container removal breaks Docker DNS | `docker-compose.yml` | Critical | ops | ops |
 | 22 | slowapi crashes on Redis ConnectionError (wrong hostname) | `api/rate_limit.py` | Critical | ops | ops |
+| 23 | Playlist 400 — S3 object keys not in ALLOWED_ROOTS | `api/routers/ingest.py` | High | `feat/playlist-hls-serve` | `feat/playlist-hls-serve` |
+| 24 | Celery prefork + CUDA → forked subprocess crash | `docker-compose.yml` | High | ops | ops |
+| 25 | Qdrant healthcheck always fails — no `curl` in image | `docker-compose*.yml` | Low | ops | ops |
 
 ---
 
@@ -938,3 +944,110 @@ Bugs #14–#18, #21 all stem from treating Docker Compose like a system service 
 
 ### Operational changes need the same rigour as code changes
 Bugs #12–#20 were all operational rather than code bugs — wrong queue flags, missing compose fields, Ollama GPU init order. They had the same or greater impact as code bugs but left no git trail and were harder to diagnose. Document every operational change (compose flags, env vars, startup order) in the codebase itself, not just in chat logs.
+
+### "It works locally ≠ works on prod"
+Bug #23 passed local testing but broke on prod because local used filesystem paths while prod used S3 object keys. The prod environment is meaningfully different: storage backend, path format, auth layer, and network topology all differ. Any feature that touches file paths or storage must be tested against the actual prod storage backend before shipping.
+
+---
+
+## 23. Playlist 400 — S3 Object Keys Not in ALLOWED_ROOTS
+
+**Commit(s):** `feat/playlist-hls-serve`
+**Component:** `api/routers/ingest.py`
+**Severity:** High — playlist generation silently dropped all R2-backed clips
+
+### What Broke
+
+On prod (`STORAGE_BACKEND=s3`), every clip in a generated playlist returned a 400 Bad Request. The worker logs showed `[Playlist] access denied: pexels-demo/clip.mp4` for every file.
+
+### Root Cause
+
+`ALLOWED_ROOTS` is a list of filesystem paths (`/mnt/source`, `/mnt/proxies`, etc.). S3 stores bare object keys (`pexels-demo/clip.mp4`) with no leading `/`. The path check `any(resolved.startswith(root) for root in ALLOWED_ROOTS)` always returned `False` for S3 keys, causing every clip to be silently dropped.
+
+### Fix
+
+Detect bare S3 keys (no leading `/` when `IS_S3=True`) and generate a presigned URL instead of checking against filesystem roots:
+
+```python
+if not any(resolved.startswith(root) for root in ALLOWED_ROOTS):
+    if IS_S3 and not clip.file_path.startswith("/"):
+        resolved = _s3_presign(clip.file_path, expires=1800)
+        is_url = True
+    else:
+        log.warning("[Playlist] access denied: %s", clip.file_path)
+        continue
+```
+
+### Lesson
+
+**`ALLOWED_ROOTS` path-prefix checks silently fail for S3 object keys.** S3 keys look like `bucket-prefix/file.mp4` — they are never absolute paths. Any security check that assumes all paths start with `/` must explicitly handle the S3 case. When adding a new storage backend, audit every `startswith("/")` and `os.path` call in the codebase.
+
+---
+
+## 24. Celery Prefork + CUDA → "Cannot Re-initialize CUDA in Forked Subprocess"
+
+**Commit(s):** ops — 2026-03-16
+**Component:** `docker-compose.yml`, `worker/ml/embedder.py`
+**Severity:** High — all `process_video` and `process_image` tasks failed immediately
+
+### What Broke
+
+After rebuilding the worker container with `docker compose build`, all ML tasks failed with:
+
+```
+RuntimeError: Cannot re-initialize CUDA in forked subprocess. To use CUDA with
+multiprocessing, you must use the 'spawn' start method
+```
+
+### Root Cause
+
+Celery's default pool is `prefork` — it forks child worker processes from the main process. If CUDA is initialized (even partially, via `import torch`) in the parent process before the fork, the child processes inherit the CUDA context and fail when they try to re-initialize it. With `--concurrency=4`, four children all hit this simultaneously.
+
+The secondary issue: even with `USE_GPU=false` at build time, the worker container runs inside WSL2 which exposes NVIDIA drivers. `torch.cuda.is_available()` returned `True`, and the embedder attempted CUDA initialization before the fork guard could prevent it.
+
+### Fix
+
+Two changes:
+1. Add `--pool=solo` to the Celery worker command — `solo` runs tasks sequentially in the main process with no forking:
+```yaml
+command: sh -c "celery -A celery_app worker --pool=solo ..."
+```
+2. Set `EMBEDDING_DEVICE=cpu` explicitly in the worker environment to prevent any CUDA initialization regardless of hardware availability.
+
+### Lesson
+
+**Any Celery worker that loads a GPU/ML model must use `--pool=solo` or `--pool=threads`.** Prefork + CUDA is fundamentally incompatible because fork copies the CUDA context to child processes where re-initialization fails. `--pool=solo` is the correct setting for single-machine ML workloads. Also: **always set `EMBEDDING_DEVICE=cpu` explicitly when running a CPU-only worker** — relying on `torch.cuda.is_available()` auto-detection is fragile in WSL2 where GPU drivers are visible even in containers built without GPU support.
+
+---
+
+## 25. Qdrant Healthcheck Always Fails — No `curl` or `wget` in Image
+
+**Commit(s):** ops — 2026-03-16
+**Component:** `docker-compose.yml`, `docker-compose.second.yml`
+**Severity:** Low — false unhealthy status; no functional impact
+
+### What Broke
+
+Both Qdrant containers showed `(unhealthy)` in `docker ps` despite responding correctly to all API requests. The healthcheck was:
+
+```yaml
+test: ["CMD-SHELL", "curl -f http://localhost:6333/healthz || exit 1"]
+```
+
+### Root Cause
+
+The `qdrant/qdrant` Docker image is a minimal distroless-style image — it contains only the Qdrant binary and its dependencies. Neither `curl` nor `wget` is installed. The healthcheck command failed immediately with `curl: executable file not found`, causing Docker to mark the container unhealthy on every check.
+
+### Fix
+
+Use bash's built-in TCP redirect to check port availability — `bash` is available in the Qdrant image:
+
+```yaml
+test: ["CMD-SHELL", "bash -c '</dev/tcp/localhost/6333' 2>/dev/null"]
+```
+
+This opens a TCP connection to port 6333. Exit code 0 means the port is open and Qdrant is listening; exit code 1 means it is not.
+
+### Lesson
+
+**Always verify that the tools used in a healthcheck exist inside the target container.** Minimal images (distroless, alpine, vendor-provided) routinely omit `curl`, `wget`, and even `sh`. Before writing a healthcheck, run `docker exec <container> which curl` to confirm. The bash `/dev/tcp` trick is a reliable fallback for pure TCP port checks in any container that has `bash`.

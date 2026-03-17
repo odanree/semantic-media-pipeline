@@ -16,7 +16,7 @@ name: lumen2
 #   Redis    6379 → 6380
 #   Qdrant   6333/6334 → 6340/6341
 #
-# Set MEDIA_SOURCE_PATH_2 in .env to the new host media path.
+# Media sources are configured via L2_MEDIA_1..N in .env
 # ============================================================================
 
 services:
@@ -74,7 +74,7 @@ services:
     environment:
       QDRANT_API_KEY: ""
     healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:6333/healthz || exit 1"]
+      test: ["CMD-SHELL", "bash -c '</dev/tcp/localhost/6333' 2>/dev/null"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -132,10 +132,11 @@ services:
       - worker2_tmp:/tmp/lumen_frames
       - proxies2_data:/mnt/proxies
       - /usr/lib/wsl/lib:/usr/lib/wsl/lib
-      - ${MEDIA_SOURCE_PATH_2}:/mnt/source/f-ltv:ro
-      - ${MEDIA_SOURCE_PATH_3}:/mnt/source/e:ro
-      - ${MEDIA_SOURCE_PATH_4}:/mnt/source/d-4k-index:ro
-      - ${MEDIA_SOURCE_PATH_5}:/mnt/source/f-downloads:ro
+      - ${L2_MEDIA_1}:/mnt/source/f-ltv:ro
+      - ${L2_MEDIA_2}:/mnt/source/e:ro
+      - ${L2_MEDIA_3}:/mnt/source/d-4k-index:ro
+      - ${L2_MEDIA_4}:/mnt/source/f-downloads:ro
+      - ${L2_MEDIA_5}:/mnt/source/f-index:ro
     depends_on:
       redis2:
         condition: service_healthy
@@ -186,10 +187,10 @@ services:
       - ./api:/app                    # live reload — changes take effect without rebuild
       - media2_data:/data/media
       - proxies2_data:/mnt/proxies:ro
-      - ${MEDIA_SOURCE_PATH_2}:/mnt/source/f-ltv:ro
-      - ${MEDIA_SOURCE_PATH_3}:/mnt/source/e:ro
-      - ${MEDIA_SOURCE_PATH_4}:/mnt/source/d-4k-index:ro
-      - ${MEDIA_SOURCE_PATH_5}:/mnt/source/f-downloads:ro
+      - ${L2_MEDIA_1}:/mnt/source/f-ltv:ro
+      - ${L2_MEDIA_2}:/mnt/source/e:ro
+      - ${L2_MEDIA_3}:/mnt/source/d-4k-index:ro
+      - ${L2_MEDIA_4}:/mnt/source/f-downloads:ro
       - hf_cache:/root/.cache/huggingface   # Persist model downloads across rebuilds
     depends_on:
       redis2:
@@ -226,10 +227,10 @@ services:
       - NEXT_PUBLIC_QDRANT_PORT=6340
     volumes:
       - media2_data:/data/media
-      - ${MEDIA_SOURCE_PATH_2}:/mnt/source/f-ltv:ro
-      - ${MEDIA_SOURCE_PATH_3}:/mnt/source/e:ro
-      - ${MEDIA_SOURCE_PATH_4}:/mnt/source/d-4k-index:ro
-      - ${MEDIA_SOURCE_PATH_5}:/mnt/source/f-downloads:ro
+      - ${L2_MEDIA_1}:/mnt/source/f-ltv:ro
+      - ${L2_MEDIA_2}:/mnt/source/e:ro
+      - ${L2_MEDIA_3}:/mnt/source/d-4k-index:ro
+      - ${L2_MEDIA_4}:/mnt/source/f-downloads:ro
     depends_on:
       - api2
     networks:
