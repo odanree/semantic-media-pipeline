@@ -28,7 +28,8 @@ services:
       POSTGRES_USER: ${DATABASE_USER:-lumen_user}
       POSTGRES_PASSWORD: ${DATABASE_PASSWORD:-secure_password_here}
       POSTGRES_DB: ${DATABASE_NAME:-lumen}
-    # No host port — internal Docker network only
+    ports:
+      - "127.0.0.1:15432:5432"  # Native Windows worker access
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./scripts/init-db.sql:/docker-entrypoint-initdb.d/init.sql
@@ -107,8 +108,9 @@ services:
     command: >
       sh -c "celery -A celery_app worker
       --loglevel=info
-      --pool=solo
-      --concurrency=$${CELERY_CONCURRENCY:-4}
+      --pool=threads
+      --concurrency=1
+      -E
       --prefetch-multiplier=$${CELERY_WORKER_PREFETCH_MULTIPLIER:-1}
       --max-tasks-per-child=$${CELERY_MAX_TASKS_PER_CHILD:-50}
       --queues=celery"
