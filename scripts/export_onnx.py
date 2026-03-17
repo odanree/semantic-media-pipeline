@@ -52,8 +52,14 @@ def export_onnx(model_name: str, output_dir: Path) -> Path:
     print(f"Loading {model_name} on CPU...")
     st_model = SentenceTransformer(model_name, device="cpu")
     clip_module = st_model._modules["0"]
-    clip_model = clip_module.model.cpu()
     processor = clip_module.processor
+
+    # Reload with eager attention — the legacy TorchScript ONNX exporter cannot
+    # handle PyTorch 2.x scaled_dot_product_attention (SDPA) ops.
+    from transformers import CLIPModel
+    model_path = clip_module.model.config._name_or_path
+    print(f"  Reloading with attn_implementation=eager for ONNX compatibility...")
+    clip_model = CLIPModel.from_pretrained(model_path, attn_implementation="eager").cpu()
 
     encoder = _CLIPVisualEncoder(clip_model).eval()
 
