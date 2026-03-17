@@ -21,7 +21,7 @@ from typing import List, Optional
 import numpy as np
 from PIL import Image
 from qdrant_client import QdrantClient
-from qdrant_client.models import Distance, PointStruct, VectorParams
+from qdrant_client.models import Distance, FieldCondition, Filter, MatchValue, PointStruct, VectorParams
 from sqlalchemy import select
 
 from celery_app import app
@@ -402,6 +402,15 @@ def ingest_media(self, file_path: str, file_type: str):
             MediaFile.file_hash == file_hash
         ).first()
         if existing:
+            if existing.file_path != file_path:
+                # Same content, new location — file was moved/renamed.
+                # Heal the stored path without re-embedding.
+                old_path = existing.file_path
+                existing.file_path = file_path
+                db.commit()
+                relocate_file_path.delay(old_path, file_path)
+                print(f"File relocated: {old_path!r} → {file_path!r}")
+                return {"status": "relocated", "old_path": old_path, "new_path": file_path}
             print(f"Duplicate file (same hash), skipping: {file_path}")
             return {"status": "skipped", "reason": "duplicate_hash"}
 
@@ -1093,6 +1102,32 @@ def backfill_audio_segments(self, dry_run: bool = False):
     }
     log.info("[AudioBackfill] Done: %s", summary)
     return summary
+
+
+@app.task(
+    bind=True,
+    autoretry_for=(Exception,),
+    retry_backoff=True,
+    retry_backoff_max=300,
+    max_retries=3,
+)
+def relocate_file_path(self, old_path: str, new_path: str):
+    """
+    Update file_path in Qdrant for all points that match old_path.
+
+    Fired automatically by ingest_media when a file is discovered at a new
+    location with the same hash (moved/renamed). No re-embedding needed —
+    only the payload field is updated.
+    """
+    result = qdrant_client.set_payload(
+        collection_name=QDRANT_COLLECTION_NAME,
+        payload={"file_path": new_path},
+        points=Filter(
+            must=[FieldCondition(key="file_path", match=MatchValue(value=old_path))]
+        ),
+    )
+    log.info("[Relocate] %r → %r (Qdrant status: %s)", old_path, new_path, result)
+    return {"old_path": old_path, "new_path": new_path}
 
 
 @app.task(
