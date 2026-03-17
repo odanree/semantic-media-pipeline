@@ -81,6 +81,8 @@ services:
       - qdrant_data:/qdrant/storage
     environment:
       QDRANT_API_KEY: ""
+      QDRANT__STORAGE__MMAP_THRESHOLD_KB: "20000"
+    mem_limit: 4g
     healthcheck:
       test: ["CMD-SHELL", "bash -c '</dev/tcp/localhost/6333' 2>/dev/null"]
       interval: 10s
