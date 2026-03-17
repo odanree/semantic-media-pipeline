@@ -231,12 +231,22 @@ ALLOWED_ROOTS = [
 ]
 
 
+_SOURCE_MOUNT = "/mnt/source"
+
+
 def _translate_path(path: str) -> str:
-    """Map Windows/host paths stored in DB to container mount paths.
-    Uses LUMEN_PATH_MAP_n=/linux/prefix:C:/win/path env vars (Linux prefix first,
-    same format as worker). Longest-win-prefix-first matching.
-    No-op if path already starts with an allowed root or no maps are configured.
+    """Map stored paths to container filesystem paths.
+
+    Handles three formats:
+    - Relative (new): 'c-index/file.mp4' → '/mnt/source/c-index/file.mp4'
+    - Absolute Linux (legacy): '/mnt/source/...' → unchanged
+    - Windows (legacy): 'C:/...' → translated via LUMEN_PATH_MAP_n env vars
     """
+    # Relative paths (new format): expand to /mnt/source/
+    if not path.startswith("/") and not (len(path) >= 2 and path[1] == ":"):
+        return _SOURCE_MOUNT + "/" + path
+
+    # Windows path translation (legacy records written by native Windows worker)
     maps = [
         v for k, v in os.environ.items()
         if k.startswith("LUMEN_PATH_MAP_") and ":" in v
