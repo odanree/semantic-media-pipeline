@@ -140,7 +140,7 @@ services:
       - ${L2_MEDIA_1}:/mnt/source/f-ltv:ro
       - ${L2_MEDIA_2}:/mnt/source/e:ro
       - ${L2_MEDIA_3}:/mnt/source/d-4k-index:ro
-      - ${L2_MEDIA_4}:/mnt/source/f-downloads:ro
+      - ${L2_MEDIA_4}:/mnt/source/c-index:ro
       - ${L2_MEDIA_5}:/mnt/source/f-index:ro
     depends_on:
       redis2:
@@ -195,7 +195,7 @@ services:
       - ${L2_MEDIA_1}:/mnt/source/f-ltv:ro
       - ${L2_MEDIA_2}:/mnt/source/e:ro
       - ${L2_MEDIA_3}:/mnt/source/d-4k-index:ro
-      - ${L2_MEDIA_4}:/mnt/source/f-downloads:ro
+      - ${L2_MEDIA_4}:/mnt/source/c-index:ro
       - hf_cache:/root/.cache/huggingface   # Persist model downloads across rebuilds
     depends_on:
       redis2:
@@ -235,7 +235,7 @@ services:
       - ${L2_MEDIA_1}:/mnt/source/f-ltv:ro
       - ${L2_MEDIA_2}:/mnt/source/e:ro
       - ${L2_MEDIA_3}:/mnt/source/d-4k-index:ro
-      - ${L2_MEDIA_4}:/mnt/source/f-downloads:ro
+      - ${L2_MEDIA_4}:/mnt/source/c-index:ro
     depends_on:
       - api2
     networks:
