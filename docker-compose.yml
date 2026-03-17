@@ -140,6 +140,7 @@ services:
       - ${L1_MEDIA_1}:/mnt/source:ro
       - ${L1_MEDIA_2:-/tmp}:/mnt/i-media:ro
       - ${FRAME_CACHE_DIR:-/tmp/lumen_frame_cache}:/mnt/frame_cache
+      - ./models:/app/models
     depends_on:
       redis:
         condition: service_healthy
