@@ -41,7 +41,7 @@ jobs:
           echo "$CHANGED" | grep -qE '^frontend/'           && SERVICES="$SERVICES frontend"
 
           if [ -n "$SERVICES" ]; then
-            BUILD_CMD="docker compose build --no-cache $SERVICES"
+            BUILD_CMD="DOCKER_BUILDKIT=1 docker compose build --parallel $SERVICES"
           else
             BUILD_CMD="echo 'No image rebuild needed'"
           fi
