@@ -242,7 +242,7 @@ services:
     command: >
       celery flower
       --broker=${CELERY_BROKER_URL:-redis://lumen-redis:6379/0}
-      --purge_offline_workers=30
+      --purge_offline_workers=1800
     ports:
       - "127.0.0.1:5555:5555"  # SSH tunnel for admin access
     environment:
