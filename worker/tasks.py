@@ -21,7 +21,7 @@ from typing import List, Optional
 import numpy as np
 from PIL import Image
 from qdrant_client import QdrantClient
-from qdrant_client.models import Distance, PointStruct, VectorParams
+from qdrant_client.models import Distance, FieldCondition, Filter, MatchValue, PointStruct, VectorParams
 from sqlalchemy import select
 
 from celery_app import app
@@ -53,9 +53,38 @@ log = logging.getLogger(__name__)
 # Set LUMEN_PATH_MAP_n env vars (format: /linux/prefix:C:/win/path) to enable.
 # ---------------------------------------------------------------------------
 
+_SOURCE_MOUNT = "/mnt/source"
+
+
+def _to_relative_path(path: str) -> str:
+    """Strip /mnt/source/ prefix so only the mount-relative portion is stored.
+
+    Storing mount-relative paths means changing L*_MEDIA_N Windows host paths
+    never requires a DB/Qdrant migration — only the container mount name matters.
+    Paths not under /mnt/source (S3 keys, /data/media, /mnt/i-media) are unchanged.
+    """
+    prefix = _SOURCE_MOUNT + "/"
+    if path.startswith(prefix):
+        return path[len(prefix):]
+    return path
+
+
 def _translate_path(path: str) -> str:
-    """Map /mnt/source/... paths to Windows-native paths when running on Windows.
-    Reads LUMEN_PATH_MAP_0, LUMEN_PATH_MAP_1, ... from environment. No-op on Linux."""
+    """Map stored paths to filesystem-native paths.
+
+    Handles three formats:
+    - Relative (new): 'c-index/file.mp4'
+        → Linux: '/mnt/source/c-index/file.mp4'
+        → Windows: translated via LUMEN_PATH_MAP after expanding to /mnt/source/
+    - Absolute Linux (legacy): '/mnt/source/...'
+        → Linux: unchanged
+        → Windows: translated via LUMEN_PATH_MAP
+    - Windows (legacy, native worker only): 'C:/...' → returned as-is
+    """
+    # Resolve relative paths (new format) to absolute /mnt/source/ first
+    if not path.startswith("/") and not (len(path) >= 2 and path[1] == ":"):
+        path = _SOURCE_MOUNT + "/" + path
+
     if sys.platform != "win32":
         return path
     i = 0
@@ -282,6 +311,9 @@ def crawl_and_dispatch(self, media_root: str):
                 sr = scan_root.replace("\\", "/")
                 if fp.startswith(sr):
                     file_path = media_root.rstrip("/") + "/" + fp[len(sr):].lstrip("/")
+            # Strip /mnt/source/ prefix — store mount-relative paths so
+            # changing the Windows host drive/folder never requires a DB migration.
+            file_path = _to_relative_path(file_path)
             ingest_media.delay(file_path, file_type)
 
         return {"status": "dispatched", "count": len(files)}
@@ -370,6 +402,15 @@ def ingest_media(self, file_path: str, file_type: str):
             MediaFile.file_hash == file_hash
         ).first()
         if existing:
+            if existing.file_path != file_path:
+                # Same content, new location — file was moved/renamed.
+                # Heal the stored path without re-embedding.
+                old_path = existing.file_path
+                existing.file_path = file_path
+                db.commit()
+                relocate_file_path.delay(old_path, file_path)
+                print(f"File relocated: {old_path!r} → {file_path!r}")
+                return {"status": "relocated", "old_path": old_path, "new_path": file_path}
             print(f"Duplicate file (same hash), skipping: {file_path}")
             return {"status": "skipped", "reason": "duplicate_hash"}
 
@@ -1061,6 +1102,32 @@ def backfill_audio_segments(self, dry_run: bool = False):
     }
     log.info("[AudioBackfill] Done: %s", summary)
     return summary
+
+
+@app.task(
+    bind=True,
+    autoretry_for=(Exception,),
+    retry_backoff=True,
+    retry_backoff_max=300,
+    max_retries=3,
+)
+def relocate_file_path(self, old_path: str, new_path: str):
+    """
+    Update file_path in Qdrant for all points that match old_path.
+
+    Fired automatically by ingest_media when a file is discovered at a new
+    location with the same hash (moved/renamed). No re-embedding needed —
+    only the payload field is updated.
+    """
+    result = qdrant_client.set_payload(
+        collection_name=QDRANT_COLLECTION_NAME,
+        payload={"file_path": new_path},
+        points=Filter(
+            must=[FieldCondition(key="file_path", match=MatchValue(value=old_path))]
+        ),
+    )
+    log.info("[Relocate] %r → %r (Qdrant status: %s)", old_path, new_path, result)
+    return {"old_path": old_path, "new_path": new_path}
 
 
 @app.task(
