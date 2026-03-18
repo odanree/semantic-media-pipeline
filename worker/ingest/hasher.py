@@ -25,13 +25,17 @@ def compute_file_hash(file_path: str, chunk_size: int = 8192) -> str:
         # For video files, only hash the first 8KB (10,000x faster)
         # Header/metadata is unique enough to prevent duplicates
         ext = Path(file_path).suffix.lower()
-        is_video = ext in {".mp4", ".mov", ".mkv", ".avi", ".flv", ".wmv", ".webm", ".m4v"}
+        try:
+            from processors import get_registry
+            processor = get_registry().get_by_extension(ext)
+            hash_full = processor.hash_full_file if processor else True
+        except ImportError:
+            hash_full = ext not in {".mp4", ".mov", ".mkv", ".avi", ".flv", ".wmv", ".webm", ".m4v"}
 
         bytes_read = 0
         with open(file_path, "rb") as f:
             while True:
-                # For videos: stop after first chunk (8KB)
-                if is_video and bytes_read >= chunk_size:
+                if not hash_full and bytes_read >= chunk_size:
                     break
                 chunk = f.read(chunk_size)
                 if not chunk:
