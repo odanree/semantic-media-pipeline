@@ -198,25 +198,24 @@ def score_with_ragas(results: List[Dict[str, Any]]) -> Dict[str, float]:
         import numpy as np
         from datasets import Dataset  # type: ignore[import]
         from ragas import evaluate  # type: ignore[import]
-        from ragas.metrics import (  # type: ignore[import]
-            Faithfulness,
-            AnswerRelevancy,
-            ContextRecall,
-            ContextPrecision,
-        )
-        from ragas.llms import LangchainLLMWrapper  # type: ignore[import]
-        from ragas.embeddings import LangchainEmbeddingsWrapper  # type: ignore[import]
-        from langchain_openai import ChatOpenAI, OpenAIEmbeddings  # type: ignore[import]
+        from ragas.metrics._faithfulness import faithfulness as Faithfulness  # type: ignore[import]
+        from ragas.metrics._answer_relevance import answer_relevancy as AnswerRelevancy  # type: ignore[import]
+        from ragas.metrics._context_precision import context_precision as ContextPrecision  # type: ignore[import]
+        from ragas.metrics._context_recall import context_recall as ContextRecall  # type: ignore[import]
     except ImportError:
         log.error(
             "ragas or datasets not installed. "
-            "Run: pip install ragas datasets langchain-openai"
+            "Run: pip install ragas datasets"
         )
         return _fallback_scores(results)
 
-    # Explicitly wire LLM + embeddings to avoid OpenAIEmbeddings.embed_query compat error
-    llm = LangchainLLMWrapper(ChatOpenAI(model="gpt-4o-mini", temperature=0))
-    embeddings = LangchainEmbeddingsWrapper(OpenAIEmbeddings())
+    import openai as _openai
+    openai_client = _openai.OpenAI()
+    from ragas.llms import llm_factory  # type: ignore[import]
+    from ragas.embeddings import LangchainEmbeddingsWrapper  # type: ignore[import]
+    from langchain_openai import OpenAIEmbeddings as LCOpenAIEmbeddings  # type: ignore[import]
+    llm = llm_factory("gpt-4o-mini", client=openai_client)
+    embeddings = LangchainEmbeddingsWrapper(LCOpenAIEmbeddings())
 
     # RAGAS expects a HuggingFace Dataset with these column names
     eval_data = {
@@ -229,14 +228,13 @@ def score_with_ragas(results: List[Dict[str, Any]]) -> Dict[str, float]:
     dataset = Dataset.from_dict(eval_data)
 
     try:
+        for m in [Faithfulness, AnswerRelevancy, ContextRecall, ContextPrecision]:
+            m.llm = llm
+        AnswerRelevancy.embeddings = embeddings
+
         ragas_result = evaluate(
             dataset,
-            metrics=[
-                Faithfulness(llm=llm),
-                AnswerRelevancy(llm=llm, embeddings=embeddings),
-                ContextRecall(llm=llm),
-                ContextPrecision(llm=llm),
-            ],
+            metrics=[Faithfulness, AnswerRelevancy, ContextRecall, ContextPrecision],
         )
         # RAGAS 0.2+ returns per-sample lists — take the mean
         def _mean(val):
@@ -289,7 +287,7 @@ def print_summary(scores: Dict[str, float], thresholds: Dict[str, float]) -> boo
     all_pass = True
     for metric, threshold in thresholds.items():
         score = scores.get(metric, 0.0)
-        status = "✓ PASS" if score >= threshold else "✗ FAIL"
+        status = "PASS" if score >= threshold else "FAIL"
         if score < threshold:
             all_pass = False
         print(f"{metric:<28}{score:>8.4f}{threshold:>10.2f}{status:>8}")
