@@ -15,7 +15,7 @@ from fastapi import APIRouter, HTTPException, Request
 from rate_limit import limiter, LIMIT_SEARCH, LIMIT_SEARCH_VEC
 from pydantic import BaseModel
 from qdrant_client import QdrantClient
-from qdrant_client.models import Filter, FieldCondition, MatchValue, ScrollRequest
+from qdrant_client.models import Filter, FieldCondition, MatchValue, ScrollRequest, Range
 
 router = APIRouter()
 
@@ -52,6 +52,7 @@ qdrant_client = QdrantClient(
     port=QDRANT_PORT,
     grpc_port=QDRANT_GRPC_PORT,
     prefer_grpc=QDRANT_PREFER_GRPC,
+    timeout=30,
 )
 
 # ---------------------------------------------------------------------------
@@ -539,6 +540,120 @@ async def search_media(request: Request, body: SearchRequest):
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Search failed: {str(e)}")
+
+
+class SimilarRequest(BaseModel):
+    file_path: str
+    timestamp: Optional[float] = None   # None for images
+    limit: int = 10                     # distinct files to return
+    threshold: float = 0.5             # higher default — want genuinely similar
+
+
+@router.post("/similar")
+@limiter.limit(LIMIT_SEARCH)
+async def find_similar(request: Request, body: SimilarRequest):
+    """
+    Find videos/images visually similar to a specific frame.
+
+    Looks up the stored CLIP embedding for the given file_path + timestamp,
+    then searches Qdrant for nearest neighbours grouped by file — so each
+    result is a distinct video/image, not individual frames.
+    No CLIP model inference required (reuses the stored vector).
+    """
+    start_time = time.time()
+
+    # 1. Find the source frame's point ID using a tight timestamp window.
+    # A ±5s range filter narrows scroll to frames near the target timestamp,
+    # so even 2-hour videos (3600 frames at 0.5fps) return the right frame
+    # without scrolling the entire file. Falls back to file-only scroll for
+    # images (no timestamp) or if the windowed scroll returns nothing.
+    source_conditions = [FieldCondition(key="file_path", match=MatchValue(value=body.file_path))]
+
+    if body.timestamp is not None:
+        windowed_conditions = source_conditions + [
+            FieldCondition(
+                key="timestamp",
+                range=Range(gte=body.timestamp - 5.0, lte=body.timestamp + 5.0),
+            )
+        ]
+        windowed_result, _ = qdrant_client.scroll(
+            collection_name=QDRANT_COLLECTION_NAME,
+            scroll_filter=Filter(must=windowed_conditions),
+            limit=10,
+            with_payload=True,
+            with_vectors=False,
+        )
+    else:
+        windowed_result = []
+
+    if windowed_result:
+        scroll_result = windowed_result
+    else:
+        # Fallback: no timestamp or no frames in window — scroll first page
+        scroll_result, _ = qdrant_client.scroll(
+            collection_name=QDRANT_COLLECTION_NAME,
+            scroll_filter=Filter(must=source_conditions),
+            limit=20,
+            with_payload=True,
+            with_vectors=False,
+        )
+
+    if not scroll_result:
+        raise HTTPException(status_code=404, detail="File not found in index")
+
+    # Pick the closest timestamp match among the returned frames
+    if body.timestamp is not None and len(scroll_result) > 1:
+        source_point = min(
+            scroll_result,
+            key=lambda p: abs((p.payload.get("timestamp") or 0) - body.timestamp),
+        )
+    else:
+        source_point = scroll_result[0]
+
+    # 2. Search using point ID as query — Qdrant resolves the vector server-side,
+    # no client-side vector transfer needed.
+    exclude_source = Filter(must_not=[
+        FieldCondition(key="file_path", match=MatchValue(value=body.file_path))
+    ])
+
+    # Oversample so per-file grouping still yields `limit` distinct files.
+    # 5× is enough — no re-ranking needed here (scores come directly from Qdrant).
+    oversample_limit = body.limit * 5
+
+    raw_points = qdrant_client.query_points(
+        collection_name=QDRANT_COLLECTION_NAME,
+        query=source_point.id,
+        limit=oversample_limit,
+        with_payload=True,
+        with_vectors=False,
+        score_threshold=body.threshold,
+        query_filter=exclude_source,
+    ).points
+
+    # 3. Group by file — keep best-scoring frame per file
+    file_best: dict = {}
+    for point in raw_points:
+        fp = point.payload.get("file_path", "")
+        score = float(point.score)
+        if fp not in file_best or score > file_best[fp]["best_similarity"]:
+            file_best[fp] = {
+                "file_path": fp,
+                "file_type": point.payload.get("file_type", ""),
+                "best_similarity": score,
+                "best_timestamp": point.payload.get("timestamp"),
+                "best_frame_index": point.payload.get("frame_index"),
+                "audio_rms_energy": point.payload.get("audio_rms_energy"),
+            }
+
+    results = sorted(file_best.values(), key=lambda x: x["best_similarity"], reverse=True)[:body.limit]
+
+    return {
+        "source_file": body.file_path,
+        "source_timestamp": body.timestamp,
+        "results": results,
+        "count": len(results),
+        "execution_time_ms": round((time.time() - start_time) * 1000, 2),
+    }
 
 
 @router.post("/search-vector")
