@@ -130,11 +130,12 @@ services:
       - EMBEDDING_BATCH_SIZE=${EMBEDDING_BATCH_SIZE:-96}
       - EMBEDDING_DEVICE=cpu
       - FFMPEG_TIMEOUT=${FFMPEG_TIMEOUT:-}
-      - FRAME_CACHE_DIR=/tmp/lumen_frames
+      - FRAME_CACHE_DIR=/mnt/frame_cache
     user: root
     volumes:
       - media2_data:/data/media
       - worker2_tmp:/tmp/lumen_frames
+      - ${L2_FRAME_CACHE_DIR:-/tmp/lumen2_frame_cache}:/mnt/frame_cache
       - /usr/lib/wsl/lib:/usr/lib/wsl/lib
       - ${L2_MEDIA_1}:/mnt/source/f-ltv:ro
       - ${L2_MEDIA_2}:/mnt/source/e:ro
