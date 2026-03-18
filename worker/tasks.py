@@ -136,8 +136,9 @@ def _s3_size_and_hash(key: str) -> tuple:
     meta = storage.head(key)
     file_size = meta["size"]
     ext = Path(key).suffix.lower()
-    is_video = ext in {".mp4", ".mov", ".mkv", ".avi", ".flv", ".wmv", ".webm", ".m4v"}
-    data = storage.read_partial(key, 8192) if is_video else storage.read(key)
+    from processors import get_registry
+    _proc = get_registry().get_by_extension(ext)
+    data = storage.read_partial(key, 8192) if (_proc and not _proc.hash_full_file) else storage.read(key)
     return file_size, hashlib.sha256(data).hexdigest()
 
 
@@ -325,10 +326,12 @@ def ingest_media(self, file_path: str, file_type: str):
             MediaFile.processing_status.in_(["pending", "processing"]),
         ).first()
         if stale:
-            if stale.file_type == "image":
-                result = process_image.delay(file_path, str(stale.id))
-            else:
-                result = process_video.delay(file_path, str(stale.id))
+            from processors import get_registry
+            _proc = get_registry().get_by_file_type(stale.file_type)
+            if _proc is None:
+                print(f"No processor for file_type={stale.file_type!r}, skipping: {file_path}")
+                return {"status": "skipped", "reason": "unsupported_file_type"}
+            result = _proc.get_celery_task().delay(file_path, str(stale.id))
             print(f"Re-dispatched {stale.processing_status} file: {file_path}")
             return {"status": "redispatched", "media_record_id": str(stale.id), "task_id": result.id}
 
@@ -385,10 +388,12 @@ def ingest_media(self, file_path: str, file_type: str):
         db.refresh(media_record)
 
         # Dispatch to processor — hash already set, no duplicate check needed there
-        if file_type == "image":
-            result = process_image.delay(file_path, str(media_record.id))
-        else:
-            result = process_video.delay(file_path, str(media_record.id))
+        from processors import get_registry
+        _proc = get_registry().get_by_file_type(file_type)
+        if _proc is None:
+            print(f"No processor for file_type={file_type!r}, skipping: {file_path}")
+            return {"status": "skipped", "reason": "unsupported_file_type"}
+        result = _proc.get_celery_task().delay(file_path, str(media_record.id))
 
         return {
             "status": "dispatched",
