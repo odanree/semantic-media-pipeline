@@ -77,7 +77,7 @@ services:
       # Reduces resident memory significantly at the cost of slightly slower
       # cold-start searches (data is paged in from disk on first access).
       QDRANT__STORAGE__MMAP_THRESHOLD_KB: "20000"
-    mem_limit: 6g
+    mem_limit: 8g
     healthcheck:
       test: ["CMD-SHELL", "bash -c '</dev/tcp/localhost/6333' 2>/dev/null"]
       interval: 10s
@@ -130,12 +130,12 @@ services:
       - EMBEDDING_BATCH_SIZE=${EMBEDDING_BATCH_SIZE:-96}
       - EMBEDDING_DEVICE=cpu
       - FFMPEG_TIMEOUT=${FFMPEG_TIMEOUT:-}
-      - FRAME_CACHE_DIR=/tmp/lumen_frames
+      - FRAME_CACHE_DIR=/mnt/frame_cache
     user: root
     volumes:
       - media2_data:/data/media
       - worker2_tmp:/tmp/lumen_frames
-      - proxies2_data:/mnt/proxies
+      - ${L2_FRAME_CACHE_DIR:-/tmp/lumen2_frame_cache}:/mnt/frame_cache
       - /usr/lib/wsl/lib:/usr/lib/wsl/lib
       - ${L2_MEDIA_1}:/mnt/source/f-ltv:ro
       - ${L2_MEDIA_2}:/mnt/source/e:ro
@@ -191,7 +191,6 @@ services:
     volumes:
       - ./api:/app                    # live reload — changes take effect without rebuild
       - media2_data:/data/media
-      - proxies2_data:/mnt/proxies:ro
       - ${L2_MEDIA_1}:/mnt/source/f-ltv:ro
       - ${L2_MEDIA_2}:/mnt/source/e:ro
       - ${L2_MEDIA_3}:/mnt/source/d-4k-index:ro
@@ -281,9 +280,6 @@ volumes:
     external: true
   worker2_tmp:
     name: lumen2_worker2_tmp
-    external: true
-  proxies2_data:
-    name: lumen2_proxies2_data
     external: true
   hf_cache:
     external: true   # Shared with main lumen stack — same model, one download
