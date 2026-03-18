@@ -282,6 +282,12 @@ build-log.txt
 scripts/retry_*.py
 scripts/*_local.py
 
+# Eval results (contain API responses, not for repo)
+scripts/eval_results*.json
+
+# CI eval env (contains real API keys)
+.env.ci
+
 # TypeScript build artifacts
 *.tsbuildinfo
 
