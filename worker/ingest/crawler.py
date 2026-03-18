@@ -44,37 +44,38 @@ def _build_exclude_inodes(paths: List[str]) -> Set[Tuple[int, int]]:
     return inodes
 
 
-# Supported media extensions
-SUPPORTED_IMAGE_EXTENSIONS = {
-    ".jpg",
-    ".jpeg",
-    ".png",
-    ".heic",
-    ".webp",
-    ".bmp",
-    ".gif",
-}
-SUPPORTED_VIDEO_EXTENSIONS = {
-    ".mp4",
-    ".mov",
-    ".mkv",
-    ".avi",
-    ".flv",
-    ".wmv",
-    ".webm",
-    ".m4v",
-}
-SUPPORTED_EXTENSIONS = SUPPORTED_IMAGE_EXTENSIONS | SUPPORTED_VIDEO_EXTENSIONS
+def _get_supported_extensions() -> frozenset:
+    """Return supported extensions from the processor registry.
+    Falls back to hardcoded sets if the registry is not importable (e.g. isolated tests)."""
+    try:
+        from processors import get_registry
+        return get_registry().supported_extensions
+    except ImportError:
+        return frozenset({
+            ".jpg", ".jpeg", ".png", ".heic", ".webp", ".bmp", ".gif",
+            ".mp4", ".mov", ".mkv", ".avi", ".flv", ".wmv", ".webm", ".m4v",
+        })
 
 
 def get_file_type(file_path: str) -> str:
-    """Determine file type (image or video) based on extension"""
+    """Determine file type based on extension via processor registry."""
     ext = Path(file_path).suffix.lower()
-    if ext in SUPPORTED_IMAGE_EXTENSIONS:
-        return "image"
-    elif ext in SUPPORTED_VIDEO_EXTENSIONS:
-        return "video"
-    return "unknown"
+    try:
+        from processors import get_registry
+        processor = get_registry().get_by_extension(ext)
+        return processor.file_type if processor else "unknown"
+    except ImportError:
+        if ext in {".jpg", ".jpeg", ".png", ".heic", ".webp", ".bmp", ".gif"}:
+            return "image"
+        if ext in {".mp4", ".mov", ".mkv", ".avi", ".flv", ".wmv", ".webm", ".m4v"}:
+            return "video"
+        return "unknown"
+
+
+# Kept for backwards compatibility with any code that imported these directly.
+SUPPORTED_IMAGE_EXTENSIONS = frozenset({".jpg", ".jpeg", ".png", ".heic", ".webp", ".bmp", ".gif"})
+SUPPORTED_VIDEO_EXTENSIONS = frozenset({".mp4", ".mov", ".mkv", ".avi", ".flv", ".wmv", ".webm", ".m4v"})
+SUPPORTED_EXTENSIONS = _get_supported_extensions()
 
 
 def crawl_media(
@@ -155,7 +156,7 @@ def crawl_media(
                         ):
                             continue
                         file_ext = Path(entry.name).suffix.lower()
-                        if file_ext in SUPPORTED_EXTENSIONS:
+                        if file_ext in _get_supported_extensions():
                             file_type = get_file_type(entry.path)
                             results.append((entry.path, file_type))
                     elif entry.is_dir(follow_symlinks=False):
@@ -209,7 +210,7 @@ def crawl_s3(prefix: str = "") -> List[Tuple[str, str]]:
             if key.endswith("/"):
                 continue
             ext = Path(key).suffix.lower()
-            if ext in SUPPORTED_EXTENSIONS:
+            if ext in _get_supported_extensions():
                 results.append((key, get_file_type(key)))
     log.info(
         "S3 crawl found %d media objects in s3://%s/%s",
