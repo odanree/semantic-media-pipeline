@@ -28,13 +28,14 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import base64
 import json
 import logging
 import os
 import sys
 import time
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import httpx
 
@@ -42,6 +43,7 @@ log = logging.getLogger(__name__)
 
 API_BASE_URL = os.getenv("API_BASE_URL", "http://localhost:8000")
 API_KEY = os.getenv("API_KEY", "")
+OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 
 # CI thresholds — fail the pipeline if metrics fall below these
 DEFAULT_THRESHOLDS = {
@@ -50,6 +52,64 @@ DEFAULT_THRESHOLDS = {
     "context_recall": 0.0,      # requires ground_truth to match indexed content; raise when eval dataset matures
     "context_precision": 0.0,   # requires ground_truth to match indexed content; raise when eval dataset matures
 }
+
+
+# ---------------------------------------------------------------------------
+# Caption model A/B testing — re-caption retrieved frames via Ollama VLM
+# ---------------------------------------------------------------------------
+
+CAPTION_PROMPT = (
+    "Describe what is happening in this image in one or two sentences. "
+    "Be specific about subjects, actions, setting, and any notable visual details. "
+    "Do not start with 'The image shows' or 'This is a'."
+)
+
+
+async def _fetch_frame_b64(src: Dict[str, Any], client: httpx.AsyncClient) -> Optional[str]:
+    """Fetch a frame thumbnail and return it as a base64 string."""
+    file_path = src.get("file_path", "")
+    timestamp = src.get("timestamp", src.get("t", 0))
+    if not file_path:
+        return None
+    try:
+        headers = {"X-API-Key": API_KEY} if API_KEY else {}
+        resp = await client.get(
+            f"{API_BASE_URL}/api/thumbnail",
+            params={"path": file_path, "t": timestamp},
+            headers=headers,
+            timeout=15.0,
+        )
+        if resp.status_code == 200:
+            return base64.b64encode(resp.content).decode()
+    except Exception as exc:
+        log.debug("Thumbnail fetch failed for %s: %s", file_path, exc)
+    return None
+
+
+async def recaption_source(src: Dict[str, Any], model: str, client: httpx.AsyncClient) -> str:
+    """Re-caption a single source frame using an Ollama vision model."""
+    img_b64 = await _fetch_frame_b64(src, client)
+    if not img_b64:
+        return src.get("caption") or src.get("file_path", "")
+    try:
+        resp = await client.post(
+            f"{OLLAMA_BASE_URL}/api/generate",
+            json={"model": model, "prompt": CAPTION_PROMPT, "images": [img_b64], "stream": False},
+            timeout=60.0,
+        )
+        resp.raise_for_status()
+        return resp.json().get("response", "").strip()
+    except Exception as exc:
+        log.debug("Ollama recaption failed: %s", exc)
+        return src.get("caption") or src.get("file_path", "")
+
+
+async def recaption_sources(
+    sources: List[Dict[str, Any]], model: str, client: httpx.AsyncClient
+) -> List[str]:
+    """Re-caption all sources concurrently."""
+    tasks = [recaption_source(src, model, client) for src in sources]
+    return await asyncio.gather(*tasks)
 
 
 # ---------------------------------------------------------------------------
@@ -74,7 +134,9 @@ async def query_rag(question: str, client: httpx.AsyncClient) -> Dict[str, Any]:
         return {"answer": "", "sources": [], "error": str(exc)}
 
 
-async def collect_responses(dataset: List[Dict]) -> List[Dict[str, Any]]:
+async def collect_responses(
+    dataset: List[Dict], caption_model: Optional[str] = None
+) -> List[Dict[str, Any]]:
     """Run all eval questions against the live RAG endpoint."""
     results = []
     headers = {"X-API-Key": API_KEY} if API_KEY else {}
@@ -85,13 +147,22 @@ async def collect_responses(dataset: List[Dict]) -> List[Dict[str, Any]]:
             response = await query_rag(item["question"], client)
             elapsed = time.perf_counter() - t0
 
+            sources = response.get("sources", []) or response.get("retrieved", [])
+            if caption_model and sources:
+                log.info("Re-captioning %d sources with %s...", len(sources), caption_model)
+                contexts = await recaption_sources(sources, caption_model, client)
+            else:
+                contexts = _extract_contexts(response)
+
             results.append(
                 {
                     "id": item["id"],
                     "question": item["question"],
                     "ground_truth": item["ground_truth"],
                     "answer": response.get("answer", ""),
-                    "contexts": _extract_contexts(response),
+                    "contexts": contexts,
+                    "contexts_original": _extract_contexts(response) if caption_model else None,
+                    "caption_model": caption_model or "stored",
                     "latency_ms": round(elapsed * 1000, 1),
                     "error": response.get("error"),
                 }
@@ -252,6 +323,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--context-precision", type=float, default=DEFAULT_THRESHOLDS["context_precision"]
     )
+    parser.add_argument(
+        "--caption-model",
+        default=None,
+        metavar="MODEL",
+        help="Ollama model to re-caption retrieved frames (e.g. llava:7b). "
+             "If omitted, stored captions are used.",
+    )
     return parser.parse_args()
 
 
@@ -266,8 +344,12 @@ async def main_async(args: argparse.Namespace) -> int:
     with open(dataset_path) as f:
         dataset = json.load(f)
 
+    caption_model = args.caption_model
+    if caption_model:
+        log.info("Caption A/B mode: re-captioning retrieved frames with %s", caption_model)
+
     log.info("Running %d eval questions against %s", len(dataset), API_BASE_URL)
-    results = await collect_responses(dataset)
+    results = await collect_responses(dataset, caption_model=caption_model)
 
     log.info("Scoring with RAGAS...")
     scores = score_with_ragas(results)
