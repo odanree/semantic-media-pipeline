@@ -549,20 +549,21 @@ class PlaylistResponse(BaseModel):
     expires_at: str
 
 
-async def _probe_video_codec(path: str) -> str:
-    """Return the video codec name ('h264', 'hevc', 'av1', …) or '' on failure.
+async def _probe_codecs(path: str) -> tuple[str, str]:
+    """Return (video_codec, audio_codec) or ('', '') on failure.
 
+    Probes both streams in a single ffprobe call.
     -probesize 10M limits reads to the first 10 MB of the file so ffprobe
     returns immediately from the container header instead of seeking to the
     moov atom at the end of large non-faststart DJI files on slow 9P mounts.
+    Returns lowercase codec names e.g. ('h264', 'aac'), ('hevc', 'ac3'), etc.
     """
     cmd = [
         "ffprobe", "-v", "quiet",
         "-probesize", "10M",
         "-analyzeduration", "0",
-        "-select_streams", "v:0",
-        "-show_entries", "stream=codec_name",
-        "-of", "default=noprint_wrappers=1:nokey=1",
+        "-show_entries", "stream=codec_name,codec_type",
+        "-of", "csv=p=0",
         path,
     ]
     try:
@@ -572,10 +573,20 @@ async def _probe_video_codec(path: str) -> str:
             stderr=asyncio.subprocess.PIPE,
         )
         stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=15)
-        return stdout.decode().strip().lower()
+        video_codec = ""
+        audio_codec = ""
+        for line in stdout.decode().splitlines():
+            parts = line.strip().lower().split(",")
+            if len(parts) == 2:
+                codec, ctype = parts
+                if ctype == "video" and not video_codec:
+                    video_codec = codec
+                elif ctype == "audio" and not audio_codec:
+                    audio_codec = codec
+        return video_codec, audio_codec
     except Exception as e:
         log.warning("[Playlist] ffprobe failed for %s: %s", path, e)
-        return ""
+        return "", ""
 
 
 async def _extract_segment(resolved_path: str, start_sec: float, duration: float, out_path: str) -> bool:
@@ -601,7 +612,20 @@ async def _extract_segment(resolved_path: str, start_sec: float, duration: float
     # Codec-specific MP4→Annex B bitstream filter required for MPEG-TS muxing
     _BSF_MAP = {"h264": "h264_mp4toannexb", "hevc": "hevc_mp4toannexb"}
 
-    codec = await _probe_video_codec(resolved_path)
+    codec, audio_codec = await _probe_codecs(resolved_path)
+    # Only transcode audio when source is not AAC — stream-copying already-AAC
+    # audio avoids encoder priming delay (2-3s A/V desync). AC3/DTS/MP3 must
+    # be transcoded since Chrome MSE only supports AAC in MPEG-TS.
+    if audio_codec == "aac":
+        audio_args = ["-c:a", "copy"]
+        audio_filter_args: list[str] = []
+    else:
+        audio_args = ["-c:a", "aac", "-b:a", "128k"]
+        # Reset audio PTS to 0 alongside setpts=PTS-STARTPTS on video so
+        # audio DTS stays in sync with the video DTS reset.
+        audio_filter_args = ["-af", "asetpts=PTS-STARTPTS"]
+    log.info("[Playlist] codecs for %s: video=%s audio=%s → audio_args=%s",
+             resolved_path, codec, audio_codec, audio_args)
 
     if not codec:
         # ffprobe couldn't read codec within probesize limit — moov atom is
@@ -618,12 +642,13 @@ async def _extract_segment(resolved_path: str, start_sec: float, duration: float
         bsf = _BSF_MAP["h264"]
         cmd_copy = [
             "ffmpeg", "-y",
+            "-threads", "4",
             "-ss", str(start_sec), "-t", str(duration),
             "-i", resolved_path,
             "-map", "0:v:0",
             "-map", "0:a:0?",
             "-c:v", "copy",
-            "-c:a", "aac", "-b:a", "128k",
+            *audio_args,
             "-bsf:v", bsf,
             "-avoid_negative_ts", "make_zero",
             "-f", "mpegts",
@@ -635,13 +660,21 @@ async def _extract_segment(resolved_path: str, start_sec: float, duration: float
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
-            _, stderr = await asyncio.wait_for(proc.communicate(), timeout=90)
+            _, stderr = await asyncio.wait_for(proc.communicate(), timeout=20)
             if proc.returncode == 0:
                 return True
             log.warning("[Playlist] stream-copy failed for %s: %s",
                         resolved_path, stderr[-300:].decode(errors="replace"))
         except asyncio.TimeoutError:
-            log.warning("[Playlist] stream-copy timed out for %s", resolved_path)
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass
+            try:
+                await asyncio.wait_for(proc.communicate(), timeout=3)
+            except Exception:
+                pass
+            log.warning("[Playlist] stream-copy timed out for %s (non-faststart/slow mount)", resolved_path)
         except Exception as e:
             log.warning("[Playlist] stream-copy exec error for %s: %s", resolved_path, e)
     else:
@@ -650,16 +683,26 @@ async def _extract_segment(resolved_path: str, start_sec: float, duration: float
     # --- Pass 2: libx264 re-encode (CPU only — API has no GPU) ---
     # -pix_fmt yuv420p: force 8-bit 4:2:0 — required for browser MSE compat
     # when source is 10-bit HEVC (Pixel 9) or other high-bit-depth formats.
+    # Fast seek (-ss before -i): reads moov atom once (~1MB) then jumps to keyframe.
+    # Much faster than sequential seek for large 4K files on slow 9P mounts.
+    # Scale caps width at 1920px (1080p) — software 4K encode is too slow on CPU.
     cmd_enc = [
         "ffmpeg", "-y",
+        "-threads", "4",
         "-ss", str(start_sec), "-t", str(duration),
         "-i", resolved_path,
         "-map", "0:v:0",
         "-map", "0:a:0?",
         "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
         "-pix_fmt", "yuv420p",
+        # setpts=PTS-STARTPTS resets video PTS to 0 before encoding.
+        # Fast seek preserves the source file's large timestamps (e.g. 1200s);
+        # without this reset libx264 propagates them into the MPEG-TS DTS,
+        # causing Chrome MSE CHUNK_DEMUXER_ERROR_APPEND_FAILED.
+        "-vf", "setpts=PTS-STARTPTS,scale='min(iw,1920):-2'",
         "-fps_mode", "cfr", "-r", "30",
-        "-c:a", "aac", "-b:a", "128k",
+        *audio_args,
+        *audio_filter_args,
         "-avoid_negative_ts", "make_zero",
         "-f", "mpegts",
         out_path,
@@ -677,6 +720,14 @@ async def _extract_segment(resolved_path: str, start_sec: float, duration: float
         log.warning("[Playlist] libx264 failed for %s: %s", resolved_path,
                     stderr[-200:].decode(errors="replace"))
     except asyncio.TimeoutError:
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            pass
+        try:
+            await asyncio.wait_for(proc.communicate(), timeout=3)
+        except Exception:
+            pass
         log.warning("[Playlist] libx264 timed out for %s", resolved_path)
     except Exception as e:
         log.warning("[Playlist] libx264 exec error for %s: %s", resolved_path, e)
