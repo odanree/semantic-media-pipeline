@@ -196,13 +196,6 @@ services:
       - hf_cache:/root/.cache/huggingface
       - ${L1_SIDECAR_DIR:-/mnt/lumen1-sidecars}:/mnt/sidecars:ro
       - /usr/lib/wsl/lib:/usr/lib/wsl/lib
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu, video]
     depends_on:
       redis:
         condition: service_healthy
