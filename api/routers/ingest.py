@@ -14,6 +14,9 @@ import uuid
 from datetime import datetime, timedelta
 from typing import List
 
+import json
+import struct
+
 import aiofiles
 import boto3
 from botocore.exceptions import ClientError
@@ -260,9 +263,10 @@ def _translate_path(path: str) -> str:
             return linux_prefix.rstrip("/") + "/" + remainder.lstrip("/")
     return path
 
-# Source root for proxy lookup (must match the worker's PROXY_ROOT)
+# Source root for proxy/sidecar lookup (must match worker PROXY_ROOT/SIDECAR_ROOT)
 _SOURCE_ROOT = os.path.realpath("/mnt/source")
 _PROXY_ROOT_DEFAULT = "/mnt/proxies"
+_SIDECAR_ROOT = os.getenv("SIDECAR_ROOT", "/mnt/sidecars").strip()
 
 
 # 4MB chunks = 64x fewer filesystem calls than Starlette's 64KB default.
@@ -523,7 +527,25 @@ async def get_thumbnail(request: Request, path: str, t: float = 0.0):
 
 PLAYLIST_DIR = "/tmp/lumen_playlists"
 PLAYLIST_TTL_SECS = 3600
-_MAX_CONCURRENT_SEGMENTS = 4
+_MAX_CONCURRENT_SEGMENTS = 2
+
+# Detect NVENC availability once at startup.
+# h264_nvenc offloads encode to the GPU's fixed-function encoder, leaving CPU
+# free for decode + audio (loudnorm). Falls back to libx264 if not available.
+def _check_nvenc() -> bool:
+    import subprocess
+    try:
+        r = subprocess.run(
+            ["ffmpeg", "-hide_banner", "-f", "lavfi", "-i", "nullsrc=s=16x16:d=0.1",
+             "-c:v", "h264_nvenc", "-f", "null", "-"],
+            capture_output=True, timeout=10,
+        )
+        return r.returncode == 0  # pragma: no cover
+    except Exception:
+        return False
+
+_NVENC_AVAILABLE = _check_nvenc()
+log.info("[Playlist] NVENC available: %s", _NVENC_AVAILABLE)
 # Global semaphore — shared across ALL concurrent playlist requests so total
 # ffmpeg processes are capped regardless of how many reels are being compiled.
 _PLAYLIST_SEM = asyncio.Semaphore(_MAX_CONCURRENT_SEGMENTS)
@@ -549,20 +571,133 @@ class PlaylistResponse(BaseModel):
     expires_at: str
 
 
-async def _probe_video_codec(path: str) -> str:
-    """Return the video codec name ('h264', 'hevc', 'av1', …) or '' on failure.
+async def _start_faststart_server(  # pragma: no cover
+    sidecar_path: str, original_path: str, mdat_offset: int
+) -> tuple[str, asyncio.AbstractServer]:
+    """
+    Start a minimal asyncio HTTP/1.1 server that presents a virtual faststart
+    file to ffmpeg/ffprobe via HTTP Range requests.
 
+    Bytes 0 … moov_size-1 are served from the local sidecar (fast).
+    Bytes moov_size … N are served from the original file at mdat_offset + N
+    (single pread per Range request — efficient on 9P mounts).
+
+    Returns (url, server).  Caller must close the server after ffmpeg exits.
+    """
+    moov_bytes = open(sidecar_path, "rb").read()
+    moov_size = len(moov_bytes)
+    orig_size = os.path.getsize(original_path)
+    total_size = moov_size + (orig_size - mdat_offset)
+
+    async def _handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        try:
+            headers: dict[bytes, bytes] = {}
+            await reader.readline()  # request line
+            while True:
+                line = await reader.readline()
+                if line in (b"\r\n", b"\n", b""):
+                    break
+                if b":" in line:
+                    k, v = line.split(b":", 1)
+                    headers[k.strip().lower()] = v.strip()
+
+            range_hdr = headers.get(b"range", b"")
+            if range_hdr.startswith(b"bytes="):
+                parts = range_hdr[6:].split(b"-")
+                start = int(parts[0]) if parts[0] else 0
+                end = int(parts[1]) if len(parts) > 1 and parts[1] else total_size - 1
+                end = min(end, total_size - 1)
+                length = end - start + 1
+                writer.write((
+                    f"HTTP/1.1 206 Partial Content\r\n"
+                    f"Content-Type: video/mp4\r\n"
+                    f"Content-Length: {length}\r\n"
+                    f"Content-Range: bytes {start}-{end}/{total_size}\r\n"
+                    f"Accept-Ranges: bytes\r\n"
+                    f"Connection: close\r\n"
+                    f"\r\n"
+                ).encode())
+            else:
+                # Non-Range (initial ffprobe GET): serve only the moov bytes which
+                # are already in memory. Avoids reading from the slow 9P mount just
+                # to satisfy ffprobe's probesize limit.
+                start, end = 0, moov_size - 1
+                length = moov_size
+                writer.write((
+                    f"HTTP/1.1 200 OK\r\n"
+                    f"Content-Type: video/mp4\r\n"
+                    f"Content-Length: {length}\r\n"
+                    f"Accept-Ranges: bytes\r\n"
+                    f"Connection: close\r\n"
+                    f"\r\n"
+                ).encode())
+
+            pos = start
+            remaining = length
+            loop = asyncio.get_event_loop()
+
+            # Serve moov portion from memory
+            if pos < moov_size and remaining > 0:
+                chunk_end = min(moov_size, pos + remaining)
+                writer.write(moov_bytes[pos:chunk_end])
+                remaining -= chunk_end - pos
+                pos = chunk_end
+                await writer.drain()
+
+            # Serve mdat portion via pread on original file
+            if remaining > 0:
+                orig_pos = mdat_offset + (pos - moov_size)
+                with open(original_path, "rb") as orig_f:
+                    orig_f.seek(orig_pos)
+                    while remaining > 0:
+                        chunk = await loop.run_in_executor(
+                            None, orig_f.read, min(remaining, 256 * 1024)
+                        )
+                        if not chunk:
+                            break
+                        writer.write(chunk)
+                        remaining -= len(chunk)
+                        await writer.drain()
+        except Exception:
+            pass
+        finally:
+            writer.close()
+
+    server = await asyncio.start_server(_handle, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    return f"http://127.0.0.1:{port}/", server
+
+
+def _sidecar_for(resolved_path: str) -> tuple[str, str] | None:
+    """
+    Return (sidecar_path, meta_path) if a moov sidecar exists for resolved_path,
+    else None.
+    """
+    if not _SIDECAR_ROOT or not resolved_path.startswith(_SOURCE_ROOT + os.sep):
+        return None
+    rel = resolved_path[len(_SOURCE_ROOT) + 1:]
+    sidecar = os.path.join(_SIDECAR_ROOT, rel + ".moov")
+    meta = sidecar + ".json"
+    if os.path.isfile(sidecar) and os.path.isfile(meta):
+        return sidecar, meta
+    return None
+
+
+async def _probe_codecs(path: str) -> tuple[str, str, int]:
+    """Return (video_codec, audio_codec, audio_sample_rate) or ('', '', 0) on failure.
+
+    Probes both streams in a single ffprobe call.
     -probesize 10M limits reads to the first 10 MB of the file so ffprobe
     returns immediately from the container header instead of seeking to the
     moov atom at the end of large non-faststart DJI files on slow 9P mounts.
+    Returns lowercase codec names e.g. ('h264', 'aac', 48000), ('hevc', 'ac3', 0).
     """
     cmd = [
         "ffprobe", "-v", "quiet",
         "-probesize", "10M",
         "-analyzeduration", "0",
-        "-select_streams", "v:0",
-        "-show_entries", "stream=codec_name",
-        "-of", "default=noprint_wrappers=1:nokey=1",
+        "-show_entries", "stream=codec_name,codec_type,sample_rate",
+        "-of", "csv=p=0",
         path,
     ]
     try:
@@ -572,10 +707,24 @@ async def _probe_video_codec(path: str) -> str:
             stderr=asyncio.subprocess.PIPE,
         )
         stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=15)
-        return stdout.decode().strip().lower()
+        video_codec = ""
+        audio_codec = ""
+        audio_sample_rate = 0
+        for line in stdout.decode().splitlines():
+            parts = line.strip().lower().split(",")
+            if len(parts) >= 2:
+                codec, ctype = parts[0], parts[1]
+                if ctype == "video" and not video_codec:
+                    video_codec = codec
+                elif ctype == "audio" and not audio_codec:
+                    audio_codec = codec
+                    # sample_rate is the 3rd field for audio streams
+                    if len(parts) >= 3 and parts[2].isdigit():
+                        audio_sample_rate = int(parts[2])
+        return video_codec, audio_codec, audio_sample_rate
     except Exception as e:
         log.warning("[Playlist] ffprobe failed for %s: %s", path, e)
-        return ""
+        return "", "", 0
 
 
 async def _extract_segment(resolved_path: str, start_sec: float, duration: float, out_path: str) -> bool:
@@ -601,87 +750,153 @@ async def _extract_segment(resolved_path: str, start_sec: float, duration: float
     # Codec-specific MP4→Annex B bitstream filter required for MPEG-TS muxing
     _BSF_MAP = {"h264": "h264_mp4toannexb", "hevc": "hevc_mp4toannexb"}
 
-    codec = await _probe_video_codec(resolved_path)
+    # --- Moov sidecar: present virtual faststart file to ffprobe + ffmpeg ---
+    # If a sidecar exists for this file, start a local HTTP range server that
+    # serves [corrected moov][original mdat...]. ffprobe reads the moov from
+    # the first few MB (local, fast); ffmpeg seeks via Range requests so only
+    # the keyframe bytes are fetched from the slow 9P mount.
+    faststart_server: asyncio.AbstractServer | None = None
+    input_path = resolved_path
+    sidecar_info = _sidecar_for(resolved_path)
+    if sidecar_info:
+        sidecar_path, meta_path = sidecar_info
+        try:
+            with open(meta_path) as _f:
+                _meta = json.load(_f)
+            input_path, faststart_server = await _start_faststart_server(
+                sidecar_path, resolved_path, _meta["mdat_offset"]
+            )
+            log.info("[Playlist] Using moov sidecar for %s → %s", resolved_path, input_path)
+        except Exception as _e:
+            log.warning("[Playlist] Sidecar setup failed for %s: %s", resolved_path, _e)
+            input_path = resolved_path
+            faststart_server = None
 
-    if not codec:
-        # ffprobe couldn't read codec within probesize limit — moov atom is
-        # likely at the end of a large non-faststart file on a slow 9P mount.
-        # Both stream-copy and re-encode would hang waiting for moov; skip.
-        log.warning("[Playlist] skipping %s — codec probe failed (non-faststart/slow mount)", resolved_path)
-        return False
+    try:
+        codec, audio_codec, audio_sr = await _probe_codecs(input_path)
+        # Only stream-copy AAC when it's already at a browser-compatible sample rate
+        # (44100 or 48000 Hz). Pixel 9 records at 96 kHz — HLS.js's MPEG-TS demuxer
+        # only supports 44100/48000 Hz AAC and throws DEMUXER_ERROR_COULD_NOT_PARSE
+        # on 96 kHz. AC3/DTS/MP3 must always be transcoded (Chrome MSE rejects them).
+        _COMPATIBLE_SR = {44100, 48000}
+        if audio_codec == "aac" and audio_sr in _COMPATIBLE_SR:
+            audio_args = ["-c:a", "copy"]
+        else:
+            audio_args = ["-c:a", "aac", "-b:a", "128k", "-ar", "48000"]
+        log.info("[Playlist] codecs for %s: video=%s audio=%s → audio_args=%s",
+                 resolved_path, codec, audio_codec, audio_args)
 
-    # Only H264 can be stream-copied into MPEG-TS and decoded by Chrome/Edge via
-    # MSE. HEVC stream-copy produces valid .ts but browsers display black video
-    # (audio only) without hardware HEVC decoder. Go straight to re-encode for
-    # any non-H264 codec.
-    if codec == "h264":
-        bsf = _BSF_MAP["h264"]
-        cmd_copy = [
+        if not codec:
+            # ffprobe couldn't read codec — moov not readable within probesize limit.
+            # If a sidecar was available it would have succeeded; skip this clip.
+            log.warning("[Playlist] skipping %s — codec probe failed (non-faststart/slow mount)", resolved_path)
+            return False
+
+        # H264 stream-copy with MP4-to-Annex-B BSF. Falls through to libx264
+        # re-encode if copy fails (e.g. unsupported profile).
+        # HEVC is excluded from stream-copy: HEVC-in-MPEG-TS is not supported by
+        # Chrome/Firefox MSE. HEVC clips go directly to libx264 re-encode below.
+        # With the moov sidecar + HTTP range server, ffmpeg seeks without scanning
+        # the full file, so re-encoding is fast even on slow 9P mounts.
+        if codec in _BSF_MAP and codec != "hevc":
+            bsf = _BSF_MAP[codec]
+            cmd_copy = [
+                "ffmpeg", "-y",
+                "-threads", "2",
+                "-ss", str(start_sec), "-t", str(duration),
+                "-i", input_path,
+                "-map", "0:v:0",
+                "-map", "0:a:0?",
+                "-c:v", "copy",
+                *audio_args,
+                "-bsf:v", bsf,
+                "-avoid_negative_ts", "make_zero",
+                "-f", "mpegts",
+                out_path,
+            ]
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    *cmd_copy,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                _, stderr = await asyncio.wait_for(proc.communicate(), timeout=20)
+                if proc.returncode == 0:
+                    return True
+                log.warning("[Playlist] stream-copy failed for %s: %s",
+                            resolved_path, stderr[-300:].decode(errors="replace"))
+            except asyncio.TimeoutError:
+                try:
+                    proc.kill()
+                except ProcessLookupError:
+                    pass
+                try:
+                    await asyncio.wait_for(proc.communicate(), timeout=3)
+                except Exception:
+                    pass
+                log.warning("[Playlist] stream-copy timed out for %s", resolved_path)
+            except Exception as e:
+                log.warning("[Playlist] stream-copy exec error for %s: %s", resolved_path, e)
+        else:
+            log.info("[Playlist] skipping stream-copy for %s (codec=%s, re-encoding)", resolved_path, codec)
+
+        # --- Pass 2: libx264 re-encode (CPU only — API has no GPU) ---
+        # -pix_fmt yuv420p: force 8-bit 4:2:0 — required for browser MSE compat
+        # when source is 10-bit HEVC or other high-bit-depth formats.
+        # Fast seek (-ss before -i) + sidecar HTTP server: ffmpeg Range-requests
+        # only the bytes it needs — no full-file scan on the slow 9P mount.
+        if _NVENC_AVAILABLE:
+            video_enc_args = ["-c:v", "h264_nvenc", "-preset", "p2", "-rc", "vbr", "-cq", "23", "-b:v", "0"]
+        else:
+            video_enc_args = ["-c:v", "libx264", "-preset", "ultrafast", "-crf", "23", "-threads", "2"]
+        cmd_enc = [
             "ffmpeg", "-y",
             "-ss", str(start_sec), "-t", str(duration),
-            "-i", resolved_path,
+            "-i", input_path,
             "-map", "0:v:0",
             "-map", "0:a:0?",
-            "-c:v", "copy",
-            "-c:a", "aac", "-b:a", "128k",
-            "-bsf:v", bsf,
+            *video_enc_args,
+            # format=yuv420p converts full-range (yuvj420p/pc) → limited-range (yuv420p/tv)
+            # required for HLS/MSE compat. -avoid_negative_ts handles PTS zeroing.
+            "-vf", "scale='min(iw,1280)':-2,format=yuv420p",
+            "-fps_mode", "cfr", "-r", "30",
+            "-c:a", "aac", "-b:a", "128k", "-ar", "48000",
+            "-af", "loudnorm",
             "-avoid_negative_ts", "make_zero",
             "-f", "mpegts",
             out_path,
         ]
         try:
             proc = await asyncio.create_subprocess_exec(
-                *cmd_copy,
+                *cmd_enc,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
             _, stderr = await asyncio.wait_for(proc.communicate(), timeout=90)
             if proc.returncode == 0:
+                log.info("[Playlist] re-encoded with libx264 for %s", resolved_path)
                 return True
-            log.warning("[Playlist] stream-copy failed for %s: %s",
-                        resolved_path, stderr[-300:].decode(errors="replace"))
+            log.warning("[Playlist] libx264 failed for %s: %s", resolved_path,
+                        stderr[-200:].decode(errors="replace"))
         except asyncio.TimeoutError:
-            log.warning("[Playlist] stream-copy timed out for %s", resolved_path)
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass
+            try:
+                await asyncio.wait_for(proc.communicate(), timeout=3)
+            except Exception:
+                pass
+            log.warning("[Playlist] libx264 timed out for %s", resolved_path)
         except Exception as e:
-            log.warning("[Playlist] stream-copy exec error for %s: %s", resolved_path, e)
-    else:
-        log.info("[Playlist] skipping stream-copy for %s (codec=%s, re-encoding to H264)", resolved_path, codec)
+            log.warning("[Playlist] libx264 exec error for %s: %s", resolved_path, e)
 
-    # --- Pass 2: libx264 re-encode (CPU only — API has no GPU) ---
-    # -pix_fmt yuv420p: force 8-bit 4:2:0 — required for browser MSE compat
-    # when source is 10-bit HEVC (Pixel 9) or other high-bit-depth formats.
-    cmd_enc = [
-        "ffmpeg", "-y",
-        "-ss", str(start_sec), "-t", str(duration),
-        "-i", resolved_path,
-        "-map", "0:v:0",
-        "-map", "0:a:0?",
-        "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
-        "-pix_fmt", "yuv420p",
-        "-fps_mode", "cfr", "-r", "30",
-        "-c:a", "aac", "-b:a", "128k",
-        "-avoid_negative_ts", "make_zero",
-        "-f", "mpegts",
-        out_path,
-    ]
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            *cmd_enc,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        _, stderr = await asyncio.wait_for(proc.communicate(), timeout=90)
-        if proc.returncode == 0:
-            log.info("[Playlist] re-encoded with libx264 for %s", resolved_path)
-            return True
-        log.warning("[Playlist] libx264 failed for %s: %s", resolved_path,
-                    stderr[-200:].decode(errors="replace"))
-    except asyncio.TimeoutError:
-        log.warning("[Playlist] libx264 timed out for %s", resolved_path)
-    except Exception as e:
-        log.warning("[Playlist] libx264 exec error for %s: %s", resolved_path, e)
+        return False
 
-    return False
+    finally:
+        if faststart_server:
+            faststart_server.close()
+            await faststart_server.wait_closed()
 
 
 @router.post("/playlist")

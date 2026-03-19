@@ -104,7 +104,7 @@ services:
       --pool=solo
       -E
       --prefetch-multiplier=1
-      --queues=celery"
+      --queues=celery,proxies"
     environment:
       - CELERY_BROKER_URL=redis://lumen2-redis:6379/0
       - CELERY_RESULT_BACKEND=redis://lumen2-redis:6379/0
@@ -119,6 +119,7 @@ services:
       - STORAGE_BACKEND=local
       - PROXY_ROOT=
       - PROXY_MAX_DURATION_SECS=${PROXY_MAX_DURATION_SECS:-3600}
+      - SIDECAR_ROOT=/mnt/sidecars
       - CELERY_CONCURRENCY=${CELERY_CONCURRENCY:-4}
       - CELERY_WORKER_PREFETCH_MULTIPLIER=${CELERY_WORKER_PREFETCH_MULTIPLIER:-1}
       - CELERY_MAX_TASKS_PER_CHILD=${CELERY_MAX_TASKS_PER_CHILD:-50}
@@ -142,6 +143,7 @@ services:
       - ${L2_MEDIA_3}:/mnt/source/d-4k-index:ro
       - ${L2_MEDIA_4}:/mnt/source/c-index:ro
       - ${L2_MEDIA_5}:/mnt/source/f-index:ro
+      - I:/lumen2-sidecars:/mnt/sidecars
     depends_on:
       redis2:
         condition: service_healthy
@@ -182,6 +184,9 @@ services:
       - CLIP_MODEL_NAME=clip-ViT-L-14
       - LUMEN_PATH_MAP_0=${LUMEN_PATH_MAP_0:-}
       - LUMEN_PATH_MAP_1=${LUMEN_PATH_MAP_1:-}
+      - LUMEN_PATH_MAP_2=${LUMEN_PATH_MAP_2:-}
+      - LUMEN_PATH_MAP_3=${LUMEN_PATH_MAP_3:-}
+      - SIDECAR_ROOT=/mnt/sidecars
       - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-http://localhost:3000,http://localhost:3001,http://localhost:3002}
       - LLM_PROVIDER=${LLM_PROVIDER:-local}
       - LLM_MODEL=${LLM_MODEL:-qwen3:14b}
@@ -195,7 +200,9 @@ services:
       - ${L2_MEDIA_2}:/mnt/source/e:ro
       - ${L2_MEDIA_3}:/mnt/source/d-4k-index:ro
       - ${L2_MEDIA_4}:/mnt/source/c-index:ro
+      - ${L2_MEDIA_5}:/mnt/source/f-index:ro
       - hf_cache:/root/.cache/huggingface   # Persist model downloads across rebuilds
+      - I:/lumen2-sidecars:/mnt/sidecars:ro
     depends_on:
       redis2:
         condition: service_healthy
@@ -235,6 +242,7 @@ services:
       - ${L2_MEDIA_2}:/mnt/source/e:ro
       - ${L2_MEDIA_3}:/mnt/source/d-4k-index:ro
       - ${L2_MEDIA_4}:/mnt/source/c-index:ro
+      - ${L2_MEDIA_5}:/mnt/source/f-index:ro
     depends_on:
       - api2
     networks:
