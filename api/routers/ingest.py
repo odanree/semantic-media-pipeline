@@ -929,19 +929,21 @@ async def create_playlist(request: Request, body: PlaylistRequest):
     for clip in body.clips:
         resolved = os.path.realpath(_translate_path(clip.file_path))
         is_url = False
-        if not any(resolved.startswith(root) for root in ALLOWED_ROOTS):
-            # S3/R2-backed files are stored as bare object keys (no leading /).
-            # Generate a presigned URL so ffmpeg can stream directly from R2.
-            if IS_S3 and not clip.file_path.startswith("/"):
-                try:
-                    resolved = _s3_presign(clip.file_path, expires=1800)
-                    is_url = True
-                except Exception as e:
-                    log.warning("[Playlist] S3 presign failed for %s: %s", clip.file_path, e)
-                    continue
-            else:
-                log.warning("[Playlist] access denied: %s", clip.file_path)
+        # S3/R2: presign directly from the original object key — matches stream
+        # endpoint behaviour. Must run before ALLOWED_ROOTS check because
+        # _translate_path expands bare keys to /mnt/source/... which is an
+        # allowed root, causing the S3 branch to be skipped and the file to be
+        # looked up locally (where it doesn't exist).
+        if IS_S3 and not clip.file_path.startswith("/"):
+            try:
+                resolved = _s3_presign(clip.file_path, expires=1800)
+                is_url = True
+            except Exception as e:
+                log.warning("[Playlist] S3 presign failed for %s: %s", clip.file_path, e)
                 continue
+        elif not any(resolved.startswith(root) for root in ALLOWED_ROOTS):
+            log.warning("[Playlist] access denied: %s", clip.file_path)
+            continue
         if not is_url:
             if proxy_root and resolved.startswith(_SOURCE_ROOT + os.sep):
                 rel = resolved[len(_SOURCE_ROOT) + 1:]
