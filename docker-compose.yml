@@ -113,7 +113,7 @@ services:
       -E
       --prefetch-multiplier=$${CELERY_WORKER_PREFETCH_MULTIPLIER:-1}
       --max-tasks-per-child=$${CELERY_MAX_TASKS_PER_CHILD:-50}
-      --queues=celery"
+      --queues=celery,proxies"
     env_file:
       - .env
     environment:
@@ -132,6 +132,7 @@ services:
       - CELERY_MAX_MEMORY_PER_CHILD=${CELERY_MAX_MEMORY_PER_CHILD:-1500000}
       - PROXY_ROOT=
       - PROXY_MAX_DURATION_SECS=${PROXY_MAX_DURATION_SECS:-3600}
+      - SIDECAR_ROOT=/mnt/sidecars
       - WORKER_ID=${WORKER_ID:-windows-1}
       - FRAME_CACHE_DIR=/mnt/frame_cache
       - EMBEDDING_DEVICE=cpu
@@ -145,6 +146,7 @@ services:
       - ${L1_MEDIA_2:-/tmp}:/mnt/i-media:ro
       - ${FRAME_CACHE_DIR:-/tmp/lumen_frame_cache}:/mnt/frame_cache
       - ./models:/app/models
+      - J:/lumen1-sidecars:/mnt/sidecars
     depends_on:
       redis:
         condition: service_healthy
@@ -180,8 +182,10 @@ services:
       - QDRANT_PORT=${QDRANT_PORT:-6333}
       - MEDIA_ROOT=${MEDIA_ROOT:-/data/media}
       - PROXY_ROOT=${PROXY_ROOT:-/mnt/proxies}
+      - SIDECAR_ROOT=/mnt/sidecars
       - LUMEN_PATH_MAP_0=/mnt/source:J:/lumen-media
       - LUMEN_PATH_MAP_1=/mnt/i-media:I:/I-media
+      - LD_LIBRARY_PATH=/usr/lib/wsl/lib
     command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
     volumes:
       - media_data:/data/media
@@ -190,6 +194,15 @@ services:
       - ${L1_MEDIA_2:-/tmp}:/mnt/i-media:ro
       - ./api:/app
       - hf_cache:/root/.cache/huggingface
+      - J:/lumen1-sidecars:/mnt/sidecars:ro
+      - /usr/lib/wsl/lib:/usr/lib/wsl/lib
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu, video]
     depends_on:
       redis:
         condition: service_healthy
