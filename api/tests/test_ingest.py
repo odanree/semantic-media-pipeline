@@ -249,3 +249,166 @@ def test_placeholder_video_stub_returns_bytes():
     from routers.ingest import _placeholder_video_stub
     data = _placeholder_video_stub()
     assert isinstance(data, bytes)
+
+
+# ---------------------------------------------------------------------------
+# _sidecar_for — filesystem lookup for moov sidecars
+# ---------------------------------------------------------------------------
+
+def test_sidecar_for_no_sidecar_root_returns_none():
+    import routers.ingest as ing
+    orig = ing._SIDECAR_ROOT
+    try:
+        ing._SIDECAR_ROOT = ""
+        from routers.ingest import _sidecar_for
+        assert _sidecar_for("/mnt/source/clip.mp4") is None
+    finally:
+        ing._SIDECAR_ROOT = orig
+
+
+def test_sidecar_for_path_not_under_source_returns_none():
+    import routers.ingest as ing
+    orig_sr = ing._SIDECAR_ROOT
+    try:
+        ing._SIDECAR_ROOT = "/mnt/sidecars"
+        from routers.ingest import _sidecar_for
+        assert _sidecar_for("/mnt/other/clip.mp4") is None
+    finally:
+        ing._SIDECAR_ROOT = orig_sr
+
+
+def test_sidecar_for_missing_files_returns_none():
+    import routers.ingest as ing
+    orig_sr = ing._SIDECAR_ROOT
+    try:
+        ing._SIDECAR_ROOT = "/mnt/sidecars"
+        from routers.ingest import _sidecar_for
+        with patch("os.path.isfile", return_value=False):
+            assert _sidecar_for("/mnt/source/clip.mp4") is None
+    finally:
+        ing._SIDECAR_ROOT = orig_sr
+
+
+def test_sidecar_for_existing_sidecar_returns_paths():
+    import routers.ingest as ing
+    orig_sr = ing._SIDECAR_ROOT
+    try:
+        ing._SIDECAR_ROOT = "/mnt/sidecars"
+        from routers.ingest import _sidecar_for
+        with patch("os.path.isfile", return_value=True):
+            result = _sidecar_for("/mnt/source/clip.mp4")
+        assert result is not None
+        sidecar, meta = result
+        assert sidecar.endswith(".moov")
+        assert meta.endswith(".moov.json")
+    finally:
+        ing._SIDECAR_ROOT = orig_sr
+
+
+# ---------------------------------------------------------------------------
+# _probe_codecs — async ffprobe wrapper
+# ---------------------------------------------------------------------------
+
+def test_probe_codecs_parses_h264_aac():
+    import asyncio
+    from unittest.mock import AsyncMock
+    from routers.ingest import _probe_codecs
+
+    mock_proc = MagicMock()
+    mock_proc.communicate = AsyncMock(
+        return_value=(b"h264,video,\naac,audio,48000\n", b"")
+    )
+    with patch("asyncio.create_subprocess_exec", new=AsyncMock(return_value=mock_proc)):
+        video, audio, sr = asyncio.run(_probe_codecs("/fake/path.mp4"))
+
+    assert video == "h264"
+    assert audio == "aac"
+    assert sr == 48000
+
+
+def test_probe_codecs_parses_hevc_ac3():
+    import asyncio
+    from unittest.mock import AsyncMock
+    from routers.ingest import _probe_codecs
+
+    mock_proc = MagicMock()
+    mock_proc.communicate = AsyncMock(
+        return_value=(b"hevc,video,\nac3,audio,48000\n", b"")
+    )
+    with patch("asyncio.create_subprocess_exec", new=AsyncMock(return_value=mock_proc)):
+        video, audio, sr = asyncio.run(_probe_codecs("/fake/path.mp4"))
+
+    assert video == "hevc"
+    assert audio == "ac3"
+
+
+def test_probe_codecs_returns_empty_on_error():
+    import asyncio
+    from unittest.mock import AsyncMock
+    from routers.ingest import _probe_codecs
+
+    with patch("asyncio.create_subprocess_exec", new=AsyncMock(side_effect=Exception("no ffprobe"))):
+        video, audio, sr = asyncio.run(_probe_codecs("/fake/path.mp4"))
+
+    assert video == ""
+    assert audio == ""
+    assert sr == 0
+
+
+def test_probe_codecs_no_audio_stream():
+    import asyncio
+    from unittest.mock import AsyncMock
+    from routers.ingest import _probe_codecs
+
+    mock_proc = MagicMock()
+    mock_proc.communicate = AsyncMock(
+        return_value=(b"h264,video,\n", b"")
+    )
+    with patch("asyncio.create_subprocess_exec", new=AsyncMock(return_value=mock_proc)):
+        video, audio, sr = asyncio.run(_probe_codecs("/fake/path.mp4"))
+
+    assert video == "h264"
+    assert audio == ""
+    assert sr == 0
+
+
+# ---------------------------------------------------------------------------
+# generate_playlist — happy path with mocked _extract_segment
+# ---------------------------------------------------------------------------
+
+def test_playlist_success_returns_manifest(client):
+    from unittest.mock import AsyncMock, mock_open
+
+    clips = [
+        {"file_path": "/mnt/source/a.mp4", "start_sec": 0.0, "end_sec": 5.0},
+        {"file_path": "/mnt/source/b.mp4", "start_sec": 10.0, "end_sec": 15.0},
+    ]
+
+    with (
+        patch("routers.ingest._extract_segment", new=AsyncMock(return_value=True)),
+        patch("routers.ingest.os.path.isfile", return_value=True),
+        patch("routers.ingest.os.makedirs"),
+        patch("builtins.open", mock_open()),
+    ):
+        resp = client.post("/api/playlist", json={"clips": clips})
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["clip_count"] == 2
+    assert "playlist_url" in data
+    assert "token" in data
+
+
+def test_playlist_all_segments_fail_returns_500(client):
+    from unittest.mock import AsyncMock
+
+    clips = [{"file_path": "/mnt/source/a.mp4", "start_sec": 0.0, "end_sec": 5.0}]
+
+    with (
+        patch("routers.ingest._extract_segment", new=AsyncMock(return_value=False)),
+        patch("routers.ingest.os.path.isfile", return_value=True),
+        patch("routers.ingest.os.makedirs"),
+    ):
+        resp = client.post("/api/playlist", json={"clips": clips})
+
+    assert resp.status_code == 500
