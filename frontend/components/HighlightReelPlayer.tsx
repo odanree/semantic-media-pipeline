@@ -170,7 +170,8 @@ export default function HighlightReelPlayer({
               ref={videoRef}
               preload="auto"
               className="w-full h-full object-contain cursor-pointer"
-              onClick={togglePlay}
+              onClick={(e) => { e.preventDefault(); togglePlay() }}
+              onKeyDown={(e) => e.preventDefault()}
             />
           )}
         </div>
