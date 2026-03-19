@@ -1,7 +1,7 @@
 /* v8 ignore file -- HLS streaming component requires real browser APIs (MediaSource, HLS.js); not testable in jsdom */
 'use client'
 
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, useCallback } from 'react'
 
 interface HighlightReelPlayerProps {
   playlistUrl: string
@@ -19,6 +19,11 @@ export default function HighlightReelPlayer({
   const videoRef = useRef<HTMLVideoElement>(null)
   const [videoError, setVideoError] = useState<string | null>(null)
   const hlsManagedRef = useRef(false)
+
+  const [playing, setPlaying] = useState(false)
+  const [currentTime, setCurrentTime] = useState(0)
+  const [duration, setDuration] = useState(0)
+  const [volume, setVolume] = useState(1)
 
   useEffect(() => {
     const video = videoRef.current
@@ -46,18 +51,88 @@ export default function HighlightReelPlayer({
   }, [playlistUrl])
 
   useEffect(() => {
+    const video = videoRef.current
+    if (!video) return
+
+    const onTimeUpdate = () => setCurrentTime(video.currentTime)
+    const onDurationChange = () => { if (isFinite(video.duration)) setDuration(video.duration) }
+    const onPlay = () => setPlaying(true)
+    const onPause = () => setPlaying(false)
+    const onError = () => {
+      if (hlsManagedRef.current) return
+      const code = video.error?.code
+      const msg = video.error?.message
+      setVideoError(msg || (code ? `Media error ${code}` : 'Unknown playback error'))
+    }
+
+    video.addEventListener('timeupdate', onTimeUpdate)
+    video.addEventListener('durationchange', onDurationChange)
+    video.addEventListener('play', onPlay)
+    video.addEventListener('pause', onPause)
+    video.addEventListener('error', onError)
+
+    return () => {
+      video.removeEventListener('timeupdate', onTimeUpdate)
+      video.removeEventListener('durationchange', onDurationChange)
+      video.removeEventListener('play', onPlay)
+      video.removeEventListener('pause', onPause)
+      video.removeEventListener('error', onError)
+    }
+  }, [])
+
+  const togglePlay = useCallback(() => {
+    const video = videoRef.current
+    if (!video) return
+    if (video.paused) video.play().catch(() => {})
+    else video.pause()
+  }, [])
+
+  useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') onClose()
+      if (e.key === ' ') { e.preventDefault(); togglePlay() }
     }
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [onClose])
+  }, [onClose, togglePlay])
+
+  const handleSeek = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const video = videoRef.current
+    if (!video) return
+    const t = parseFloat(e.target.value)
+    video.currentTime = t
+    setCurrentTime(t)
+  }
+
+  const handleVolume = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const video = videoRef.current
+    if (!video) return
+    const v = parseFloat(e.target.value)
+    video.volume = v
+    video.muted = v === 0
+    setVolume(v)
+  }
+
+  const toggleFullscreen = () => {
+    const video = videoRef.current
+    if (!video) return
+    if (document.fullscreenElement) document.exitFullscreen()
+    else video.requestFullscreen()
+  }
+
+  const fmt = (secs: number) => {
+    const m = Math.floor(secs / 60)
+    const s = Math.floor(secs % 60).toString().padStart(2, '0')
+    return `${m}:${s}`
+  }
 
   const formatDuration = (secs: number) => {
     const m = Math.floor(secs / 60)
     const s = Math.round(secs % 60)
     return m > 0 ? `${m}m ${s}s` : `${s}s`
   }
+
+  const progress = duration > 0 ? (currentTime / duration) * 100 : 0
 
   return (
     <div
@@ -93,26 +168,72 @@ export default function HighlightReelPlayer({
           ) : (
             <video
               ref={videoRef}
-              controls
-              autoPlay
               preload="auto"
-              className="w-full h-full object-contain"
-              onError={(e) => {
-                if (hlsManagedRef.current) return
-                const target = e.target as HTMLVideoElement
-                const code = target.error?.code
-                const msg = target.error?.message
-                setVideoError(msg || (code ? `Media error ${code}` : 'Unknown playback error'))
-              }}
+              className="w-full h-full object-contain cursor-pointer"
+              onClick={togglePlay}
             />
           )}
         </div>
 
-        <div className="p-4 border-t border-gray-700 text-sm text-gray-400">
-          <p>
-            {clipCount} clips · <span className="text-blue-400 font-semibold">{formatDuration(totalDurationSec)}</span>
-          </p>
-        </div>
+        {!videoError && (
+          <div className="bg-gray-800 px-3 pt-2 pb-3 space-y-2">
+            {/* Seek bar */}
+            <div className="relative group">
+              <input
+                type="range"
+                min={0}
+                max={duration || 0}
+                step={0.1}
+                value={currentTime}
+                onChange={handleSeek}
+                className="w-full h-1.5 rounded-full appearance-none cursor-pointer bg-gray-600"
+                style={{
+                  background: `linear-gradient(to right, #3b82f6 ${progress}%, #4b5563 ${progress}%)`,
+                }}
+              />
+            </div>
+
+            {/* Controls row */}
+            <div className="flex items-center justify-between text-white">
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={togglePlay}
+                  aria-label={playing ? 'Pause' : 'Play'}
+                  className="hover:text-blue-400 transition text-lg w-6 text-center"
+                >
+                  {playing ? '⏸' : '▶'}
+                </button>
+                <span className="text-gray-400 text-sm">🔊</span>
+                <input
+                  type="range"
+                  min={0}
+                  max={1}
+                  step={0.05}
+                  value={volume}
+                  onChange={handleVolume}
+                  aria-label="Volume"
+                  className="w-24 h-1.5 rounded-full appearance-none cursor-pointer"
+                  style={{
+                    background: `linear-gradient(to right, #9ca3af ${volume * 100}%, #4b5563 ${volume * 100}%)`,
+                  }}
+                />
+                <span className="text-sm text-gray-300 tabular-nums">
+                  {fmt(currentTime)} / {fmt(duration)}
+                </span>
+              </div>
+              <div className="flex items-center gap-3 text-sm text-gray-400">
+                <span>{clipCount} clips · <span className="text-blue-400 font-semibold">{formatDuration(totalDurationSec)}</span></span>
+                <button
+                  onClick={toggleFullscreen}
+                  aria-label="Fullscreen"
+                  className="hover:text-white transition"
+                >
+                  ⛶
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   )
