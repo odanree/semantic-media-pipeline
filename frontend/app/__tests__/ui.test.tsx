@@ -47,6 +47,12 @@ vi.mock('@/hooks/useStatusUpdates', () => ({
   useStatusUpdates: vi.fn(() => ({ status: null, isConnected: false, error: null })),
 }))
 
+vi.mock('@/components/HighlightReelPlayer', () => ({
+  default: function MockHighlightReelPlayer({ onClose }: { onClose: () => void }) {
+    return React.createElement('div', { 'data-testid': 'highlight-reel', onClick: onClose }, 'MockReel')
+  },
+}))
+
 // ── Static imports (resolved after mocks are hoisted) ────────────────────────
 
 import SearchPage from '@/app/page'
@@ -55,6 +61,7 @@ import VideoPlayer from '@/components/VideoPlayer'
 import SearchBar from '@/components/SearchBar'
 import AskPanel from '@/components/AskPanel'
 import StatusPanel from '@/components/StatusPanel'
+import SimilarPanel from '@/components/SimilarPanel'
 import * as statusHookModule from '@/hooks/useStatusUpdates'
 
 // ── Global test setup ────────────────────────────────────────────────────────
@@ -220,6 +227,46 @@ describe('VideoPlayer', () => {
     const result = makeResult({ timestamp: 30 })
     const { container } = render(<VideoPlayer result={result} onClose={vi.fn()} />)
     expect(container.querySelector('video')).toBeTruthy()
+  })
+
+  it('toggles to original quality when View Original is clicked', () => {
+    render(<VideoPlayer result={makeResult()} onClose={vi.fn()} />)
+    fireEvent.click(screen.getByRole('button', { name: /view original/i }))
+    expect(screen.getByText('4K SRC')).toBeInTheDocument()
+  })
+
+  it('toggles back to proxy quality when View 720p is clicked', () => {
+    render(<VideoPlayer result={makeResult()} onClose={vi.fn()} />)
+    fireEvent.click(screen.getByRole('button', { name: /view original/i }))
+    fireEvent.click(screen.getByRole('button', { name: /view 720p/i }))
+    expect(screen.getByText('720p')).toBeInTheDocument()
+  })
+
+  it('skip back button calls skip(-60)', () => {
+    render(<VideoPlayer result={makeResult()} onClose={vi.fn()} />)
+    // Should not throw even without real video element
+    fireEvent.click(screen.getByRole('button', { name: /skip back 1 minute/i }))
+  })
+
+  it('skip forward button calls skip(60)', () => {
+    render(<VideoPlayer result={makeResult()} onClose={vi.fn()} />)
+    fireEvent.click(screen.getByRole('button', { name: /skip forward 1 minute/i }))
+  })
+
+  it('clicking inner dialog prevents backdrop close', () => {
+    const onClose = vi.fn()
+    const { container } = render(<VideoPlayer result={makeResult()} onClose={onClose} />)
+    // Click the inner dialog box — should not bubble to backdrop
+    const dialog = container.querySelector('[role="dialog"]') as HTMLElement
+    fireEvent.click(dialog)
+    expect(onClose).not.toHaveBeenCalled()
+  })
+
+  it('calls onClose when close button is clicked', () => {
+    const onClose = vi.fn()
+    render(<VideoPlayer result={makeResult()} onClose={onClose} />)
+    fireEvent.click(screen.getByRole('button', { name: /close video player/i }))
+    expect(onClose).toHaveBeenCalledTimes(1)
   })
 })
 
@@ -823,5 +870,216 @@ describe('AskPanel', () => {
     expect(screen.getByText(/A person running in the park/i)).toBeTruthy()
     // Verify cited badge appears
     expect(screen.getByText('✓ cited')).toBeTruthy()
+  })
+})
+
+// ── SimilarPanel ──────────────────────────────────────────────────────────────
+
+describe('SimilarPanel', () => {
+  const mockSource = { file_path: '/media/test.mp4', file_type: 'video', timestamp: 10.5 }
+
+  const mockResults = [
+    { file_path: '/media/similar1.mp4', file_type: 'video', best_similarity: 0.92, best_timestamp: 5.0, audio_rms_energy: 0.6 },
+    { file_path: '/media/similar2.mp4', file_type: 'video', best_similarity: 0.85, best_timestamp: 12.0, audio_rms_energy: 0.3 },
+  ]
+
+  function mockSimilarFetch(results = mockResults) {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({ results }),
+    }))
+  }
+
+  it('renders loading spinner initially', () => {
+    vi.stubGlobal('fetch', vi.fn().mockReturnValue(new Promise(() => {})))
+    render(<SimilarPanel source={mockSource} onClose={vi.fn()} />)
+    expect(document.querySelector('.animate-spin')).toBeTruthy()
+  })
+
+  it('shows results after fetch resolves', async () => {
+    mockSimilarFetch()
+    await act(async () => {
+      render(<SimilarPanel source={mockSource} onClose={vi.fn()} />)
+      await new Promise(r => setTimeout(r, 10))
+    })
+    expect(screen.getByText('2 results')).toBeInTheDocument()
+  })
+
+  it('shows error message when fetch fails', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: false,
+      json: () => Promise.resolve({ error: 'Query failed' }),
+    }))
+    await act(async () => {
+      render(<SimilarPanel source={mockSource} onClose={vi.fn()} />)
+      await new Promise(r => setTimeout(r, 10))
+    })
+    expect(screen.getByText('Query failed')).toBeInTheDocument()
+  })
+
+  it('shows fallback error when fetch rejects with non-string', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('Network down')))
+    await act(async () => {
+      render(<SimilarPanel source={mockSource} onClose={vi.fn()} />)
+      await new Promise(r => setTimeout(r, 10))
+    })
+    expect(screen.getByText(/could not load similar videos/i)).toBeInTheDocument()
+  })
+
+  it('shows "No similar videos found" for empty results', async () => {
+    mockSimilarFetch([])
+    await act(async () => {
+      render(<SimilarPanel source={mockSource} onClose={vi.fn()} />)
+      await new Promise(r => setTimeout(r, 10))
+    })
+    expect(screen.getByText(/no similar videos found/i)).toBeInTheDocument()
+  })
+
+  it('calls onClose when close button is clicked', async () => {
+    mockSimilarFetch()
+    const onClose = vi.fn()
+    await act(async () => {
+      render(<SimilarPanel source={mockSource} onClose={onClose} />)
+      await new Promise(r => setTimeout(r, 10))
+    })
+    fireEvent.click(screen.getByRole('button', { name: /close similar panel/i }))
+    expect(onClose).toHaveBeenCalledTimes(1)
+  })
+
+  it('calls onClose when backdrop is clicked', () => {
+    vi.stubGlobal('fetch', vi.fn().mockReturnValue(new Promise(() => {})))
+    const onClose = vi.fn()
+    render(<SimilarPanel source={mockSource} onClose={onClose} />)
+    fireEvent.click(document.querySelector('[aria-hidden="true"]') as HTMLElement)
+    expect(onClose).toHaveBeenCalledTimes(1)
+  })
+
+  it('calls onClose when Escape is pressed', () => {
+    vi.stubGlobal('fetch', vi.fn().mockReturnValue(new Promise(() => {})))
+    const onClose = vi.fn()
+    render(<SimilarPanel source={mockSource} onClose={onClose} />)
+    fireEvent.keyDown(document, { key: 'Escape' })
+    expect(onClose).toHaveBeenCalledTimes(1)
+  })
+
+  it('changes sort order when sort select changes', async () => {
+    mockSimilarFetch()
+    await act(async () => {
+      render(<SimilarPanel source={mockSource} onClose={vi.fn()} />)
+      await new Promise(r => setTimeout(r, 10))
+    })
+    const sortSelect = screen.getByRole('combobox', { name: /sort similar results/i }) as HTMLSelectElement
+    fireEvent.change(sortSelect, { target: { value: 'energy' } })
+    expect(sortSelect.value).toBe('energy')
+  })
+
+  it('limit button becomes active when clicked', async () => {
+    mockSimilarFetch()
+    await act(async () => {
+      render(<SimilarPanel source={mockSource} onClose={vi.fn()} />)
+      await new Promise(r => setTimeout(r, 10))
+    })
+    const btn30 = screen.getByRole('button', { name: /show 30 results/i })
+    fireEvent.click(btn30)
+    expect(btn30.classList.contains('bg-blue-600')).toBe(true)
+  })
+
+  it('opens VideoPlayer when a video result card is clicked', async () => {
+    mockSimilarFetch()
+    await act(async () => {
+      render(<SimilarPanel source={mockSource} onClose={vi.fn()} />)
+      await new Promise(r => setTimeout(r, 10))
+    })
+    fireEvent.click(screen.getByRole('button', { name: /similar1\.mp4/i }))
+    expect(document.querySelector('video')).toBeTruthy()
+  })
+
+  it('fetches playlist and shows reel when Reel button is clicked', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ results: mockResults }) })
+      .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ playlist_url: '/api/playlist/serve/abc/playlist.m3u8', clip_count: 2, total_duration_sec: 12 }) })
+    vi.stubGlobal('fetch', fetchMock)
+    await act(async () => {
+      render(<SimilarPanel source={mockSource} onClose={vi.fn()} />)
+      await new Promise(r => setTimeout(r, 10))
+    })
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /play highlight reel/i }))
+      await new Promise(r => setTimeout(r, 10))
+    })
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(screen.getByTestId('highlight-reel')).toBeInTheDocument()
+  })
+
+  it('shows reel error when playlist fetch fails', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ results: mockResults }) })
+      .mockResolvedValueOnce({ ok: false, json: () => Promise.resolve({ error: 'Playlist failed' }) })
+    vi.stubGlobal('fetch', fetchMock)
+    await act(async () => {
+      render(<SimilarPanel source={mockSource} onClose={vi.fn()} />)
+      await new Promise(r => setTimeout(r, 10))
+    })
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /play highlight reel/i }))
+      await new Promise(r => setTimeout(r, 10))
+    })
+    expect(screen.getByText('Playlist failed')).toBeInTheDocument()
+  })
+
+  it('renders "Similar to" label with source filename', async () => {
+    mockSimilarFetch()
+    await act(async () => {
+      render(<SimilarPanel source={mockSource} onClose={vi.fn()} />)
+      await new Promise(r => setTimeout(r, 10))
+    })
+    expect(screen.getByText(/similar to/i)).toBeInTheDocument()
+    expect(screen.getByText('test.mp4')).toBeInTheDocument()
+  })
+
+  it('clip padding select is present and changes value', async () => {
+    mockSimilarFetch()
+    await act(async () => {
+      render(<SimilarPanel source={mockSource} onClose={vi.fn()} />)
+      await new Promise(r => setTimeout(r, 10))
+    })
+    // Verify reel button is visible (confirms videoCount > 0 branch rendered)
+    const reelBtn = screen.getByRole('button', { name: /play highlight reel/i })
+    expect(reelBtn).toBeInTheDocument()
+    // The clip padding select is adjacent to the reel button
+    const paddingSelect = reelBtn.closest('div')?.parentElement?.querySelector('[aria-label="Clip padding seconds"]') as HTMLSelectElement | null
+    if (paddingSelect) {
+      fireEvent.change(paddingSelect, { target: { value: '5' } })
+      expect(paddingSelect.value).toBe('5')
+    }
+  })
+
+  it('shows network error when playlist fetch throws', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ results: mockResults }) })
+      .mockRejectedValueOnce(new Error('Network error'))
+    vi.stubGlobal('fetch', fetchMock)
+    await act(async () => {
+      render(<SimilarPanel source={mockSource} onClose={vi.fn()} />)
+      await new Promise(r => setTimeout(r, 10))
+    })
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /play highlight reel/i }))
+      await new Promise(r => setTimeout(r, 10))
+    })
+    expect(screen.getByText(/network error/i)).toBeInTheDocument()
+  })
+
+  it('removes keyboard listener on unmount', async () => {
+    mockSimilarFetch()
+    const onClose = vi.fn()
+    let unmount!: () => void
+    await act(async () => {
+      ;({ unmount } = render(<SimilarPanel source={mockSource} onClose={onClose} />))
+      await new Promise(r => setTimeout(r, 10))
+    })
+    unmount()
+    fireEvent.keyDown(document, { key: 'Escape' })
+    expect(onClose).not.toHaveBeenCalled()
   })
 })

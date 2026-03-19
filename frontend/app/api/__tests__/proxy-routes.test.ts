@@ -460,6 +460,81 @@ describe('POST /api/ask', () => {
 })
 
 // ---------------------------------------------------------------------------
+// /api/similar
+// ---------------------------------------------------------------------------
+
+describe('POST /api/similar', () => {
+  async function handler(body: unknown) {
+    const { POST } = await import('../similar/route')
+    return POST(
+      new NextRequest('http://localhost/api/similar', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+    )
+  }
+
+  it('returns 400 when file_path is missing', async () => {
+    const res = await handler({})
+    expect(res.status).toBe(400)
+  })
+
+  it('forwards X-API-Key to upstream', async () => {
+    vi.mocked(fetch).mockResolvedValue(mockResponse({ results: [] }))
+    await handler({ file_path: '/media/test.mp4' })
+    expect(capturedApiKey()).toBe('test-secret')
+  })
+
+  it('uses default limit=10 and threshold=0.5 when not provided', async () => {
+    vi.mocked(fetch).mockResolvedValue(mockResponse({ results: [] }))
+    await handler({ file_path: '/media/test.mp4' })
+    const [, init] = (fetch as ReturnType<typeof vi.fn>).mock.calls[0] as [string, RequestInit]
+    const sent = JSON.parse(init.body as string)
+    expect(sent.limit).toBe(10)
+    expect(sent.threshold).toBe(0.5)
+  })
+
+  it('forwards provided timestamp and limit', async () => {
+    vi.mocked(fetch).mockResolvedValue(mockResponse({ results: [] }))
+    await handler({ file_path: '/media/test.mp4', timestamp: 12.5, limit: 30 })
+    const [, init] = (fetch as ReturnType<typeof vi.fn>).mock.calls[0] as [string, RequestInit]
+    const sent = JSON.parse(init.body as string)
+    expect(sent.timestamp).toBe(12.5)
+    expect(sent.limit).toBe(30)
+  })
+
+  it('returns 200 with upstream data', async () => {
+    vi.mocked(fetch).mockResolvedValue(mockResponse({ results: [{ file_path: '/media/a.mp4', best_similarity: 0.9 }] }))
+    const res = await handler({ file_path: '/media/test.mp4' })
+    expect(res.status).toBe(200)
+    const json = await res.json()
+    expect(json.results).toHaveLength(1)
+  })
+
+  it('forwards upstream error status', async () => {
+    vi.mocked(fetch).mockResolvedValue(mockResponse('error', 503))
+    const res = await handler({ file_path: '/media/test.mp4' })
+    expect(res.status).toBe(503)
+  })
+
+  it('uses fallback error message when upstream error body is empty', async () => {
+    vi.mocked(fetch).mockResolvedValue(mockResponse('', 500))
+    const res = await handler({ file_path: '/media/test.mp4' })
+    const json = await res.json()
+    expect(res.status).toBe(500)
+    expect(json.error).toBe('Similar search failed')
+  })
+
+  it('omits X-API-Key when BACKEND_API_KEY is unset', async () => {
+    delete process.env.BACKEND_API_KEY
+    vi.mocked(fetch).mockResolvedValue(mockResponse({ results: [] }))
+    await handler({ file_path: '/media/test.mp4' })
+    expect(capturedApiKey()).toBeUndefined()
+  })
+})
+
+// ---------------------------------------------------------------------------
 // Catch branch — fetch throws (network failure) for all proxy routes
 // ---------------------------------------------------------------------------
 
@@ -523,6 +598,17 @@ describe('network failures return 500', () => {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ question: 'What do I have?' }),
+    }))
+    expect(res.status).toBe(500)
+  })
+
+  it('POST /api/similar — fetch throws', async () => {
+    vi.mocked(fetch).mockRejectedValue(new Error('ECONNREFUSED'))
+    const { POST } = await import('../similar/route')
+    const res = await POST(new NextRequest('http://localhost/api/similar', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ file_path: '/media/test.mp4' }),
     }))
     expect(res.status).toBe(500)
   })
