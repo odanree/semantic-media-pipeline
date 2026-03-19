@@ -727,10 +727,18 @@ async def _probe_codecs(path: str) -> tuple[str, str, int]:
         return "", "", 0
 
 
-async def _extract_segment(resolved_path: str, start_sec: float, duration: float, out_path: str) -> bool:
+async def _extract_segment(resolved_path: str, start_sec: float, duration: float, out_path: str, normalize: bool = False) -> bool:
     """
     Extract a single .ts segment from a video file using ffmpeg.
 
+    normalize=True (used by create_playlist):
+      Skips stream-copy and always re-encodes to 1280×720 with letterbox
+      padding.  This is required for HLS playlists because Chrome's MSE
+      SourceBuffer is initialised with the codec parameters of the first
+      segment and rejects appendBuffer() calls with a different resolution,
+      causing HLS.js to raise a fatal bufferAppendError.
+
+    normalize=False (default):
     Pass 1 — stream-copy (fast, lossless):
       Probes the codec first so we apply the correct MP4→Annex B bitstream
       filter for the container format:
@@ -798,7 +806,12 @@ async def _extract_segment(resolved_path: str, start_sec: float, duration: float
         # Chrome/Firefox MSE. HEVC clips go directly to libx264 re-encode below.
         # With the moov sidecar + HTTP range server, ffmpeg seeks without scanning
         # the full file, so re-encoding is fast even on slow 9P mounts.
-        if codec in _BSF_MAP and codec != "hevc":
+        # normalize=True skips stream-copy entirely: HLS playlists require all
+        # segments to share the same resolution because Chrome's MSE SourceBuffer
+        # is initialised with the first segment's codec params and rejects
+        # appendBuffer() calls when a later segment has a different resolution,
+        # causing HLS.js to emit a fatal bufferAppendError.
+        if not normalize and codec in _BSF_MAP and codec != "hevc":
             bsf = _BSF_MAP[codec]
             cmd_copy = [
                 "ffmpeg", "-y",
@@ -856,9 +869,16 @@ async def _extract_segment(resolved_path: str, start_sec: float, duration: float
             "-map", "0:v:0",
             "-map", "0:a:0?",
             *video_enc_args,
-            # format=yuv420p converts full-range (yuvj420p/pc) → limited-range (yuv420p/tv)
-            # required for HLS/MSE compat. -avoid_negative_ts handles PTS zeroing.
-            "-vf", "scale='min(iw,1280)':-2,format=yuv420p",
+            # normalize=True: all playlist segments are scaled to exactly 1280×720
+            # with letterbox padding so every segment shares identical SPS/PPS codec
+            # parameters — required to avoid bufferAppendError in Chrome MSE.
+            # normalize=False (single-clip use): cap width at 1280, preserve AR.
+            "-vf", (
+                "scale=1280:720:force_original_aspect_ratio=decrease,"
+                "pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p"
+                if normalize else
+                "scale='min(iw,1280)':-2,format=yuv420p"
+            ),
             "-fps_mode", "cfr", "-r", "30",
             "-c:a", "aac", "-b:a", "128k", "-ar", "48000",
             "-af", "loudnorm",
@@ -965,7 +985,7 @@ async def create_playlist(request: Request, body: PlaylistRequest):
         duration = max(0.1, clip.end_sec - clip.start_sec)
         out_path = os.path.join(token_dir, f"seg_{idx:03d}.ts")
         async with sem:
-            ok = await _extract_segment(resolved, clip.start_sec, duration, out_path)
+            ok = await _extract_segment(resolved, clip.start_sec, duration, out_path, normalize=True)
         return idx, duration, ok
 
     results = await asyncio.gather(*[
