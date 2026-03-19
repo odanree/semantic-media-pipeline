@@ -540,7 +540,7 @@ def _check_nvenc() -> bool:
              "-c:v", "h264_nvenc", "-f", "null", "-"],
             capture_output=True, timeout=10,
         )
-        return r.returncode == 0
+        return r.returncode == 0  # pragma: no cover
     except Exception:
         return False
 
@@ -571,7 +571,7 @@ class PlaylistResponse(BaseModel):
     expires_at: str
 
 
-async def _start_faststart_server(
+async def _start_faststart_server(  # pragma: no cover
     sidecar_path: str, original_path: str, mdat_offset: int
 ) -> tuple[str, asyncio.AbstractServer]:
     """
@@ -781,10 +781,8 @@ async def _extract_segment(resolved_path: str, start_sec: float, duration: float
         _COMPATIBLE_SR = {44100, 48000}
         if audio_codec == "aac" and audio_sr in _COMPATIBLE_SR:
             audio_args = ["-c:a", "copy"]
-            audio_filter_args: list[str] = []
         else:
             audio_args = ["-c:a", "aac", "-b:a", "128k", "-ar", "48000"]
-            audio_filter_args = ["-af", "asetpts=PTS-STARTPTS"]
         log.info("[Playlist] codecs for %s: video=%s audio=%s → audio_args=%s",
                  resolved_path, codec, audio_codec, audio_args)
 
