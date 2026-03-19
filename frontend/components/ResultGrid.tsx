@@ -155,19 +155,16 @@ export default function ResultGrid({ results }: ResultGridProps) {
           </select>
           {currentVideoResults.length > 0 && (
             <>
-              <div className="flex rounded overflow-hidden border border-gray-600" title="Clip padding per side">
-                {[3, 5, 10, 15].map((n) => (
-                  <button
-                    key={n}
-                    onClick={() => { setClipPadding(n); setReel(null) }}
-                    className={`px-2 py-2 text-xs font-medium transition ${clipPadding === n ? 'bg-blue-600 text-white' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'}`}
-                    aria-label={`${n}s clip padding`}
-                    title={`±${n}s clip`}
-                  >
-                    ±{n}s
-                  </button>
-                ))}
-              </div>
+              <select
+                value={clipPadding}
+                onChange={(e) => { setClipPadding(Number(e.target.value)); setReel(null) }}
+                className="px-2 py-2 rounded text-sm bg-gray-700 text-gray-300 border border-gray-600 hover:border-gray-500 focus:outline-none cursor-pointer"
+                aria-label="Clip padding seconds"
+              >
+                <option value={3}>±3s</option>
+                <option value={5}>±5s</option>
+                <option value={10}>±10s</option>
+              </select>
               <button
                 onClick={playHighlightReel}
                 disabled={reelLoading}
@@ -351,7 +348,7 @@ export default function ResultGrid({ results }: ResultGridProps) {
   )
 }
 
-function clipBounds(r: SearchResult, padding: number): { start_sec: number; end_sec: number } {
+function clipBounds(r: SearchResult, padding = 3): { start_sec: number; end_sec: number } {
   const ts = r.timestamp ?? 0
   // Only use audio segment if it actually contains the matched timestamp.
   // The nearest VAD segment can be thousands of seconds away from the visual match.
