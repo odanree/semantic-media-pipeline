@@ -146,7 +146,7 @@ services:
       - ${L1_MEDIA_2:-/tmp}:/mnt/i-media:ro
       - ${FRAME_CACHE_DIR:-/tmp/lumen_frame_cache}:/mnt/frame_cache
       - ./models:/app/models
-      - J:/lumen1-sidecars:/mnt/sidecars
+      - ${L1_SIDECAR_DIR:-/mnt/lumen1-sidecars}:/mnt/sidecars
     depends_on:
       redis:
         condition: service_healthy
@@ -194,7 +194,7 @@ services:
       - ${L1_MEDIA_2:-/tmp}:/mnt/i-media:ro
       - ./api:/app
       - hf_cache:/root/.cache/huggingface
-      - J:/lumen1-sidecars:/mnt/sidecars:ro
+      - ${L1_SIDECAR_DIR:-/mnt/lumen1-sidecars}:/mnt/sidecars:ro
       - /usr/lib/wsl/lib:/usr/lib/wsl/lib
     deploy:
       resources:
