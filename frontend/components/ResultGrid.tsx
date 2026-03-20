@@ -43,6 +43,7 @@ export default function ResultGrid({ results }: ResultGridProps) {
   const [reelOpen, setReelOpen] = useState(false)
   const [reelLoading, setReelLoading] = useState(false)
   const [reelError, setReelError] = useState<string | null>(null)
+  const [clipPadding, setClipPadding] = useState(3)
   const itemsPerPage = 20
 
   const sortedResults = useMemo(() => [...results].sort((a, b) => {
@@ -69,6 +70,7 @@ export default function ResultGrid({ results }: ResultGridProps) {
     setReel(null)
     setReelOpen(false)
     setReelError(null)
+    setClipPadding(3)
   }, [results])
 
   const currentVideoResults = currentResults.filter((r) => r.file_type === 'video')
@@ -84,7 +86,7 @@ export default function ResultGrid({ results }: ResultGridProps) {
     setReelError(null)
     const clips = currentVideoResults.map((r) => ({
       file_path: r.file_path,
-      ...clipBounds(r),
+      ...clipBounds(r, clipPadding),
     }))
     try {
       const res = await fetch('/api/playlist', {
@@ -150,14 +152,26 @@ export default function ResultGrid({ results }: ResultGridProps) {
             <option value="rms_asc">Energy ↓</option>
           </select>
           {currentVideoResults.length > 0 && (
-            <button
-              onClick={playHighlightReel}
-              disabled={reelLoading}
-              className="px-3 py-2 rounded text-sm font-semibold transition bg-purple-700 hover:bg-purple-600 disabled:opacity-50 disabled:cursor-wait text-white"
-              aria-label="Play highlight reel of all video results"
-            >
-              {reelLoading ? '⏳ Compiling…' : `▶ Reel (${currentVideoResults.length})`}
-            </button>
+            <>
+              <select
+                value={clipPadding}
+                onChange={(e) => { setClipPadding(Number(e.target.value)); setReel(null) }}
+                className="px-2 py-2 rounded text-sm bg-gray-700 text-gray-300 border border-gray-600 hover:border-gray-500 focus:outline-none cursor-pointer"
+                aria-label="Clip padding seconds"
+              >
+                <option value={3}>±3s</option>
+                <option value={5}>±5s</option>
+                <option value={10}>±10s</option>
+              </select>
+              <button
+                onClick={playHighlightReel}
+                disabled={reelLoading}
+                className="px-3 py-2 rounded text-sm font-semibold transition bg-purple-700 hover:bg-purple-600 disabled:opacity-50 disabled:cursor-wait text-white"
+                aria-label="Play highlight reel of all video results"
+              >
+                {reelLoading ? '⏳ Compiling…' : `▶ Reel (${currentVideoResults.length})`}
+              </button>
+            </>
           )}
           <button
             onClick={() => setViewMode('grid')}
@@ -202,6 +216,7 @@ export default function ResultGrid({ results }: ResultGridProps) {
             key={result.id}
             result={result}
             viewMode={viewMode}
+            clipPadding={clipPadding}
             onSelect={() => {
               if (result.file_type === 'video') setSelectedVideo(result)
               else setSelectedImage(result)
@@ -319,10 +334,7 @@ export default function ResultGrid({ results }: ResultGridProps) {
   )
 }
 
-// Lazy-loaded result item component
-const CLIP_PADDING = 3
-
-function clipBounds(r: SearchResult): { start_sec: number; end_sec: number } {
+function clipBounds(r: SearchResult, padding = 3): { start_sec: number; end_sec: number } {
   const ts = r.timestamp ?? 0
   // Only use audio segment if it actually contains the matched timestamp.
   // The nearest VAD segment can be thousands of seconds away from the visual match.
@@ -333,12 +345,12 @@ function clipBounds(r: SearchResult): { start_sec: number; end_sec: number } {
     ts <= r.audio_segment_end_sec
   return contained
     ? { start_sec: r.audio_segment_start_sec!, end_sec: r.audio_segment_end_sec! }
-    : { start_sec: Math.max(0, ts - CLIP_PADDING), end_sec: ts + CLIP_PADDING }
+    : { start_sec: Math.max(0, ts - padding), end_sec: ts + padding }
 }
 
-function segmentDuration(result: SearchResult): string | null {
+function segmentDuration(result: SearchResult, padding: number): string | null {
   if (result.file_type !== 'video') return null
-  const { start_sec, end_sec } = clipBounds(result)
+  const { start_sec, end_sec } = clipBounds(result, padding)
   const secs = Math.round(end_sec - start_sec)
   if (secs < 60) return `${secs}s clip`
   return `${Math.floor(secs / 60)}m ${secs % 60}s clip`
@@ -347,10 +359,12 @@ function segmentDuration(result: SearchResult): string | null {
 function ResultItem({
   result,
   viewMode,
+  clipPadding,
   onSelect,
 }: {
   result: SearchResult
   viewMode: ViewMode
+  clipPadding: number
   onSelect: () => void
 }) {
   const [isVisible, setIsVisible] = useState(false)
@@ -432,13 +446,13 @@ function ResultItem({
           <p className="text-xs text-gray-400 truncate">{result.file_path.split('/').pop()}</p>
           <p className="text-xs text-gray-500 mt-1">
             {result.file_type === 'video' && result.frame_index !== undefined
-              ? `Frame ${result.frame_index} @ ${(result.timestamp || 0).toFixed(1)}s${segmentDuration(result) ? ` · ${segmentDuration(result)}` : ''}`
+              ? `Frame ${result.frame_index} @ ${(result.timestamp || 0).toFixed(1)}s${segmentDuration(result, clipPadding) ? ` · ${segmentDuration(result, clipPadding)}` : ''}`
               : result.file_type === 'video'
               ? 'Video'
               : 'Image'}
           </p>
           {result.file_type === 'video' && (() => {
-            const bounds = clipBounds(result)
+            const bounds = clipBounds(result, clipPadding)
             const aligned = result.audio_segment_start_sec != null && bounds.start_sec === result.audio_segment_start_sec
             return (
               <p className={`text-xs mt-0.5 ${aligned ? 'text-blue-400' : 'text-yellow-500'}`}>
@@ -522,7 +536,7 @@ function ResultItem({
           <p className="text-sm text-gray-400 mt-1">{result.file_type.toUpperCase()}</p>
           <p className="text-xs text-gray-500 mt-1">
             {result.file_type === 'video' && result.frame_index !== undefined
-              ? `Frame ${result.frame_index} @ ${(result.timestamp || 0).toFixed(1)}s${segmentDuration(result) ? ` · ${segmentDuration(result)}` : ''}`
+              ? `Frame ${result.frame_index} @ ${(result.timestamp || 0).toFixed(1)}s${segmentDuration(result, clipPadding) ? ` · ${segmentDuration(result, clipPadding)}` : ''}`
               : result.file_type === 'video'
               ? 'Video'
               : 'Image'}

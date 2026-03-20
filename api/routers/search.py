@@ -52,6 +52,7 @@ qdrant_client = QdrantClient(
     port=QDRANT_PORT,
     grpc_port=QDRANT_GRPC_PORT,
     prefer_grpc=QDRANT_PREFER_GRPC,
+    timeout=30,
 )
 
 # ---------------------------------------------------------------------------
