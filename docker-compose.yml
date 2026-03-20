@@ -113,7 +113,7 @@ services:
       -E
       --prefetch-multiplier=$${CELERY_WORKER_PREFETCH_MULTIPLIER:-1}
       --max-tasks-per-child=$${CELERY_MAX_TASKS_PER_CHILD:-50}
-      --queues=celery,proxies"
+      --queues=celery,proxies,crawl"
     env_file:
       - .env
     environment:

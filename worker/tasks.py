@@ -479,6 +479,11 @@ def process_image(self, file_path: str, media_record_id: str):
         if not media_record:
             raise ValueError(f"Media record not found: {media_record_id}")
 
+        # Idempotency guard — redelivered tasks (task_acks_late=True + restart) must not reprocess.
+        if media_record.processing_status == "done":
+            log.info("Skipping already-done image: %s", file_path)
+            return {"status": "skipped", "reason": "already_done"}
+
         # Normalize image
         temp_dir = tempfile.mkdtemp(prefix="lumen_images_")
         normalized_path = os.path.join(temp_dir, "normalized.jpg")
@@ -618,6 +623,11 @@ def process_video(self, file_path: str, media_record_id: str):
         media_record = db.query(MediaFile).filter_by(id=media_record_id).first()
         if not media_record:
             raise ValueError(f"Media record not found: {media_record_id}")
+
+        # Idempotency guard — redelivered tasks (task_acks_late=True + restart) must not reprocess.
+        if media_record.processing_status == "done":
+            log.info("Skipping already-done video: %s", file_path)
+            return {"status": "skipped", "reason": "already_done"}
 
         # Get video metadata
         with _step("probe"):

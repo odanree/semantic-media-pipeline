@@ -45,7 +45,11 @@ app.conf.task_max_retries = 5
 # dedicated low-priority workers if desired, or by the main workers when
 # running both queues (--queues=celery,proxies).
 app.conf.task_routes = {
-    "tasks.generate_proxy": {"queue": "proxies"},
+    "tasks.generate_proxy":      {"queue": "proxies"},
+    "tasks.crawl_and_dispatch":  {"queue": "crawl"},
+    "tasks.ingest_media":        {"queue": "celery"},
+    "tasks.process_video":       {"queue": "celery"},
+    "tasks.process_image":       {"queue": "celery"},
 }
 
 # Import tasks module to register @app.task decorated functions
