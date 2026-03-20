@@ -73,9 +73,9 @@ jobs:
             cd /opt/lumen
 
             echo "=== Pulling latest code ==="
-            git fetch origin main
+            git fetch private main
             git checkout main
-            git reset --hard origin/main
+            git reset --hard private/main
 
             echo "=== Syncing Caddyfile ==="
             if [ -f /opt/lumen/Caddyfile ]; then

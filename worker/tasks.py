@@ -42,6 +42,7 @@ from ingest.ffmpeg import (
     probe_media,
 )
 from ingest.hasher import compute_file_hash, get_existing_hash_record
+from ingest.moov import extract_moov_sidecar
 from ml.embedder import get_embedder
 from storage import get_storage_backend
 import redis as _redis_sync
@@ -478,6 +479,11 @@ def process_image(self, file_path: str, media_record_id: str):
         if not media_record:
             raise ValueError(f"Media record not found: {media_record_id}")
 
+        # Idempotency guard — redelivered tasks (task_acks_late=True + restart) must not reprocess.
+        if media_record.processing_status == "done":
+            log.info("Skipping already-done image: %s", file_path)
+            return {"status": "skipped", "reason": "already_done"}
+
         # Normalize image
         temp_dir = tempfile.mkdtemp(prefix="lumen_images_")
         normalized_path = os.path.join(temp_dir, "normalized.jpg")
@@ -618,6 +624,11 @@ def process_video(self, file_path: str, media_record_id: str):
         if not media_record:
             raise ValueError(f"Media record not found: {media_record_id}")
 
+        # Idempotency guard — redelivered tasks (task_acks_late=True + restart) must not reprocess.
+        if media_record.processing_status == "done":
+            log.info("Skipping already-done video: %s", file_path)
+            return {"status": "skipped", "reason": "already_done"}
+
         # Get video metadata
         with _step("probe"):
             log.warning("Probing video: %s", file_path)
@@ -640,6 +651,18 @@ def process_video(self, file_path: str, media_record_id: str):
             proxy_path = os.path.join(proxy_root, rel)
             generate_proxy.apply_async(
                 args=[file_path, proxy_path, metadata["duration"], metadata["codec_name"]],
+                queue="proxies",
+            )
+
+        # Moov sidecar: extract and correct the moov atom so the API can
+        # serve a virtual faststart stream without copying the video data.
+        # Fixes non-faststart PXL/DJI files that fail codec probe on 9P mounts.
+        sidecar_root = os.getenv("SIDECAR_ROOT", "").strip()
+        if sidecar_root and not IS_S3 and file_path.startswith("/mnt/source/"):
+            rel = file_path[len("/mnt/source/"):]
+            sidecar_path = os.path.join(sidecar_root, rel + ".moov")
+            generate_moov_sidecar_task.apply_async(
+                args=[file_path, sidecar_path],
                 queue="proxies",
             )
 
@@ -830,6 +853,78 @@ def generate_proxy(self, file_path: str, proxy_path: str, duration: float, codec
     except FFmpegError as e:
         log.warning("[Proxy] Warning (non-fatal): %s", e)
         return {"status": "error", "reason": str(e), "file_path": file_path}
+
+
+@app.task(
+    bind=True,
+    name="tasks.generate_moov_sidecar_task",
+    max_retries=2,
+    retry_backoff=True,
+    retry_backoff_max=120,
+)
+def generate_moov_sidecar_task(self, file_path: str, sidecar_path: str) -> dict:
+    """
+    Extract and save the moov atom sidecar for a non-faststart MP4/MOV file.
+    Runs on the 'proxies' queue — never blocks the main ingest pipeline.
+
+    The sidecar allows the API to serve a virtual faststart stream via HTTP
+    range requests, enabling ffmpeg to seek into any timestamp of a large
+    4K PXL/DJI file on a slow 9P mount without reading the whole file.
+    """
+    file_path = _translate_path(file_path)
+    sidecar_path = _translate_path(sidecar_path)
+    try:
+        t0 = time.monotonic()
+        written = extract_moov_sidecar(file_path, sidecar_path)
+        elapsed_s = round(time.monotonic() - t0, 2)
+        status = "success" if written else "skipped"
+        log.warning("[MoovSidecar] %s in %.1fs: %s", status, elapsed_s, file_path)
+        return {"status": status, "file_path": file_path, "elapsed_s": elapsed_s}
+    except Exception as exc:
+        log.warning("[MoovSidecar] Error for %s: %s", file_path, exc)
+        raise self.retry(exc=exc)
+
+
+@app.task(bind=True, max_retries=0, time_limit=86400)
+def backfill_moov_sidecars(self, dry_run: bool = False) -> dict:
+    """
+    Walk /mnt/source for all MP4/MOV files and dispatch generate_moov_sidecar_task
+    for each that doesn't already have a sidecar. Runs on the main celery queue;
+    the per-file tasks run on the 'proxies' queue.
+    """
+    sidecar_root = os.getenv("SIDECAR_ROOT", "").strip()
+    if not sidecar_root:
+        return {"status": "error", "reason": "SIDECAR_ROOT not set"}
+
+    source_root = "/mnt/source"
+    video_exts = {".mp4", ".mov", ".m4v"}
+    dispatched = 0
+    skipped = 0
+    scanned = 0
+
+    for dirpath, _dirs, files in os.walk(source_root):
+        for fname in files:
+            if Path(fname).suffix.lower() not in video_exts:
+                continue
+            scanned += 1
+            file_path = os.path.join(dirpath, fname)
+            rel = file_path[len(source_root) + 1:]
+            sidecar_path = os.path.join(sidecar_root, rel + ".moov")
+            if os.path.isfile(sidecar_path):
+                skipped += 1
+                continue
+            if not dry_run:
+                generate_moov_sidecar_task.apply_async(
+                    args=[file_path, sidecar_path],
+                    queue="proxies",
+                )
+            dispatched += 1
+
+    log.warning(
+        "[MoovSidecar] Backfill %s: scanned=%d dispatched=%d skipped=%d",
+        "dry-run" if dry_run else "live", scanned, dispatched, skipped,
+    )
+    return {"status": "ok", "dry_run": dry_run, "scanned": scanned, "dispatched": dispatched, "skipped": skipped}
 
 
 @app.task(

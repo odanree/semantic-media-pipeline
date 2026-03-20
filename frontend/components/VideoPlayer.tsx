@@ -48,6 +48,11 @@ export default function VideoPlayer({ result, onClose }: VideoPlayerProps) {
   const streamBase = process.env.NEXT_PUBLIC_STREAM_URL || 'http://localhost:8000'
   const streamSrc = `${streamBase}/api/stream?path=${encodeURIComponent(result.file_path)}&quality=${quality}`
 
+  function skip(secs: number) {
+    if (!videoRef.current) return
+    videoRef.current.currentTime = Math.max(0, videoRef.current.currentTime + secs)
+  }
+
   function toggleQuality() {
     // Save current position before React swaps the src
     if (videoRef.current) {
@@ -123,15 +128,29 @@ export default function VideoPlayer({ result, onClose }: VideoPlayerProps) {
           )}
         </div>
 
-        <div className="p-4 border-t border-gray-700 text-sm text-gray-400">
-          <p>
-            Similarity: <span className="text-blue-400 font-semibold">{(result.similarity * 100).toFixed(1)}%</span>
-          </p>
-          {result.timestamp && (
-            <p>
-              Timestamp: <span className="text-blue-400 font-semibold">{result.timestamp.toFixed(2)}s</span>
-            </p>
-          )}
+        <div className="p-4 border-t border-gray-700 flex items-center justify-between text-sm text-gray-400">
+          <div>
+            <p>Similarity: <span className="text-blue-400 font-semibold">{(result.similarity * 100).toFixed(1)}%</span></p>
+            {result.timestamp && (
+              <p>Timestamp: <span className="text-blue-400 font-semibold">{result.timestamp.toFixed(2)}s</span></p>
+            )}
+          </div>
+          <div className="flex gap-2">
+            <button
+              onClick={() => skip(-60)}
+              className="px-3 py-1.5 rounded bg-gray-700 hover:bg-gray-600 text-gray-200 text-xs font-semibold transition"
+              aria-label="Skip back 1 minute"
+            >
+              ← 1m
+            </button>
+            <button
+              onClick={() => skip(60)}
+              className="px-3 py-1.5 rounded bg-gray-700 hover:bg-gray-600 text-gray-200 text-xs font-semibold transition"
+              aria-label="Skip forward 1 minute"
+            >
+              1m →
+            </button>
+          </div>
         </div>
       </div>
     </div>

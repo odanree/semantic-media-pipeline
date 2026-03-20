@@ -40,6 +40,7 @@ def probe_media(file_path: str) -> Dict:
             ],
             capture_output=True,
             text=True,
+            encoding="utf-8",
             timeout=30,
         )
 
@@ -139,6 +140,7 @@ def extract_keyframes(
             cmd,
             capture_output=True,
             text=True,
+            encoding="utf-8",
             timeout=timeout,
         )
 

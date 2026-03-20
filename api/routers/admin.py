@@ -60,6 +60,34 @@ async def trigger_backfill_captions(body: BackfillRequest = BackfillRequest()) -
     )
 
 
+@router.post("/admin/backfill-moov-sidecars", tags=["admin"])
+async def trigger_backfill_moov_sidecars(body: BackfillRequest = BackfillRequest()):
+    """
+    Dispatch moov sidecar generation for all existing video files on the source mount.
+
+    Walks /mnt/source for .mp4/.mov files and enqueues generate_moov_sidecar_task
+    for each via the 'proxies' queue. Skips files that already have a sidecar.
+    Safe to call multiple times — idempotent.
+
+    Returns the Celery task ID of the coordinator task.
+    """
+    try:
+        result = _celery.send_task(
+            "tasks.backfill_moov_sidecars",
+            kwargs={"dry_run": body.dry_run},
+            queue="celery",
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Failed to dispatch task: {exc}") from exc
+
+    mode = "dry-run" if body.dry_run else "live"
+    return {
+        "task_id": result.id,
+        "dry_run": body.dry_run,
+        "message": f"Moov sidecar backfill dispatched ({mode}). Poll /api/admin/task/{result.id} for status.",
+    }
+
+
 @router.get("/admin/task/{task_id}", response_model=TaskStatusResponse, tags=["admin"])
 async def get_task_status(task_id: str) -> TaskStatusResponse:
     """Poll the status of a Celery task by ID."""
