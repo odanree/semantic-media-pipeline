@@ -90,7 +90,7 @@ Instrumentator(
 ).instrument(app).expose(app, endpoint="/metrics", include_in_schema=False)
 
 
-@app.get("/api/ping", tags=["health"], include_in_schema=False)
+@app.api_route("/api/ping", methods=["GET", "HEAD"], tags=["health"], include_in_schema=False)
 async def ping() -> dict:
     """Unauthenticated liveness probe — used by deploy health check and uptime monitors."""
     return {"status": "ok"}
