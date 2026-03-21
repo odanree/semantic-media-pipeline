@@ -1,4 +1,9 @@
 lumen.danhle.net {
+	# Unauthenticated liveness probe — for UptimeRobot / health checks
+	handle /api/ping {
+		reverse_proxy localhost:8000
+	}
+
 	# WebSockets go directly to FastAPI (Next.js can't proxy WS natively)
 	handle /api/ws/* {
 		reverse_proxy localhost:8000
