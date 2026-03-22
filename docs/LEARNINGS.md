@@ -939,3 +939,70 @@ export async function POST(request: NextRequest) {
 ### Lesson
 
 **Module-level `process.env` reads in Next.js API routes are a footgun: move secrets inside the handler where they're evaluated at request time, not build time.** The clue is that `docker compose exec frontend node -e 'console.log(process.env.BACKEND_API_KEY)'` prints the key correctly, but requests still 401 — that rules out the container env and points to the compiled output.
+
+---
+
+## F — Private / Infrastructure-Specific
+
+- [F1. Playlist 400 — S3 Object Keys Not in ALLOWED_ROOTS](#f1-playlist-400--s3-object-keys-not-in-allowed_roots)
+- [F2. Qdrant Healthcheck Always Fails — No `curl` or `wget` in Image](#f2-qdrant-healthcheck-always-fails--no-curl-or-wget-in-image)
+
+---
+
+## F1. Playlist 400 — S3 Object Keys Not in ALLOWED_ROOTS
+
+**Component:** `api/routers/ingest.py`, `api/utils.py`
+**Severity:** High — all HLS playlist requests for S3-backed media returned 400
+
+### What Broke
+
+HLS playlist requests for S3-sourced media returned `400 Bad Request: path not in allowed roots`. The `ALLOWED_ROOTS` validation was checking the raw S3 object key against a list of local filesystem prefixes — `/mnt/media`, `/mnt/proxies` — which an S3 key can never match.
+
+### Root Cause
+
+The path-validation logic was written for local filesystem paths and never updated when S3 support was added. S3 keys look like `media/folder/file.mp4` — no leading slash, no filesystem prefix. The validator always rejected them.
+
+### Fix
+
+Add S3 bucket name as a valid root prefix, and skip the filesystem prefix check entirely when the path is an S3 URI:
+
+```python
+if file_path.startswith("s3://"):
+    bucket = file_path.split("/")[2]
+    if bucket not in ALLOWED_S3_BUCKETS:
+        raise HTTPException(status_code=400, detail="S3 bucket not in allowed list")
+else:
+    if not any(file_path.startswith(r) for r in ALLOWED_ROOTS):
+        raise HTTPException(status_code=400, detail="path not in allowed roots")
+```
+
+### Lesson
+
+**Path validation logic must be storage-backend-aware.** When adding a new storage backend (S3, GCS, Azure Blob), audit every place that validates or manipulates paths — they were all written assuming a local filesystem.
+
+---
+
+## F2. Qdrant Healthcheck Always Fails — No `curl` or `wget` in Image
+
+**Component:** `docker-compose.yml`, `docker-compose.second.yml`
+**Severity:** Low — false unhealthy status; no functional impact
+
+### What Broke
+
+Both Qdrant containers showed `(unhealthy)` in `docker ps` despite responding correctly to all API requests. The healthcheck used `curl -f http://localhost:6333/healthz` — but `curl` is not installed in the `qdrant/qdrant` image.
+
+### Root Cause
+
+The `qdrant/qdrant` image is minimal — it contains only the Qdrant binary. Neither `curl` nor `wget` is present.
+
+### Fix
+
+Use bash's built-in TCP redirect, which is available in the image:
+
+```yaml
+test: ["CMD-SHELL", "bash -c '</dev/tcp/localhost/6333' 2>/dev/null"]
+```
+
+### Lesson
+
+**Always verify that tools used in a healthcheck exist inside the target container.** Run `docker exec <container> which curl` before writing the healthcheck. The bash `/dev/tcp` trick is a reliable fallback for any container that has `bash`.
