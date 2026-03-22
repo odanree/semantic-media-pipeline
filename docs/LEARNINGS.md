@@ -6,39 +6,252 @@ A living record of every significant bug, outage, and architectural misstep enco
 
 ## Table of Contents
 
-1. [EXIF Bytes Not JSON-Serializable](#1-exif-bytes-not-json-serializable)
-2. [asyncpg Callback Using Non-Existent Method](#2-asyncpg-callback-using-non-existent-method)
-3. [Search Router Never Registered — All Search Endpoints 404](#3-search-router-never-registered--all-search-endpoints-404)
-4. [API Container Importing Worker ML Dependencies](#4-api-container-importing-worker-ml-dependencies)
-5. [WebSocket URL Wrong Protocol (http vs ws)](#5-websocket-url-wrong-protocol-http-vs-ws)
-6. [Infinite WebSocket Reconnect With No Backoff](#6-infinite-websocket-reconnect-with-no-backoff)
-7. [JSX Syntax in a .ts File](#7-jsx-syntax-in-a-ts-file)
-8. [Docker-Internal Hostname Not Resolvable in Browser](#8-docker-internal-hostname-not-resolvable-in-browser)
-9. [CORS Invalid Combination Silently Killed All WebSocket Connections](#9-cors-invalid-combination-silently-killed-all-websocket-connections)
-10. [ASGI Double-Close RuntimeError](#10-asgi-double-close-runtimeerror)
-11. [React useEffect Infinite Loop From Unstable Callback Dependencies](#11-react-useeffect-infinite-loop-from-unstable-callback-dependencies)
-23. [Playlist 400 — S3 Object Keys Not in ALLOWED_ROOTS](#23-playlist-400--s3-object-keys-not-in-allowed_roots)
-24. [Celery Prefork + CUDA → "Cannot Re-initialize CUDA in Forked Subprocess"](#24-celery-prefork--cuda--cannot-re-initialize-cuda-in-forked-subprocess)
-25. [Qdrant Healthcheck Always Fails — No `curl` or `wget` in Image](#25-qdrant-healthcheck-always-fails--no-curl-or-wget-in-image)
+- [A — Data Pipelines & AI/ML in Production](#a--data-pipelines--aiml-in-production)
+  - [A1. Celery Proxy Task Blocking the Indexing Queue](#a1-celery-proxy-task-blocking-the-indexing-queue)
+  - [A2. Celery Prefork + CUDA](#a2-celery-prefork--cuda)
+  - [A3. task_acks_late=True Causes Duplicate Task Processing](#a3-task_acks_latetrue-causes-duplicate-task-processing)
+  - [A4. Blocking Proxy Encode in Critical Pipeline Path](#a4-blocking-proxy-encode-in-critical-pipeline-path)
+  - [A5. CLIP Model / Qdrant Collection Dimension Mismatch](#a5-clip-model--qdrant-collection-dimension-mismatch)
+  - [A6. qdrant-client Minor Version Removed .search() — Mocked Tests Passed, Prod Returned 0 Results](#a6-qdrant-client-minor-version-removed-search--mocked-tests-passed-prod-returned-0-results)
+- [B — Backend Services & REST APIs](#b--backend-services--rest-apis)
+  - [B1. EXIF Bytes Not JSON-Serializable](#b1-exif-bytes-not-json-serializable)
+  - [B2. asyncpg Callback Using Non-Existent Method](#b2-asyncpg-callback-using-non-existent-method)
+  - [B3. Search Router Never Registered — All Search Endpoints 404](#b3-search-router-never-registered--all-search-endpoints-404)
+  - [B4. API Container Importing Worker ML Dependencies](#b4-api-container-importing-worker-ml-dependencies)
+  - [B5. slowapi Crashes on Redis ConnectionError](#b5-slowapi-crashes-on-redis-connectionerror)
+  - [B6. Qdrant Client API Mismatch](#b6-qdrant-client-api-mismatch)
+  - [B7. os.replace() Fails Across Docker Volume Mount Points](#b7-osreplace-fails-across-docker-volume-mount-points)
+  - [B8. os.getenv('VAR', default) Does Not Guard Against Empty String](#b8-osgetenvvar-default-does-not-guard-against-empty-string)
+  - [B9. DB Schema Drift Between init-db.sql and Migration Scripts](#b9-db-schema-drift-between-init-dbsql-and-migration-scripts)
+  - [B10. FastAPI List[float] on POST Endpoint Is a Body Param](#b10-fastapi-listfloat-on-post-endpoint-is-a-body-param)
+- [C — Performance & Optimization](#c--performance--optimization)
+  - [C1. Worker RAM Thrash](#c1-worker-ram-thrash)
+- [D — Production Troubleshooting](#d--production-troubleshooting)
+  - [D1. Stale DB Records From File Renames Leave Tasks Stuck as pending](#d1-stale-db-records-from-file-renames-leave-tasks-stuck-as-pending)
+  - [D2. Windows ffprobe UnicodeDecodeError on Non-Latin File Metadata](#d2-windows-ffprobe-unicodedecodeerror-on-non-latin-file-metadata)
+  - [D3. Rate Limiter Redis Connection Kills All Tests in CI](#d3-rate-limiter-redis-connection-kills-all-tests-in-ci)
+- [E — Frontend & Integration](#e--frontend--integration)
+  - [E1. WebSocket URL Wrong Protocol](#e1-websocket-url-wrong-protocol)
+  - [E2. Infinite WebSocket Reconnect With No Backoff](#e2-infinite-websocket-reconnect-with-no-backoff)
+  - [E3. Docker-Internal Hostname Not Resolvable in Browser](#e3-docker-internal-hostname-not-resolvable-in-browser)
+  - [E4. CORS Invalid Combination Silently Killed All WebSocket Connections](#e4-cors-invalid-combination-silently-killed-all-websocket-connections)
+  - [E5. React useEffect Infinite Loop From Unstable Callback Dependencies](#e5-react-useeffect-infinite-loop-from-unstable-callback-dependencies)
+  - [E6. Next.js Module-Level process.env Reads Captured at Build Time](#e6-nextjs-module-level-processenv-reads-captured-at-build-time)
 
 ---
 
-## 1. EXIF Bytes Not JSON-Serializable
+## A — Data Pipelines & AI/ML in Production
 
-**Commit(s):** `ae666df` → `08b128f`  
-**Component:** `worker/tasks.py`  
+- [A1. Celery Proxy Task Blocking the Indexing Queue](#a1-celery-proxy-task-blocking-the-indexing-queue)
+- [A2. Celery Prefork + CUDA](#a2-celery-prefork--cuda)
+- [A3. task_acks_late=True Causes Duplicate Task Processing](#a3-task_acks_latetrue-causes-duplicate-task-processing)
+- [A4. Blocking Proxy Encode in Critical Pipeline Path](#a4-blocking-proxy-encode-in-critical-pipeline-path)
+- [A5. CLIP Model / Qdrant Collection Dimension Mismatch](#a5-clip-model--qdrant-collection-dimension-mismatch)
+- [A6. qdrant-client Minor Version Removed .search() — Mocked Tests Passed, Prod Returned 0 Results](#a6-qdrant-client-minor-version-removed-search--mocked-tests-passed-prod-returned-0-results)
+
+---
+
+## A1. Celery Proxy Task Blocking the Indexing Queue
+
+**Component:** `scripts/start-windows-worker-*.ps1`
+**Severity:** High — indexing ground to a halt behind proxy encoding jobs
+
+### What Broke
+
+The Windows Celery worker was started with `--queues=celery,proxies`. The `generate_proxy` task encodes 720p H.265 video to H.264 and took ~13 minutes per file. With a backlog of thousands of videos, proxy jobs monopolised every worker slot and CLIP embedding — the actual indexing work — stalled.
+
+### Root Cause
+
+The `celery` and `proxies` queues shared the same worker pool. A long-running CPU-bound task (video encoding) starved the short-running GPU-bound tasks (CLIP embedding). There was no queue priority or dedicated worker separation.
+
+### Fix
+
+Remove `proxies` from the queues argument on all indexing workers. A dedicated encoding worker can be spun up separately when proxy generation is explicitly needed:
+
+```powershell
+# Before
+--queues=celery,proxies
+# After
+--queues=celery
+```
+
+### Lesson
+
+**Long-running CPU tasks and short-running GPU tasks must never share the same Celery worker pool.** Separate queues are not enough — the workers consuming those queues must also be separate. Treat proxy generation as a background maintenance job, not part of the critical indexing path.
+
+---
+
+## A2. Celery Prefork + CUDA → "Cannot Re-initialize CUDA in Forked Subprocess"
+
+**Component:** `docker-compose.yml`, `worker/ml/embedder.py`
+**Severity:** High — all `process_video` and `process_image` tasks failed immediately
+
+### What Broke
+
+After rebuilding the worker container, all ML tasks failed with `RuntimeError: Cannot re-initialize CUDA in forked subprocess`. Celery's default `prefork` pool forks child worker processes. If CUDA is initialized in the parent process before the fork, child processes inherit the CUDA context and fail when they try to re-initialize it. With `--concurrency=4`, four children all hit this simultaneously.
+
+### Root Cause
+
+Celery's `prefork` pool and CUDA are fundamentally incompatible. Even with `USE_GPU=false` at build time, the worker container runs inside WSL2 which exposes NVIDIA drivers — `torch.cuda.is_available()` returned `True`, and the embedder attempted CUDA initialization before the fork guard could prevent it.
+
+### Fix
+
+Two changes applied together. Use `--pool=solo` (runs tasks sequentially in the main process, no forking) and set `EMBEDDING_DEVICE=cpu` explicitly to prevent CUDA initialization regardless of hardware:
+
+```yaml
+command: sh -c "celery -A celery_app worker --pool=solo ..."
+```
+
+### Lesson
+
+**Any Celery worker that loads a GPU/ML model must use `--pool=solo` or `--pool=threads`.** Prefork + CUDA is fundamentally incompatible because fork copies the CUDA context to child processes. Always set `EMBEDDING_DEVICE=cpu` explicitly when running a CPU-only worker — relying on `torch.cuda.is_available()` auto-detection is fragile in WSL2.
+
+---
+
+## A3. task_acks_late=True Causes Duplicate Task Processing on Worker Restart
+
+**Component:** `worker/tasks.py`
+**Severity:** High — caused already-completed files to be fully reprocessed (re-embedded, re-indexed into Qdrant)
+
+### What Broke
+
+A video file that was already `status = "done"` was picked up and fully reprocessed after a worker restart. Celery re-embedded the frames and created duplicate Qdrant points for an already-indexed file.
+
+### Root Cause
+
+`task_acks_late=True` means Celery only acknowledges a task from the broker queue after the task completes. If the worker is restarted while a task is in-flight, the broker redelivers it to the next available worker. The `process_video` and `process_image` tasks had no guard against this — they always ran all processing steps regardless of the file's current `processing_status`.
+
+### Fix
+
+Added an idempotency guard at the very start of each task, before any expensive work:
+
+```python
+# Idempotency guard — redelivered tasks (task_acks_late=True + restart) must not reprocess.
+if media_record.processing_status == "done":
+    log.info("Skipping already-done video: %s", file_path)
+    return {"status": "skipped", "reason": "already_done"}
+```
+
+### Lesson
+
+**`task_acks_late=True` trades task loss for duplicate delivery. Any task that has side effects (DB writes, vector upserts, file I/O) must be idempotent.** The idempotency check must be the very first thing the task does — before any expensive or irreversible operation. The general pattern: read a persistent status flag from the DB; if the work is already done, return early.
+
+---
+
+## A4. Blocking Proxy Encode in Critical Pipeline Path
+
+**Component:** `worker/tasks.py`
+**Severity:** High — 563 video records stuck in `processing`; zero vectors in Qdrant after hours
+
+### What Broke
+
+`process_video` called `apply_faststart()` synchronously before frame extraction. For 4K source files (5–20 GB), this transcode operation took hours per file. With 6 Celery workers and 6 large files, all worker slots were occupied 100% of the time encoding proxies. Frame extraction and Qdrant upserts — the operations that actually produce search results — never ran.
+
+### Root Cause
+
+Three compounding design decisions: (1) a variable-cost blocking step placed before fast invariant steps — proxy encoding cost scales from seconds to hours, while frame extraction and embedding are comparatively fast; (2) no distinction by codec — H264 sources only need a container remux (~30s), not a full transcode (hours); (3) no escape hatch for large files.
+
+### Fix
+
+Three changes applied together:
+
+```
+Option 1: Decouple — generate_proxy dispatched async to 'proxies' queue
+          process_video finishes in minutes regardless of source size
+
+Option 2: Duration threshold — non-H264 files > PROXY_MAX_DURATION_SECS
+          (default 3600s) are skipped; full movies don't block the pipeline
+
+Option 3: Codec-aware routing — H264 sources use -c copy (stream copy, ~30s)
+          only non-H264 sources pay the full transcode cost
+```
+
+### Lesson
+
+**Place cheap invariant operations before expensive variable-cost ones.** When you have a step whose cost can range from seconds to hours depending on input, that step belongs at the end of the chain or in a separate async lane — never before steps that must complete for the pipeline to make progress.
+
+---
+
+## A5. CLIP Model / Qdrant Collection Dimension Mismatch — Silent Backlog
+
+**Component:** `worker/tasks.py`, `worker/ml/embedder.py`
+**Severity:** High — growing `error` count across restarts before it was caught
+
+### What Broke
+
+The Qdrant `media_vectors` collection was recreated at 768 dimensions to match `clip-ViT-L-14`. But `.env` still had `CLIP_MODEL_NAME=clip-ViT-B-32` (512-dim). The worker loaded ViT-B-32 and produced 512-dim vectors, which Qdrant rejected with `INVALID_ARGUMENT`. Because `autoretry_for=(Exception,)` covers all exceptions, every rejected task retried 5× before landing in `error`. The error count grew from 2 → 169 → 269 → 502 across restarts before anyone caught it.
+
+### Root Cause
+
+The collection and the model env var were changed in separate steps with no cross-check. There is no startup assertion that `embedder.embedding_dim == collection.vector_size`. `INVALID_ARGUMENT` errors are not distinguishable from transient errors by the current retry logic, so they waste ~10 minutes of worker time per file before permanent failure.
+
+### Fix
+
+Updated `.env` (`CLIP_MODEL_NAME=clip-ViT-L-14`), reset 502 `INVALID_ARGUMENT` errors to `pending`, and added a startup assertion to catch mismatches loudly at start rather than silently at scale:
+
+```python
+qdrant_info = qdrant_client.get_collection(QDRANT_COLLECTION_NAME)
+collection_dim = qdrant_info.config.params.vectors.size
+if collection_dim != embedder.embedding_dim:
+    raise RuntimeError(
+        f"Dimension mismatch: Qdrant collection is {collection_dim}-dim "
+        f"but {embedder.model_name} produces {embedder.embedding_dim}-dim vectors. "
+        f"Check CLIP_MODEL_NAME in .env."
+    )
+```
+
+### Lesson
+
+**When you change a schema — whether a database column type or a vector dimension — every producer of that schema must be updated atomically.** Add a startup assertion that checks the producer's output format against the store's expected format before any work begins. Fail loud at startup, not silently at scale.
+
+---
+
+## A6. `qdrant-client` Minor Version Removed `.search()` — Mocked Tests Passed, Prod Returned 0 Results
+
+**Component:** `api/agent/steps.py`, `api/requirements.txt`
+**Severity:** High — agent endpoint always returned 0 results on prod; direct search endpoint worked fine
+
+### What Broke
+
+After merging the v2.0.0 multi-agent feature, `POST /api/agent/query` always returned 0 results on prod. The agent coordinator returned in 62ms — too fast for CLIP inference — meaning the search node was silently short-circuiting. `qdrant-client` was pinned to `>=1.7` in `requirements.txt`. Prod had installed `1.17.0`, which removed `QdrantClient.search()` entirely in favor of `query_points()`. All tests mock Qdrant at the dependency-injection layer, so the mock's `.search()` attribute worked fine in CI. On prod the real client raised `AttributeError`, caught by a broad `except Exception` in `QdrantRetrieveStep` and silently turned into an empty result list.
+
+### Root Cause
+
+Open-ended version pinning (`>=1.7`) allowed the prod install to pull in a breaking minor-version change. Mocking at the injection layer — rather than testing the real client method path — meant the breaking rename was invisible in CI. The broad `except Exception` in the search step converted a hard failure into a silent empty result.
+
+### Fix
+
+Replace `self._qdrant.search(...)` with `self._qdrant.query_points(...)`. Pin to an exact minor: `qdrant-client>=1.17.0,<2.0`. Add `threshold`/`limit` fields to `AgentState` TypedDict and thread them through `search_agent_run()` (they were silently ignored).
+
+### Lesson
+
+**Pin third-party SDK versions to an exact minor version — not open-ended `>=X.Y`.** Add a smoke test that calls the real client method path (even with a local Qdrant via a CI service container) to catch removed APIs. When a handler catches `Exception` and returns an empty result, always log a warning — silent failures are extremely hard to diagnose on prod.
+
+---
+
+## B — Backend Services & REST APIs
+
+- [B1. EXIF Bytes Not JSON-Serializable](#b1-exif-bytes-not-json-serializable)
+- [B2. asyncpg Callback Using Non-Existent Method](#b2-asyncpg-callback-using-non-existent-method)
+- [B3. Search Router Never Registered — All Search Endpoints 404](#b3-search-router-never-registered--all-search-endpoints-404)
+- [B4. API Container Importing Worker ML Dependencies](#b4-api-container-importing-worker-ml-dependencies)
+- [B5. slowapi Crashes on Redis ConnectionError](#b5-slowapi-crashes-on-redis-connectionerror)
+- [B6. Qdrant Client API Mismatch](#b6-qdrant-client-api-mismatch)
+- [B7. os.replace() Fails Across Docker Volume Mount Points](#b7-osreplace-fails-across-docker-volume-mount-points)
+- [B8. os.getenv('VAR', default) Does Not Guard Against Empty String](#b8-osgetenvvar-default-does-not-guard-against-empty-string)
+- [B9. DB Schema Drift Between init-db.sql and Migration Scripts](#b9-db-schema-drift-between-init-dbsql-and-migration-scripts)
+- [B10. FastAPI List[float] on POST Endpoint Is a Body Param](#b10-fastapi-listfloat-on-post-endpoint-is-a-body-param)
+
+---
+
+## B1. EXIF Bytes Not JSON-Serializable
+
+**Component:** `worker/tasks.py`
 **Severity:** Medium — caused worker task crashes for images with EXIF data
 
 ### What Broke
 
-When processing images through Pillow, EXIF data is returned as a dictionary containing raw `bytes` values (e.g., maker notes, GPS binary data). Attempting to store this in the database as JSON or pass it through Celery's result backend caused a silent serialization crash:
-
-```python
-exif_data = img._getexif()        # Returns {tag_id: value} — some values are bytes
-media_record.exif_data = exif_data  # Fails: bytes is not JSON serializable
-```
-
-The initial workaround was to skip EXIF entirely. A later attempt to re-add it in PR#1 reproduced the same crash because it passed the raw dict without filtering the non-serializable types.
+When processing images through Pillow, EXIF data is returned as a dictionary containing raw `bytes` values (e.g., maker notes, GPS binary data). Attempting to store this in the database as JSON or pass it through Celery's result backend caused a silent serialization crash. The initial workaround was to skip EXIF entirely; a later attempt to re-add it reproduced the same crash because it passed the raw dict without filtering non-serializable types.
 
 ### Root Cause
 
@@ -46,7 +259,7 @@ The initial workaround was to skip EXIF entirely. A later attempt to re-add it i
 
 ### Fix
 
-Either convert `bytes` values to hex strings during extraction, or skip EXIF storage entirely until a proper EXIF parsing library (e.g., `exifread`) is integrated:
+Either convert `bytes` values to hex strings during extraction, or skip EXIF storage entirely until a proper EXIF parsing library (e.g., `exifread`) is integrated. The simplest safe approach:
 
 ```python
 # Safe approach: skip bytes values
@@ -62,10 +275,9 @@ if exif_data:
 
 ---
 
-## 2. asyncpg Callback Using Non-Existent Method
+## B2. asyncpg Callback Using Non-Existent Method
 
-**Commit(s):** `ae666df` → `656b40b`  
-**Component:** `api/utils/notifications.py`  
+**Component:** `api/utils/notifications.py`
 **Severity:** Critical — the entire real-time notification system was silently non-functional
 
 ### What Broke
@@ -80,7 +292,7 @@ def _on_notification(self, conn, pid, channel, payload):
     )
 ```
 
-The `AttributeError` was swallowed silently by asyncpg's callback dispatcher. The system appeared to connect and listen, but no notifications were ever delivered to WebSocket clients. The feature was completely non-functional after shipping.
+The `AttributeError` was swallowed silently by asyncpg's callback dispatcher. The system appeared to connect and listen, but no notifications were ever delivered to WebSocket clients.
 
 ### Root Cause
 
@@ -102,10 +314,9 @@ def _on_notification(self, conn, pid, channel, payload):
 
 ---
 
-## 3. Search Router Never Registered — All Search Endpoints 404
+## B3. Search Router Never Registered — All Search Endpoints 404
 
-**Commit(s):** `656b40b` → `d0cd069`  
-**Component:** `api/main.py`  
+**Component:** `api/main.py`
 **Severity:** Critical — all search functionality silently returned 404
 
 ### What Broke
@@ -138,10 +349,9 @@ app.include_router(search.router, prefix="/api", tags=["search"])
 
 ---
 
-## 4. API Container Importing Worker ML Dependencies
+## B4. API Container Importing Worker ML Dependencies
 
-**Commit(s):** `656b40b` → `d0cd069`  
-**Component:** `api/routers/search.py`  
+**Component:** `api/routers/search.py`
 **Severity:** Critical — API container crashed on startup with ModuleNotFoundError
 
 ### What Broke
@@ -159,7 +369,7 @@ When the `lumen-api` container started, Python's import system failed at the `se
 
 ### Root Cause
 
-The API and worker share some code structure visually, but they are separate containers with separate dependency trees. The worker contains multi-gigabyte ML models and GPU libraries. The API is intentionally a thin, fast HTTP layer. Importing across these boundaries violates the service separation and makes the API container enormous and fragile.
+The API and worker share some code structure visually, but they are separate containers with separate dependency trees. The worker contains multi-gigabyte ML models and GPU libraries. The API is intentionally a thin, fast HTTP layer. Importing across these boundaries violates service separation.
 
 ### Fix
 
@@ -174,14 +384,345 @@ results = client.search(collection_name="media", query_vector=vector, limit=limi
 
 ### Lesson
 
-**Each container's `requirements.txt` is a hard boundary.** In a microservices architecture, import boundaries must mirror deployment boundaries. If service A and service B share source code in a monorepo, be explicit about which modules are owned by which service. A simple CI check — start the API container in isolation and hit `/docs` — would catch this before it ever ships.
+**Each container's `requirements.txt` is a hard boundary.** In a microservices architecture, import boundaries must mirror deployment boundaries. A simple CI check — start the API container in isolation and hit `/docs` — would catch this before it ever ships.
 
 ---
 
-## 5. WebSocket URL Wrong Protocol (http vs ws)
+## B5. slowapi Crashes on Redis ConnectionError Due to Wrong Hostname in REDIS_URL
 
-**Commit(s):** `656b40b`, `08b128f`, `2406dd0`  
-**Component:** `frontend/hooks/useMediaUpdates.ts`, `useStatusUpdates.ts`  
+**Component:** `api/rate_limit.py`
+**Severity:** Critical — all API requests returned 500; the error was a slowapi bug triggered by a misconfigured env var
+
+### What Broke
+
+`rate_limit.py` used `os.getenv("REDIS_URL", "redis://redis:6379")` for the slowapi storage URI. The `.env` file had `REDIS_URL=redis://redis:6379` — the hostname `redis` never resolved inside the Docker network. Every request caused slowapi to get a `ConnectionError` and pass it to `_rate_limit_exceeded_handler`, which unconditionally accessed `exc.detail` — crashing with `AttributeError: 'ConnectionError' object has no attribute 'detail'`.
+
+### Root Cause
+
+Two compounding bugs: (1) `REDIS_URL` in `.env` used the wrong container hostname; (2) slowapi's middleware has a latent bug where it routes any exception from Redis — including `ConnectionError` — to `_rate_limit_exceeded_handler`, which expects an `HTTPException` subclass with a `.detail` attribute.
+
+### Fix
+
+Prefer `CELERY_BROKER_URL` (which is always set to the correct container hostname in Compose) over `REDIS_URL`, and add `in_memory_fallback_enabled=True` to fail open if Redis is temporarily unreachable:
+
+```python
+_storage_uri = (
+    os.getenv("CELERY_BROKER_URL")          # already correct in Compose env
+    or os.getenv("REDIS_URL", "redis://lumen-redis:6379")
+)
+
+limiter = Limiter(
+    key_func=get_remote_address,
+    storage_uri=_storage_uri,
+    default_limits=[LIMIT_DEFAULT],
+    in_memory_fallback_enabled=True,  # fail open if Redis is temporarily unreachable
+)
+```
+
+### Lesson
+
+**Verify that `REDIS_URL` matches the actual container hostname before deploying.** In Docker Compose stacks, the hostname is the service name. Run `docker exec <api_container> env | grep REDIS` after any env change to confirm. Add `in_memory_fallback_enabled=True` to any slowapi `Limiter` that uses a Redis backend — without it, a transient Redis unavailability crashes every in-flight request.
+
+---
+
+## B6. Qdrant Client API Mismatch
+
+**Component:** `api/routers/search.py`, `worker/tasks.py`
+**Severity:** High — search returned 500 errors after appearing to work in isolation
+
+### What Broke
+
+The code was written against the Qdrant client docs, but the installed package version (`qdrant-client==1.17.0`) had renamed and restructured its search API multiple times across minor versions. Three consecutive attempts were needed: `.search_points()` → `AttributeError`, `.search_vectors()` → `AttributeError`, `.query_points()` with the correct payload shape → success.
+
+### Root Cause
+
+Qdrant's Python client does not follow semantic versioning strictly. Method names changed between 1.x minor versions without deprecation warnings. The online docs were ahead of the pinned package version, so the published examples referenced methods that didn't exist in the installed release.
+
+### Fix
+
+Pin the exact client version in `requirements.txt` and verify the installed version's actual API surface via `help()` in a REPL or the GitHub tag changelog for the pinned version — not the latest hosted docs:
+
+```
+qdrant-client>=1.17.0,<2.0
+```
+
+### Lesson
+
+**Treat third-party SDK docs with suspicion unless verifying against the exact installed version.** The canonical source of truth is `help(client)` or the GitHub tag for the pinned release, not the latest hosted docs. Always pin transitive dependencies and note the version in a comment next to the call site.
+
+---
+
+## B7. `os.replace()` Fails Across Docker Volume Mount Points
+
+**Component:** `worker/tasks.py`, `worker/ingest/ffmpeg.py`
+**Severity:** High — all `generate_proxy` tasks for HEVC source files failed immediately after FFmpeg succeeded
+
+### What Broke
+
+`apply_faststart()` wrote the FFmpeg output to `tempfile.mktemp(dir="/tmp")`, then called `os.replace(str(tmp_path), str(dest))` to move it to `/mnt/proxies/...`. This raises `OSError: [Errno 18] Invalid cross-device link` whenever source and destination are on different filesystems.
+
+### Root Cause
+
+`os.replace()` is backed by POSIX `rename(2)` — atomic and instant within one filesystem, but always `EXDEV` across filesystems. Docker volume mounts (`/tmp` on the container's overlay filesystem, `/mnt/proxies` on a bind-mounted host path) are always different filesystems. `OSError` was also not in `autoretry_for=(FFmpegError,)`, so tasks went straight to FAILURE with 0 retries.
+
+### Fix
+
+```python
+# Before — fails across volume mounts:
+os.replace(str(tmp_path), str(dest))
+
+# After — copy+delete fallback on cross-device move:
+import shutil
+shutil.move(str(tmp_path), str(dest))
+```
+
+Also updated `autoretry_for=(FFmpegError, OSError)` so future OS-level errors retry with exponential backoff.
+
+### Lesson
+
+**`os.replace()` is POSIX `rename()` — atomic within one filesystem, but always fails across filesystems.** Docker volume mounts are separate filesystems by definition. Whenever source and destination paths could be on different mounts, use `shutil.move()` which falls back to copy+unlink. Also: include `OSError` in `autoretry_for` for I/O-heavy tasks — OS-level I/O failures are transient more often than they are permanent.
+
+---
+
+## B8. `os.getenv('VAR', default)` Does Not Guard Against Empty String
+
+**Component:** `worker/tasks.py`, `worker/ingest/ffmpeg.py`
+**Severity:** High — `process_video` tasks stuck in perpetual RETRY with `ValueError`
+
+### What Broke
+
+`KEYFRAME_RESOLUTION` was declared in `docker-compose.second.yml` as `${KEYFRAME_RESOLUTION:-224}`. The host shell had this variable exported as an empty string. The `:-` default in shell substitution fills in a default only when the variable is **unset or null** — an exported empty-string variable is considered set. The container received `KEYFRAME_RESOLUTION=""`, then `int(os.getenv("KEYFRAME_RESOLUTION", "224"))` returned `int("")` → `ValueError`. Because `autoretry_for=(Exception,)` covers `ValueError`, tasks retried on exponential backoff indefinitely.
+
+### Root Cause
+
+`os.getenv('VAR', 'fallback')` fires only when the key is absent from `os.environ`. An empty-string value is returned as-is. Any subsequent `int()` or `float()` cast will raise.
+
+### Fix
+
+```python
+# Before — silently passes empty string to int():
+resolution = int(os.getenv("KEYFRAME_RESOLUTION", "224"))
+
+# After — empty string is falsy, falls back to default:
+resolution = int(os.getenv("KEYFRAME_RESOLUTION") or "224")
+```
+
+Applied to all five affected variables across `tasks.py` and `ingest/ffmpeg.py`.
+
+### Lesson
+
+**`os.getenv('VAR', default)` and shell `${VAR:-default}` share the same footgun: neither protects against an explicitly-set empty string.** The Python `or` idiom is more defensive because it treats any falsy value (empty string, zero, None) as "use the fallback". For configuration values that will be passed to `int()` or `float()`, always use `os.getenv('VAR') or 'default'`.
+
+---
+
+## B9. DB Schema Drift Between `init-db.sql` and Migration Scripts
+
+**Component:** PostgreSQL `media_files` table, `init-db.sql`
+**Severity:** Critical — workers crashed immediately on every task on a fresh deploy
+
+### What Broke
+
+On a fresh cloud deploy, workers crashed immediately with `sqlalchemy.exc.ProgrammingError: column media_files.embedding_started_at does not exist`. The dev machine had the column because it was added via migrations and manual `ALTER TABLE` commands. The cloud server had a fresh Postgres container that only ran `init-db.sql`, which was never updated as observability columns were added in later PRs.
+
+### Root Cause
+
+Migration scripts and `init-db.sql` diverged. There was one migration script for `model_version` but nothing for `embedding_started_at`, `worker_id`, `frame_cache_hit`, or `embedding_ms` — and `init-db.sql` had none of them. Fresh deploys are silently broken whenever the schema is extended without keeping `init-db.sql` in sync.
+
+### Fix
+
+Manual `ALTER TABLE … ADD COLUMN IF NOT EXISTS` on the running container, then added all 5 columns to `init-db.sql` for future fresh deploys, and created `scripts/migrate_add_observability_columns.sql` for upgrading existing DBs.
+
+### Lesson
+
+**Migration scripts and the init script are two separate code paths that must stay in sync.** Every `ALTER TABLE` that adds a column also gets a matching change to `init-db.sql`. The smell-check before merging any schema PR: "if someone clones this repo today and runs `docker compose up` for the first time, will `init-db.sql` produce the same schema as a fully-migrated dev DB?"
+
+---
+
+## B10. FastAPI `List[float]` on a POST Endpoint Is a Body Param, Not a Query Param
+
+**Component:** `api/routers/search.py`
+**Severity:** Medium — 14 tests all returned 422 Unprocessable Entity
+
+### What Broke
+
+14 new tests for `POST /api/search-vector` all returned 422. The vector was being sent as repeated query params (`?vector=0.1&vector=0.2&…`) following the same pattern used for scalars like `limit`. FastAPI's parameter resolution rules for POST endpoints treat `List[float]` as a body param, not a query param — it expects a raw JSON array body.
+
+### Root Cause
+
+FastAPI has a nuanced rule: the binding location of a parameter depends on its *type*, not just the presence/absence of `Body()`. Scalar types are query params by default on POST; collection types become body params. This is documented but easy to miss when writing tests against existing endpoints.
+
+### Fix
+
+```python
+# Wrong — 422 on every call
+client.post("/api/search-vector", params=[("vector", 0.1), ("vector", 0.2)])
+
+# Correct — raw JSON array body
+client.post("/api/search-vector", json=[0.1, 0.2, 0.3])
+
+# Scalar query params still work alongside the JSON body
+client.post("/api/search-vector", json=[0.1, 0.2], params={"limit": 5})
+```
+
+### Lesson
+
+**FastAPI's implicit parameter binding has non-obvious rules for collection types.** When a test returns 422 and the data looks correct, check the OpenAPI schema first — FastAPI generates it automatically and will show exactly what it expects where. `/docs` showing `vector` under `requestBody` (not `parameters`) immediately explains the 422.
+
+---
+
+## C — Performance & Optimization
+
+- [C1. Worker RAM Thrash](#c1-worker-ram-thrash)
+
+---
+
+## C1. Worker RAM Thrash — Load Average 23.75
+
+**Component:** `docker-compose.yml`, `worker/celery_app.py`
+**Severity:** High — host machine became unresponsive; overall throughput collapsed
+
+### What Broke
+
+Celery defaulted to `--concurrency=24` (one worker per CPU core). Each worker loaded its own copy of the CLIP model into RAM (~600 MB) and spawned FFmpeg subprocesses (~400 MB each for 4K video). With 24 workers: CLIP alone consumed 14.4 GB, FFmpeg peaks added 9.6 GB — exceeding available RAM and causing heavy swap thrashing.
+
+### Root Cause
+
+Default Celery concurrency is based on CPU count, which is correct for I/O-bound tasks but catastrophically wrong for memory-heavy ML workloads. Each worker was also never recycled, so PyTorch and FFmpeg memory leaks accumulated over the lifetime of the process.
+
+### Fix
+
+```
+CELERY_CONCURRENCY=4              # floor(free_RAM_GB / ~2 GB per worker)
+worker_max_tasks_per_child=50     # recycle child after 50 tasks (clears leaks)
+worker_max_memory_per_child=1500000  # hard 1.5 GB ceiling per child
+```
+
+Load average dropped from 23.75 → 8.59.
+
+### Lesson
+
+**Default configurations assume a class of workload.** For memory-heavy ML inference, the right concurrency is `floor(RAM / model_size)`, not CPU count. `max_tasks_per_child` is the Celery equivalent of connection pool recycling — without it, PyTorch's CUDA allocator and FFmpeg's buffer pools cause gradual memory growth that only appears after hours of operation.
+
+---
+
+## D — Production Troubleshooting
+
+- [D1. Stale DB Records From File Renames Leave Tasks Stuck as pending](#d1-stale-db-records-from-file-renames-leave-tasks-stuck-as-pending)
+- [D2. Windows ffprobe UnicodeDecodeError on Non-Latin File Metadata](#d2-windows-ffprobe-unicodedecodeerror-on-non-latin-file-metadata)
+- [D3. Rate Limiter Redis Connection Kills All Tests in CI](#d3-rate-limiter-redis-connection-kills-all-tests-in-ci)
+
+---
+
+## D1. Stale DB Records From File Renames Leave Tasks Stuck as `pending` Forever
+
+**Component:** `worker/tasks.py`, PostgreSQL `media_files` table
+**Severity:** Medium — files permanently stuck as `pending`, never retried
+
+### What Broke
+
+Multiple files were showing as `pending` in the DB but never being picked up for processing. The files had been renamed on disk. The crawler matches files by their full `file_path` — when a file is renamed, the old path no longer exists on disk and the `pending` record is never updated or retried. The new path is treated as a brand new file, creating a duplicate `done` record.
+
+### Root Cause
+
+The crawler has no rename detection — it only matches by exact `file_path`. Renaming a file on disk orphans its DB record permanently, leaving one `done` record for the new name and one `pending` record for the old name that will never be processed.
+
+### Fix
+
+Identify stale records by cross-referencing `pending` paths against what actually exists on disk, then delete them. For now, manual cleanup is the remediation:
+
+```sql
+DELETE FROM media_files
+WHERE processing_status = 'pending'
+  AND file_path LIKE '<affected_directory>/%';
+```
+
+### Lesson
+
+**The crawler has no rename detection — it only matches by exact `file_path`.** If files are regularly renamed, either implement a periodic cleanup query to delete `pending` records whose paths no longer exist on disk, or track files by inode/content hash rather than path.
+
+---
+
+## D2. Windows ffprobe UnicodeDecodeError on Non-Latin File Metadata
+
+**Component:** `worker/ingest/ffmpeg.py`
+**Severity:** Medium — caused worker crashes for files with non-Latin characters in metadata
+
+### What Broke
+
+Files failed with `UnicodeDecodeError: 'cp1252' codec can't decode byte 0x81 in position N`. The worker crashed during `ffprobe` metadata extraction and files were left in `error` status.
+
+### Root Cause
+
+`subprocess.run(..., text=True)` without an explicit `encoding=` argument uses the platform's default encoding. On Windows, this is `cp1252`. ffprobe outputs UTF-8, including metadata fields that may contain Japanese or other non-Latin characters. The Linux worker handled the same files fine because Linux defaults to UTF-8.
+
+### Fix
+
+Added `encoding="utf-8"` explicitly to all `subprocess.run` calls in `ffmpeg.py`, applied to both `probe_media()` and `extract_keyframes()`:
+
+```python
+result = subprocess.run(
+    [...],
+    capture_output=True,
+    text=True,
+    encoding="utf-8",  # prevents cp1252 crash on Windows
+    timeout=30,
+)
+```
+
+### Lesson
+
+**Always specify `encoding="utf-8"` when using `text=True` in `subprocess.run` on cross-platform code.** Never rely on the platform default — Windows cp1252, Linux UTF-8, and macOS UTF-8 will behave differently. Media files routinely contain non-Latin metadata that will silently work on Linux/macOS and crash on Windows without explicit encoding.
+
+---
+
+## D3. Rate Limiter Redis Connection Kills All Tests in CI (109 failures)
+
+**Component:** `api/rate_limit.py`, `conftest.py`
+**Severity:** High — 109 out of 135 tests failed in CI; passed locally
+
+### What Broke
+
+`rate_limit.py` initialises a `slowapi.Limiter` at module import time with `storage_uri = os.getenv("REDIS_URL", "redis://redis:6379")`. The `conftest.py` overrode this to `redis://localhost:6379` for local dev. On the GitHub Actions `ubuntu-latest` runner there is no Redis service — every request that hit a rate-limited endpoint raised `redis.exceptions.ConnectionError`. The module docstring even claimed it "falls back gracefully to in-memory if Redis is unreachable" — this was incorrect.
+
+### Root Cause
+
+Two compounding mistakes: `conftest.py` defaulted `REDIS_URL` to a real Redis address, importing a live-service dependency into a supposedly self-contained test suite; and a misleading code comment implied automatic fallback that doesn't exist in `slowapi`.
+
+### Fix
+
+```python
+# conftest.py — use in-memory backend, zero external dependencies
+os.environ.setdefault("REDIS_URL", "memory://")
+
+# ci.yml — belt-and-suspenders in case env is already set
+- name: Run pytest
+  env:
+    REDIS_URL: memory://
+  run: pytest ...
+```
+
+`limits` (the backend library used by `slowapi`) supports `memory://` as a fully functional in-process counter store.
+
+### Lesson
+
+**"Passes locally" is not evidence that a test is self-contained** — it may just mean the developer machine happens to have a Redis process running. Every external service a test touches either needs to be in a `docker-compose` for the test runner, or needs to be mocked. Audit every `os.getenv()` default in `conftest.py` and ask: "does this URL actually exist on a clean CI runner?"
+
+---
+
+## E — Frontend & Integration
+
+- [E1. WebSocket URL Wrong Protocol](#e1-websocket-url-wrong-protocol)
+- [E2. Infinite WebSocket Reconnect With No Backoff](#e2-infinite-websocket-reconnect-with-no-backoff)
+- [E3. Docker-Internal Hostname Not Resolvable in Browser](#e3-docker-internal-hostname-not-resolvable-in-browser)
+- [E4. CORS Invalid Combination Silently Killed All WebSocket Connections](#e4-cors-invalid-combination-silently-killed-all-websocket-connections)
+- [E5. React useEffect Infinite Loop From Unstable Callback Dependencies](#e5-react-useeffect-infinite-loop-from-unstable-callback-dependencies)
+- [E6. Next.js Module-Level process.env Reads Captured at Build Time](#e6-nextjs-module-level-processenv-reads-captured-at-build-time)
+
+---
+
+## E1. WebSocket URL Wrong Protocol (http vs ws)
+
+**Component:** `frontend/hooks/useMediaUpdates.ts`, `useStatusUpdates.ts`
 **Severity:** High — WebSocket connections failed immediately in browser
 
 ### What Broke
@@ -198,7 +739,7 @@ Browsers only accept `ws://` or `wss://` as WebSocket protocols. The connection 
 
 ### Fix
 
-Convert the protocol before constructing the URL:
+Convert the protocol before constructing the URL. This is the only required change; no server-side modifications are needed:
 
 ```typescript
 const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
@@ -213,10 +754,9 @@ const wsUrl = `${wsProtocol}://${apiHost}/api/ws/processing-status`
 
 ---
 
-## 6. Infinite WebSocket Reconnect With No Backoff
+## E2. Infinite WebSocket Reconnect With No Backoff
 
-**Commit(s):** `656b40b` → `d0cd069`, then `53501da`  
-**Component:** `frontend/hooks/useMediaUpdates.ts`, `useStatusUpdates.ts`  
+**Component:** `frontend/hooks/useMediaUpdates.ts`, `useStatusUpdates.ts`
 **Severity:** High — hammered the API with connection storms during outages
 
 ### What Broke
@@ -229,7 +769,7 @@ ws.onclose = () => {
 };
 ```
 
-If the API was unreachable or took more than a few seconds to start, the client would hammer it with a new connection attempt every 3 seconds indefinitely. With multiple browser tabs open, this multiplied. The retry loop never reset its counter on successful reconnection, so transient outages eventually consumed all retries permanently.
+If the API was unreachable, the client hammered it with a new connection attempt every 3 seconds indefinitely. With multiple browser tabs open, this multiplied.
 
 ### Fix
 
@@ -252,55 +792,26 @@ ws.onclose = () => {
 
 ### Lesson
 
-**Every network reconnect loop must have a maximum retry count and exponential backoff.** Without these, a single API restart causes a thundering herd of connection attempts from all connected clients simultaneously. The exponential backoff spreads out reconnections and gives the server time to recover. Always reset the retry counter on successful connection to handle transient outages gracefully.
+**Every network reconnect loop must have a maximum retry count and exponential backoff.** Without these, a single API restart causes a thundering herd of connection attempts from all connected clients simultaneously. Always reset the retry counter on successful connection to handle transient outages gracefully.
 
 ---
 
-## 7. JSX Syntax in a .ts File
+## E3. Docker-Internal Hostname Not Resolvable in Browser
 
-**Commit(s):** `656b40b` → `d0cd069`  
-**Component:** `frontend/hooks/useMediaUpdates.ts`  
-**Severity:** Medium — build-time compile error
-
-### What Broke
-
-React components that return JSX (`<div>`, `<span>`, etc.) were placed inside a `.ts` file. TypeScript and Next.js's webpack pipeline do not parse JSX in files with a `.ts` extension — only `.tsx`. The build failed at compile time:
-
-```
-Module parse failed: Unexpected token '<'
-```
-
-### Root Cause
-
-The hook file was started as a pure logic file (`hooks/useMediaUpdates.ts`), then UI components were added to it later without changing the extension to `.tsx`.
-
-### Fix
-
-Move JSX components to a new `.tsx` file (`useMediaUpdates.tsx`) and keep the hook logic in the `.ts` file. Alternatively, rename the original file to `.tsx`.
-
-### Lesson
-
-**TypeScript file extension is part of the contract: `.ts` for pure logic, `.tsx` for anything that renders JSX.** If a file grows to include UI components, rename it immediately. The distinction is especially easy to miss in a `hooks/` directory where most files are `.ts`.
-
----
-
-## 8. Docker-Internal Hostname Not Resolvable in Browser
-
-**Commit(s):** `2406dd0` → `76743e3`  
-**Component:** `frontend/hooks/useStatusUpdates.ts`  
+**Component:** `frontend/hooks/useStatusUpdates.ts`
 **Severity:** High — WebSocket connections failed in browser even after protocol fix
 
 ### What Broke
 
-`NEXT_PUBLIC_API_URL` was set to `http://api:8000` in the Docker Compose environment. Inside the Docker network, `api` resolves correctly via Docker's internal DNS. However, Next.js embeds `NEXT_PUBLIC_*` variables into the client-side JavaScript bundle at **build time**. The browser — running on the user's host machine — received `ws://api:8000/...` as the WebSocket URL, and `api` is not a hostname the browser can resolve. The connection failed with an immediate DNS error.
+`NEXT_PUBLIC_API_URL` was set to `http://api:8000` in the Docker Compose environment. Inside the Docker network, `api` resolves correctly via Docker's internal DNS. However, Next.js embeds `NEXT_PUBLIC_*` variables into the client-side JavaScript bundle at **build time**. The browser received `ws://api:8000/...` as the WebSocket URL, and `api` is not a hostname the browser can resolve.
 
 ### Root Cause
 
-`NEXT_PUBLIC_*` variables are not server-side secrets — they are inlined into the JavaScript sent to the browser. A Docker-internal service hostname is meaningless outside the container network. There's a fundamental mismatch between the server-side network and the client-side network.
+`NEXT_PUBLIC_*` variables are inlined into the JavaScript sent to the browser. A Docker-internal service hostname is meaningless outside the container network — there is a fundamental mismatch between the server-side network and the client-side network.
 
 ### Fix
 
-Detect the Docker hostname at runtime and substitute `localhost`:
+Detect the Docker hostname at runtime and substitute `localhost`. The longer-term fix is to expose an environment variable specifically for the browser URL (e.g., `NEXT_PUBLIC_API_BROWSER_URL=http://localhost:8000`) separate from the server-side `NEXT_PUBLIC_API_URL`:
 
 ```typescript
 let apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
@@ -309,18 +820,15 @@ if (typeof window !== 'undefined' && apiUrl.includes('api:8000')) {
 }
 ```
 
-The longer-term fix is to expose an environment variable specifically for the browser URL (e.g., `NEXT_PUBLIC_API_BROWSER_URL=http://localhost:8000`) separate from the server-side `NEXT_PUBLIC_API_URL`.
-
 ### Lesson
 
 **In containerized Next.js apps, there are two distinct networks: the Docker internal network (server-to-server) and the host/browser network (client-to-server).** `NEXT_PUBLIC_*` variables end up in the browser. Never put Docker-internal hostnames in `NEXT_PUBLIC_*` variables. Use a separate environment variable for the browser-visible URL, or use Next.js API route proxying so the browser never talks to the backend directly.
 
 ---
 
-## 9. CORS Invalid Combination Silently Killed All WebSocket Connections
+## E4. CORS Invalid Combination Silently Killed All WebSocket Connections
 
-**Commit(s):** `08b128f` → `387b50b`  
-**Component:** `api/main.py`  
+**Component:** `api/main.py`
 **Severity:** Critical — every browser WebSocket connection rejected with 400
 
 ### What Broke
@@ -336,18 +844,11 @@ app.add_middleware(
 )
 ```
 
-Per the specification, a server **cannot** respond with `Access-Control-Allow-Origin: *` while also setting `Access-Control-Allow-Credentials: true`. Starlette's implementation enforces this by returning `HTTP 400 Bad Request` for any request that carries an `Origin` header when both are set.
+Per the specification, a server cannot respond with `Access-Control-Allow-Origin: *` while also setting `Access-Control-Allow-Credentials: true`. Starlette enforces this by returning HTTP 400 for any request carrying an `Origin` header. Browsers always send `Origin` on WebSocket upgrade requests, so every connection attempt was rejected before the handler was ever invoked.
 
-The critical detail: browsers **always** send an `Origin` header on WebSocket upgrade requests (and on cross-origin fetch requests). This meant every single WebSocket connection attempt from the browser was rejected at the middleware layer before the handler was ever invoked. The server-side handler never logged anything because it was never reached.
+### Root Cause
 
-### Diagnosis
-
-The only evidence in the logs was:
-```
-INFO: connection rejected (400 Bad Request)
-```
-
-This appeared mixed among normal `connection closed` entries and was easy to overlook. It was confirmed by testing the WebSocket endpoint with a raw socket using an explicit `Origin: http://localhost:3000` header and observing the 400 response.
+The illegal combination passes server startup and passes HTTP endpoint tests (because most test tools don't send `Origin`). It only manifests in browser WebSocket and cross-origin fetch requests. The only log evidence was a terse `connection rejected (400 Bad Request)` mixed among normal entries.
 
 ### Fix
 
@@ -361,93 +862,22 @@ app.add_middleware(
 
 ### Lesson
 
-**`allow_credentials=True` with `allow_origins=["*"]` is not a runtime error — it silently breaks a specific class of requests.** It passes server startup, it passes HTTP endpoint tests (because most HTTP test tools don't send `Origin`), and it only manifests in browser WebSocket and cross-origin fetch requests. Always test WebSocket connectivity specifically from a browser, not just from `curl` or Python scripts. Also: a `400 Bad Request` on a WebSocket endpoint is almost always a middleware/CORS issue, not a handler bug.
+**`allow_credentials=True` with `allow_origins=["*"]` is not a runtime error — it silently breaks a specific class of requests.** Always test WebSocket connectivity specifically from a browser, not just from `curl` or Python scripts. A `400 Bad Request` on a WebSocket endpoint is almost always a middleware/CORS issue, not a handler bug.
 
 ---
 
-## 10. ASGI Double-Close RuntimeError
+## E5. React useEffect Infinite Loop From Unstable Callback Dependencies
 
-**Commit(s):** `08b128f` → `37ef849`  
-**Component:** `api/routers/updates.py`  
-**Severity:** High — WebSocket connections closed immediately after accepting, with cryptic error
-
-### What Broke
-
-The WebSocket handlers structured control flow such that an exception during message handling would propagate to the `except` block, then to the `finally` block. The `finally` block called `websocket.close()`. However, in some cases — particularly when the exception was triggered by the client disconnecting — the connection was already in a closed state. Calling `close()` on an already-closed WebSocket causes Uvicorn's ASGI implementation to raise:
-
-```
-RuntimeError: Unexpected ASGI message 'websocket.close',
-after sending 'websocket.close' or response already completed
-```
-
-Uvicorn then reset the TCP connection, causing the browser to see an `Insufficient resources` error (the browser's error message when a WebSocket connection is reset by the server during or immediately after the handshake).
-
-### Root Cause
-
-FastAPI/Starlette WebSocket connections have state. Once `close()` has been called — either explicitly or implicitly by an exception that tears down the ASGI scope — calling it again is a protocol violation. The `finally` block ran unconditionally without checking connection state.
-
-### Fix
-
-Wrap the `close()` call in a `try/except RuntimeError`:
-
-```python
-finally:
-    if websocket in active_connections["processing_status"]:
-        active_connections["processing_status"].remove(websocket)
-    try:
-        await websocket.close()
-    except RuntimeError:
-        pass  # Already closed — expected during disconnect scenarios
-```
-
-### Lesson
-
-**In ASGI WebSocket handlers, the connection is a state machine.** Calling lifecycle methods (`accept`, `close`, `send`) out of sequence raises `RuntimeError`. The `finally` block of an async WebSocket handler is a minefield — always guard `close()` calls, because the exception that triggered the `finally` may have already closed the connection. A pattern used in production systems is to check `websocket.client_state` before calling close.
-
----
-
-## 11. React useEffect Infinite Loop From Unstable Callback Dependencies
-
-**Commit(s):** `08b128f` → `53501da` and `be03473`  
-**Component:** `frontend/hooks/useStatusUpdates.ts`, `frontend/hooks/useMediaUpdates.ts`  
+**Component:** `frontend/hooks/useStatusUpdates.ts`, `frontend/hooks/useMediaUpdates.ts`
 **Severity:** Critical — generated 100,000+ WebSocket errors; effectively a client-side DoS
 
 ### What Broke
 
-Both hooks accepted `onUpdate` and `onError` callback props and listed them as `useEffect` dependencies:
-
-```typescript
-// In useStatusUpdates.ts and useMediaUpdates.ts
-export function useStatusUpdates({ onUpdate, onError }) {
-    useEffect(() => {
-        const ws = new WebSocket(url)
-        ws.onmessage = (e) => onUpdate(data)
-        // ...
-        return () => ws.close()
-    }, [onUpdate, onError])  // ← the bug
-}
-```
-
-The caller (`StatusPanel.tsx`) passed inline arrow functions:
-
-```typescript
-const { status } = useStatusUpdates({
-    onUpdate: (newStatus) => { setStatus(newStatus) }, // New function reference every render
-    onError:  (err)       => { setError(err.message) }, // New function reference every render
-})
-```
-
-In JavaScript, `() => {}` creates a new function object on every execution. On every render, `onUpdate` and `onError` have a different reference. React's `useEffect` sees the dependency changed and runs the cleanup (closing the WebSocket) then re-runs the effect (opening a new WebSocket). Opening a WebSocket triggers an async operation that updates state (`setIsConnected(true)`), which causes a re-render, which creates new callback references, which triggers `useEffect` cleanup again — an infinite loop.
-
-The result was over 100,000 WebSocket connection attempts in a single browser session, each one immediately destroyed, each generating an entry in the browser console.
+Both hooks accepted `onUpdate` and `onError` callback props and listed them as `useEffect` dependencies. The caller passed inline arrow functions, which create a new function object on every render. React's `useEffect` saw the dependency change each render, closed the WebSocket, and opened a new one — triggering a state update that caused another render, closing the new WebSocket, and so on forever. The result was over 100,000 WebSocket connection attempts in a single browser session.
 
 ### Root Cause
 
-Two interacting React patterns:
-1. **Inline functions are not referentially stable** — each render produces a new function object even if the logic is identical.
-2. **`useEffect` uses `Object.is()` for dependency comparison** — two functions that do the same thing are not `===` equal if they are different object instances.
-
-The hooks were designed correctly for pure data dependencies (`wsUrl`, `maxHistorySize`), but callbacks are not data — they are behavior. The fix for this is a well-known React pattern.
+Two interacting React patterns: (1) inline functions are not referentially stable — each render produces a new function object even if the logic is identical; (2) `useEffect` uses `Object.is()` for dependency comparison — two functions that do the same thing are not `===` equal if they are different instances. The hooks were written correctly for pure data dependencies but callbacks are not data.
 
 ### Fix
 
@@ -476,578 +906,36 @@ export function useStatusUpdates({ onUpdate, onError }) {
 
 ### Lesson
 
-**Never put callbacks/functions in `useEffect` dependency arrays unless they are guaranteed to be referentially stable.** Functions from props are almost never stable — the parent component creates a new one every render unless it wraps them in `useCallback`. The safe patterns are:
-- Use `useRef` to hold callbacks that the effect uses (the pattern above)
-- Require callers to memoize with `useCallback` (fragile — callers will forget)
-- Restructure to not need callbacks in the effect at all
-
-The `useRef` pattern is preferred because it puts the stability guarantee inside the hook, where it belongs, rather than imposing a burden on every caller. This bug was introduced in two places simultaneously because one hook was written by copying the other — always audit all copies of a pattern when fixing one instance.
+**Never put callbacks/functions in `useEffect` dependency arrays unless they are guaranteed to be referentially stable.** The `useRef` pattern is preferred because it puts the stability guarantee inside the hook, where it belongs, rather than imposing a burden on every caller. Always audit all copies of a pattern when fixing one instance.
 
 ---
 
----
+## E6. Next.js Module-Level `process.env` Reads Captured at Build Time
 
-## 12. Celery Proxy Task Blocking the Indexing Queue
-
-**Commit(s):** `feat/windows-native-worker`
-**Component:** `scripts/start-windows-worker-*.ps1`
-**Severity:** High — indexing ground to a halt behind proxy encoding jobs
+**Component:** `frontend/app/api/**/*.ts`
+**Severity:** High — API key was never forwarded; all authenticated requests returned 401
 
 ### What Broke
 
-The Windows Celery worker was started with `--queues=celery,proxies`. The `generate_proxy` task encodes 720p H.265 video to H.264 and took ~13 minutes per file. With a backlog of thousands of videos, proxy jobs monopolised every worker slot. CLIP embedding — the actual indexing work — was queued behind hundreds of encoding jobs and effectively stalled.
+The `BACKEND_API_KEY` read was placed at module level in all 4 Next.js API route handlers. The Docker image was built without `BACKEND_API_KEY` set in the build environment. Next.js evaluated the module-level expression during the build and inlined `''`. Every container started from that image sent an empty key regardless of what `.env` contained at runtime.
 
 ### Root Cause
 
-The `celery` and `proxies` queues shared the same worker pool. A long-running CPU-bound task (video encoding) starved the short-running GPU-bound tasks (CLIP embedding). There was no queue priority or dedicated worker separation.
+Next.js API route modules are compiled — module-scope expressions that can be statically resolved (including `process.env` reads without a `NEXT_PUBLIC_` prefix) may be captured at build time depending on how the bundler tree-shakes the output. Variables needed at runtime must be read inside the handler function to guarantee a fresh `process.env` lookup per request.
 
 ### Fix
 
-Remove `proxies` from the queues argument on all indexing workers:
+```typescript
+// WRONG — evaluated once at build time
+const BACKEND_API_KEY = process.env.BACKEND_API_KEY || ''
 
-```powershell
-# Before
---queues=celery,proxies
-# After
---queues=celery
-```
-
-A dedicated encoding worker can be spun up separately when proxy generation is explicitly needed.
-
-### Lesson
-
-**Long-running CPU tasks and short-running GPU tasks must never share the same Celery worker pool.** Separate queues are not enough — the workers consuming those queues must also be separate. Treat proxy generation as a background maintenance job, not part of the critical indexing path.
-
----
-
-## 13. Windows Paths Written Into Qdrant Payload
-
-**Commit(s):** `feat/windows-native-worker`
-**Component:** `worker/tasks.py`
-**Severity:** High — all Windows-indexed media unreachable from Linux API
-
-### What Broke
-
-A `_translate_path()` function was added to map Linux mount paths (`/mnt/source/...`) to Windows drive paths (`J:/lumen-media/...`) so the Windows worker could access files on disk. However, the translation was applied at the top of the task function, mutating `file_path` before the Qdrant upsert:
-
-```python
-file_path = _translate_path(file_path)  # Now a Windows path
-...
-qdrant_client.upsert(payload={"file_path": file_path})  # Stores Windows path
-```
-
-The Linux API later queried Qdrant and got back `J:/lumen-media/...` paths that it could not serve or resolve.
-
-### Root Cause
-
-`file_path` served two roles: the logical identifier stored in the database/Qdrant, and the physical path used for filesystem access. These must be kept separate across platforms.
-
-### Fix
-
-Introduce a `native_path` variable for filesystem access only; `file_path` remains the Linux path throughout:
-
-```python
-native_path = _translate_path(file_path)   # Used for disk I/O only
-# All qdrant upserts and DB writes use file_path (Linux path)
+// CORRECT — evaluated on every request
+export async function POST(request: NextRequest) {
+  const BACKEND_API_KEY = process.env.BACKEND_API_KEY || ''
+  headers: { ...(BACKEND_API_KEY && { 'X-API-Key': BACKEND_API_KEY }) }
+}
 ```
 
 ### Lesson
 
-**Never mutate the canonical record identifier to make local filesystem access work.** The stored path is the source of truth for the entire system. Filesystem access is a local concern — introduce a separate variable for it and treat the original `file_path` as immutable within the task.
-
----
-
-## 14. `docker restart` Does Not Re-Read `env_file`
-
-**Commit(s):** `feat/windows-native-worker`
-**Component:** `docker-compose.yml`, `docker-compose.second.yml`
-**Severity:** Medium — env changes silently ignored after restart
-
-### What Broke
-
-After editing `.env` to change `LLM_PROVIDER` from `openai` to `local`, running `docker restart lumen-api` kept serving the old configuration. The container continued to call OpenAI and throw `OPENAI_API_KEY must be set` errors.
-
-### Root Cause
-
-`docker restart` stops and restarts the existing container with the **same configuration it was created with**. The `env_file` is read at container creation time (`docker compose up`), not at restart time. Restarting reuses the frozen environment.
-
-### Fix
-
-Use `docker compose up -d --no-deps <service>` (with `--no-build` if image rebuild is not needed) to recreate the container with the current env:
-
-```bash
-docker compose up -d --no-build --no-deps api
-```
-
-### Lesson
-
-**`docker restart` ≠ `docker compose up`.** For any configuration change — env vars, volume mounts, port bindings — the container must be recreated, not just restarted. Use `up -d` as the default for applying config changes.
-
----
-
-## 15. `--no-deps` Puts Container on an Isolated New Network
-
-**Commit(s):** `feat/windows-native-worker`
-**Component:** `docker-compose.second.yml`
-**Severity:** High — service started with `--no-deps` couldn't reach redis/postgres
-
-### What Broke
-
-Running `docker compose up -d --no-deps api2` to start only the API container created a **new** Docker network (`semantic-media-pipeline_lumen2-net`) rather than joining the existing network where `lumen2-redis` and `lumen2-postgres` were running. The API started successfully but every request failed with:
-
-```
-redis.exceptions.ConnectionError: Name or service not known
-```
-
-### Root Cause
-
-`--no-deps` skips dependency container startup but also skips the network join logic. The API container was placed on its own isolated network instead of the shared project network.
-
-### Fix
-
-After starting with `--no-deps`, manually connect to the existing network:
-
-```bash
-docker network connect lumen2_lumen2-net lumen2-api
-```
-
-Or avoid `--no-deps` entirely and use the full `up -d` with all dependencies already running.
-
-### Lesson
-
-**`--no-deps` is a footgun for multi-service stacks.** It is useful for rebuilding a single image without touching others, but it silently skips network joining. The safer alternative is to bring the full stack down and up, or to manually connect the container to the correct network immediately after starting it.
-
----
-
-## 16. Compose `env_file` Values Not Injected Without `environment:` Section
-
-**Commit(s):** `feat/windows-native-worker`
-**Component:** `docker-compose.second.yml`
-**Severity:** Medium — LLM config from `.env` never reached the API container
-
-### What Broke
-
-`LLM_PROVIDER=local` was set in `.env` and `docker-compose.second.yml` had `env_file: - .env` on the worker service — but the `api2` service used an explicit `environment:` block without any LLM keys. Docker Compose only injects `env_file` values for services that declare `env_file`. The API defaulted to `LLM_PROVIDER=openai` (the code's default) and failed.
-
-### Root Cause
-
-`env_file` and `environment:` are per-service declarations. A value in `.env` is available for variable interpolation in the compose file (`${LLM_PROVIDER}`) but is not automatically injected into container environments — only `env_file:` or explicit `environment:` entries achieve that.
-
-### Fix
-
-Add the variables explicitly to the service's `environment:` block:
-
-```yaml
-environment:
-  - LLM_PROVIDER=${LLM_PROVIDER:-local}
-  - LLM_MODEL=${LLM_MODEL:-qwen3:14b}
-  - LLM_BASE_URL=${LLM_BASE_URL:-http://host.docker.internal:11434/v1}
-```
-
-### Lesson
-
-**`.env` is not a global environment injection mechanism.** It provides defaults for compose variable interpolation (`${VAR}`) and is injected into containers only when the service declares `env_file: - .env`. Always verify with `docker exec <container> env | grep <VAR>` after changing environment config.
-
----
-
-## 17. Docker Project Name Fragmentation Across Restart Cycles
-
-**Commit(s):** `feat/windows-native-worker`
-**Component:** `docker-compose.yml`, `docker-compose.second.yml`
-**Severity:** High — containers from the same stack spread across 3 different Docker projects
-
-### What Broke
-
-Neither compose file had a `name:` field. Docker Compose derives the project name from the directory name (`semantic-media-pipeline`) by default, but individual container restarts during debugging used different flags (`-p lumen2`) or no project flag at all. The result was containers registered under three different projects simultaneously, causing orphan warnings, network isolation between containers in the same stack, and volume conflicts.
-
-### Root Cause
-
-Without a `name:` field, the Docker project name is directory-derived and can silently change depending on how `docker compose` is invoked. Partial stack restarts (stopping/removing individual containers then recreating them) register new containers under whatever project name was active at that moment.
-
-### Fix
-
-Add `name:` to every compose file:
-
-```yaml
-# docker-compose.yml
-name: lumen1
-
-# docker-compose.second.yml
-name: lumen2
-```
-
-### Lesson
-
-**Every `docker-compose.yml` file should have an explicit `name:` field.** This makes the project name immutable regardless of the working directory, the `-p` flag, or who runs the command. It eliminates orphan warnings, ensures consistent network and volume naming, and makes Docker Desktop's project view clean and readable.
-
----
-
-## 18. Volume Ownership Conflict When Renaming Docker Project
-
-**Commit(s):** `feat/windows-native-worker`
-**Component:** `docker-compose.yml`, `docker-compose.second.yml`
-**Severity:** High — data loss risk; all lumen2 data became unreachable
-
-### What Broke
-
-Adding `name: lumen2` to `docker-compose.second.yml` changed the Docker project name from `semantic-media-pipeline` to `lumen2`. On the next `up -d`, Docker looked for volumes named `lumen2_qdrant2_data`, `lumen2_postgres2_data`, etc. — not the existing `semantic-media-pipeline_qdrant2_data` volumes. New empty volumes were created, and the old volumes with 916MB of indexed Qdrant data were silently orphaned.
-
-### Root Cause
-
-Docker Compose volume names are prefixed with the project name unless overridden with an explicit `name:` in the volume declaration. Changing the project name effectively changes what volumes are mounted, with no warning about data loss.
-
-### Fix
-
-Pin every named volume to its actual physical volume name using `name:` + `external: true`:
-
-```yaml
-volumes:
-  qdrant2_data:
-    name: lumen2_qdrant2_data   # the real volume name
-    external: true
-  postgres2_data:
-    name: lumen2_postgres2_data
-    external: true
-```
-
-The data was recovered by inspecting which orphaned volume had content (`du -sh /data` via a temporary alpine container) and updating the compose file to reference that volume.
-
-### Lesson
-
-**Before renaming a Docker Compose project, pin all named volumes with `name:` + `external: true`.** Volume names are project-namespaced by default — changing the project name is a silent breaking change for all volumes. When recovering from this situation, use `docker run --rm -v <volume>:/data alpine du -sh /data` to find which volume actually has your data.
-
----
-
-## 19. JSX Unescaped Entities in Text Content Break Next.js Build
-
-**Commit(s):** `feat/windows-native-worker`
-**Component:** `frontend/components/AskPanel.tsx`
-**Severity:** Medium — frontend Docker image build failed with exit code 1
-
-### What Broke
-
-Transcript snippets in the AskPanel were wrapped in literal quote characters inside JSX text content:
-
-```tsx
-<div>"{src.audio_transcript.slice(0, 80)}"</div>
-```
-
-The ESLint rule `react/no-unescaped-entities` treats bare `"` in JSX text as an error (not a warning), causing `npm run build` to exit with code 1. The Docker build failed silently — the error was buried in build output and only visible with `--progress=plain`.
-
-### Fix
-
-Use JavaScript expressions for special characters in JSX text:
-
-```tsx
-<div>{'"'}{src.audio_transcript.slice(0, 80)}{'"'}</div>
-```
-
-Or use HTML entities: `&quot;`.
-
-### Lesson
-
-**JSX text content is not a string — `"` and `'` must be escaped or expressed as JS.** The build error message (`exit code: 1`) gives no indication of the cause. Always run `docker compose build --progress=plain` to see the full output when a Docker build fails.
-
----
-
-## 20. Ollama Running on CPU Because GPU Not Initialized at Start Time
-
-**Commit(s):** N/A — operational issue
-**Component:** Ollama / WSL2 GPU passthrough
-**Severity:** High — 8 tok/s instead of 60+ tok/s
-
-### What Broke
-
-Ollama was started before the NVIDIA drivers were fully initialized in WSL2 (or in a Windows-native vs WSL conflict state). It fell back to CPU inference and ran at ~8 tok/s, consuming 100% CPU. The `ollama run` command gave no warning that it was running on CPU.
-
-### Diagnosis
-
-```bash
-nvidia-smi   # Run inside WSL — confirms GPU visibility
-ollama run qwen3:14b "test" --verbose  # Shows eval_rate tok/s
-```
-
-### Fix
-
-Kill the Ollama process, confirm `nvidia-smi` works in WSL, then restart Ollama. GPU inference resumes at 60+ tok/s.
-
-### Lesson
-
-**Always verify `nvidia-smi` inside WSL before starting any GPU-dependent service.** If Ollama starts before the GPU driver is ready, it silently falls back to CPU. After switching from CPU to GPU, `eval_rate` jumps from ~8 to 60+ tok/s — the difference is immediately obvious in the benchmark output. Add `ollama run <model> "" --verbose` to any startup checklist for GPU-accelerated inference.
-
----
-
-## 21. Manual Container Removal Breaks Docker DNS for the Entire Stack
-
-**Commit(s):** ops — 2026-03-14
-**Component:** `docker-compose.yml`
-**Severity:** Critical — every dependent service lost connectivity to Redis; API returned 500 on all requests
-
-### What Broke
-
-`lumen-redis` was manually stopped and removed (`docker stop lumen-redis && docker rm lumen-redis`) to add a host port binding. It was then recreated with `docker compose up -d redis` — but without the `-p lumen1` project flag. Docker Compose derived the project name from the working directory (`semantic-media-pipeline`) and placed the new container on the `semantic-media-pipeline_lumen-net` bridge network. Every other container in the stack — `lumen-api`, `lumen-flower`, `lumen-worker`, etc. — was still on `lumen1_lumen-net`. Docker's internal DNS is network-scoped: `lumen-redis` was no longer resolvable from any of those containers.
-
-Symptoms:
-- `lumen-api`: every request returned `500 Internal Server Error` (slowapi rate-limit middleware hitting a `ConnectionError` trying to reach Redis)
-- `lumen-flower`: `Error -2 connecting to lumen-redis:6379. Name does not resolve` in a tight retry loop
-- `lumen-worker`: identical DNS failure on broker connection
-
-### Root Cause
-
-Docker's embedded DNS resolver is per-network. A container on network A cannot resolve the hostname of a container on network B. When the project name changes, the network name changes, and a recreated container lands on the new network while the rest of the stack remains on the old one. `docker container inspect` confirms the mismatch immediately:
-
-```bash
-# Before fix — mismatched networks
-docker inspect lumen-redis  --format '{{range $k,$v := .NetworkSettings.Networks}}{{$k}}{{end}}'
-# semantic-media-pipeline_lumen-net   ← wrong
-
-docker inspect lumen-api --format '{{range $k,$v := .NetworkSettings.Networks}}{{$k}}{{end}}'
-# lumen1_lumen-net   ← correct
-```
-
-### Fix
-
-Remove the misnetworked container and recreate it under the correct project name:
-
-```bash
-docker stop lumen-redis && docker rm lumen-redis
-docker compose -p lumen1 up -d redis   # explicit project name matches existing stack
-```
-
-Then restart all dependent containers so they pick up the new container in DNS:
-
-```bash
-docker restart lumen-api lumen-flower lumen-worker
-```
-
-The long-term fix is to add `name: lumen1` to `docker-compose.yml` (see entry #17), which makes the project name immutable regardless of invocation flags.
-
-### Lesson
-
-**Never `docker stop && docker rm` a container and recreate it with `docker compose up -d` without explicitly matching the original project name via `-p <name>` or a `name:` field in the compose file.** A missing `-p` flag puts the container on a new Docker network, severing DNS for every other container in the stack. Always verify network membership after recreation:
-
-```bash
-docker inspect <container> --format '{{range $k,$v := .NetworkSettings.Networks}}{{$k}}: {{$v.IPAddress}}{{end}}'
-```
-
-If networks don't match, the container is on the wrong network and DNS will silently fail.
-
----
-
-## 22. slowapi Crashes on Redis ConnectionError Due to Wrong Hostname in REDIS_URL
-
-**Commit(s):** ops — 2026-03-14
-**Component:** `api/rate_limit.py`
-**Severity:** Critical — all API requests returned 500; the error was a slowapi bug triggered by a misconfigured env var
-
-### What Broke
-
-After the Redis DNS breakage (entry #21), `lumen-api` was restarted. The container started successfully but returned `500 Internal Server Error` on every request. The traceback in the logs:
-
-```
-File "/usr/local/lib/python3.10/site-packages/slowapi/middleware.py", line 77, in sync_check_limits
-    return exception_handler(request, exc), _bool
-File "/usr/local/lib/python3.10/site-packages/slowapi/extension.py", line 81, in _rate_limit_exceeded_handler
-    {"error": f"Rate limit exceeded: {exc.detail}"}, status_code=429
-AttributeError: 'ConnectionError' object has no attribute 'detail'
-```
-
-`rate_limit.py` used `os.getenv("REDIS_URL", "redis://redis:6379")` for the slowapi storage URI. The `.env` file had `REDIS_URL=redis://redis:6379` — the hostname `redis` (not `lumen-redis`). This host never resolved inside the Docker network. Every request caused slowapi to attempt a Redis connection, get a `ConnectionError`, and pass it to `_rate_limit_exceeded_handler` — which expected a `RateLimitExceeded` (an `HTTPException` subclass with a `.detail` attribute) and called `exc.detail`, crashing with `AttributeError`.
-
-### Root Cause
-
-Two compounding bugs:
-1. `REDIS_URL` in `.env` used the wrong container hostname (`redis` vs `lumen-redis`)
-2. slowapi's middleware has a latent bug: it catches any exception from Redis (including `ConnectionError`) and routes it to `_rate_limit_exceeded_handler`, which unconditionally accesses `.detail` — an attribute that only exists on `HTTPException` subclasses, not on generic exceptions
-
-### Fix
-
-In `api/rate_limit.py`, prefer `CELERY_BROKER_URL` (which is always set to the correct container hostname in Compose) over `REDIS_URL`, and add `in_memory_fallback_enabled=True` to fail open if Redis is temporarily unreachable:
-
-```python
-# Before
-_storage_uri = os.getenv("REDIS_URL", "redis://redis:6379")
-
-# After
-_storage_uri = (
-    os.getenv("CELERY_BROKER_URL")          # already correct in Compose env
-    or os.getenv("REDIS_URL", "redis://lumen-redis:6379")
-)
-
-limiter = Limiter(
-    key_func=get_remote_address,
-    storage_uri=_storage_uri,
-    default_limits=[LIMIT_DEFAULT],
-    in_memory_fallback_enabled=True,  # fail open if Redis is temporarily unreachable
-)
-```
-
-### Lesson
-
-**Verify that `REDIS_URL` (or any Redis connection string) matches the actual container hostname before deploying.** In Docker Compose stacks, the hostname is the service name — not `redis`, not `localhost`. Run `docker exec <api_container> env | grep REDIS` after any env change to confirm.
-
-Additionally: **add `in_memory_fallback_enabled=True` to any slowapi `Limiter` that uses a Redis backend.** Without it, a transient Redis unavailability (container restart, network blip) crashes every in-flight request with a 500 instead of gracefully degrading to in-memory rate limiting. The slowapi bug (routing non-`RateLimitExceeded` exceptions to `_rate_limit_exceeded_handler`) is upstream, but `in_memory_fallback_enabled` prevents it from ever being triggered.
-
----
-
-## Summary Table
-
-| # | Bug | Component | Severity | Introduced | Fixed |
-|---|-----|-----------|----------|------------|-------|
-| 1 | EXIF bytes not JSON-serializable | `worker/tasks.py` | Medium | `ae666df` | `d0cd069` |
-| 2 | asyncpg callback using non-existent method | `api/utils/notifications.py` | Critical | `656b40b` | `d0cd069` |
-| 3 | Search router never registered (404) | `api/main.py` | Critical | `656b40b` | `d0cd069` |
-| 4 | API importing worker ML dependencies | `api/routers/search.py` | Critical | `656b40b` | `d0cd069` |
-| 5 | WebSocket URL wrong protocol (http vs ws) | `frontend/hooks/*.ts` | High | `656b0b` | `76743e3` |
-| 6 | Infinite WebSocket reconnect, no backoff | `frontend/hooks/*.ts` | High | `656b40b` | `d0cd069` |
-| 7 | JSX in `.ts` file (build error) | `frontend/hooks/useMediaUpdates.ts` | Medium | `656b40b` | `d0cd069` |
-| 8 | Docker hostname not resolvable in browser | `frontend/hooks/useStatusUpdates.ts` | High | `08b128f` | `76743e3` |
-| 9 | CORS credentials+wildcard = 400 on all WS | `api/main.py` | Critical | `08b128f` | `387b50b` |
-| 10 | ASGI double-close RuntimeError | `api/routers/updates.py` | High | `08b128f` | `37ef849` |
-| 11 | useEffect infinite loop (unstable callbacks) | `frontend/hooks/*.ts` | Critical | `08b128f` | `53501da`, `be03473` |
-| 12 | Proxy task blocking indexing queue | `scripts/start-windows-worker-*.ps1` | High | `adbf784` | `feat/windows-native-worker` |
-| 13 | Windows paths written into Qdrant payload | `worker/tasks.py` | High | `feat/windows-native-worker` | `feat/windows-native-worker` |
-| 14 | `docker restart` ignores env_file changes | `docker-compose*.yml` | Medium | ops | ops |
-| 15 | `--no-deps` creates isolated network | `docker-compose*.yml` | High | ops | ops |
-| 16 | env_file values not injected without environment: | `docker-compose.second.yml` | Medium | `feat/windows-native-worker` | `feat/windows-native-worker` |
-| 17 | Docker project name fragmentation | `docker-compose*.yml` | High | ops | `feat/windows-native-worker` |
-| 18 | Volume ownership conflict on project rename | `docker-compose*.yml` | High | `feat/windows-native-worker` | `feat/windows-native-worker` |
-| 19 | JSX unescaped `"` breaks Next.js build | `frontend/components/AskPanel.tsx` | Medium | `feat/windows-native-worker` | `feat/windows-native-worker` |
-| 20 | Ollama falling back to CPU inference | Ollama / WSL2 | High | ops | ops |
-| 21 | Manual container removal breaks Docker DNS | `docker-compose.yml` | Critical | ops | ops |
-| 22 | slowapi crashes on Redis ConnectionError (wrong hostname) | `api/rate_limit.py` | Critical | ops | ops |
-| 23 | Playlist 400 — S3 object keys not in ALLOWED_ROOTS | `api/routers/ingest.py` | High | `feat/playlist-hls-serve` | `feat/playlist-hls-serve` |
-| 24 | Celery prefork + CUDA → forked subprocess crash | `docker-compose.yml` | High | ops | ops |
-| 25 | Qdrant healthcheck always fails — no `curl` in image | `docker-compose*.yml` | Low | ops | ops |
-
----
-
-## Cross-Cutting Themes
-
-### "It works in isolation but not in the browser"
-Bugs #5, #8, and #9 all passed every server-side test but failed the moment a browser was involved. The browser imposes constraints (protocol schemes, `Origin` headers, CORS) that `curl`, Python scripts, and Postman typically skip. **Always test from an actual browser before declaring a WebSocket feature complete.**
-
-### Silent failures in async systems
-Bugs #2 and #9 produced no obvious errors — the system appeared to run, connections appeared to establish, but no data was ever delivered. Async callbacks that swallow exceptions and middleware that returns 400 without logging are both invisible failure modes. **Instrument everything. Log at entry and exit of every async boundary.**
-
-### Container boundary violations  
-Bug #4 illustrates a common monorepo anti-pattern: code in multiple services shares a `worker/` directory structure, making it tempting to import across services. The import worked locally (if you happened to have all packages installed) but crashed the production container. **Treat each container's `requirements.txt` as an inviolable contract. If a module isn't in it, don't import it.**
-
-### React effects and referential stability
-Bug #11 is one of the most common advanced React bugs in the industry. It's subtle, reproducible only under specific re-render conditions, and the symptom (network spam) looks nothing like the cause (object identity). Understanding `Object.is()`, referential equality, and the `useRef` pattern for callbacks is essential React knowledge.
-
-### The cost of copy-paste
-Bugs #11 (copied between two hooks), #5, and #6 all appeared in multiple files simultaneously because one was based on the other. When fixing a pattern bug, always search the entire codebase for all instances.
-
-### Docker Compose is not a simple process manager
-Bugs #14–#18, #21 all stem from treating Docker Compose like a system service manager (`restart` ≈ `systemctl restart`). It is not. Container recreation, network membership, volume naming, and environment injection are all creation-time decisions. Partial restarts, missing `name:` fields, and missing `external:` declarations each create subtle configuration drift that compounds over time into a fragmented, inconsistent cluster. Treat `docker compose up -d` as the canonical deployment operation and `docker restart` as reserved for emergency use only. Manually stopping and removing a container (`docker stop && docker rm`) then recreating it without `-p <project>` is the highest-risk variant — it silently severs DNS for the entire stack.
-
-### Operational changes need the same rigour as code changes
-Bugs #12–#20 were all operational rather than code bugs — wrong queue flags, missing compose fields, Ollama GPU init order. They had the same or greater impact as code bugs but left no git trail and were harder to diagnose. Document every operational change (compose flags, env vars, startup order) in the codebase itself, not just in chat logs.
-
-### "It works locally ≠ works on prod"
-Bug #23 passed local testing but broke on prod because local used filesystem paths while prod used S3 object keys. The prod environment is meaningfully different: storage backend, path format, auth layer, and network topology all differ. Any feature that touches file paths or storage must be tested against the actual prod storage backend before shipping.
-
----
-
-## 23. Playlist 400 — S3 Object Keys Not in ALLOWED_ROOTS
-
-**Commit(s):** `feat/playlist-hls-serve`
-**Component:** `api/routers/ingest.py`
-**Severity:** High — playlist generation silently dropped all R2-backed clips
-
-### What Broke
-
-On prod (`STORAGE_BACKEND=s3`), every clip in a generated playlist returned a 400 Bad Request. The worker logs showed `[Playlist] access denied: pexels-demo/clip.mp4` for every file.
-
-### Root Cause
-
-`ALLOWED_ROOTS` is a list of filesystem paths (`/mnt/source`, `/mnt/proxies`, etc.). S3 stores bare object keys (`pexels-demo/clip.mp4`) with no leading `/`. The path check `any(resolved.startswith(root) for root in ALLOWED_ROOTS)` always returned `False` for S3 keys, causing every clip to be silently dropped.
-
-### Fix
-
-Detect bare S3 keys (no leading `/` when `IS_S3=True`) and generate a presigned URL instead of checking against filesystem roots:
-
-```python
-if not any(resolved.startswith(root) for root in ALLOWED_ROOTS):
-    if IS_S3 and not clip.file_path.startswith("/"):
-        resolved = _s3_presign(clip.file_path, expires=1800)
-        is_url = True
-    else:
-        log.warning("[Playlist] access denied: %s", clip.file_path)
-        continue
-```
-
-### Lesson
-
-**`ALLOWED_ROOTS` path-prefix checks silently fail for S3 object keys.** S3 keys look like `bucket-prefix/file.mp4` — they are never absolute paths. Any security check that assumes all paths start with `/` must explicitly handle the S3 case. When adding a new storage backend, audit every `startswith("/")` and `os.path` call in the codebase.
-
----
-
-## 24. Celery Prefork + CUDA → "Cannot Re-initialize CUDA in Forked Subprocess"
-
-**Commit(s):** ops — 2026-03-16
-**Component:** `docker-compose.yml`, `worker/ml/embedder.py`
-**Severity:** High — all `process_video` and `process_image` tasks failed immediately
-
-### What Broke
-
-After rebuilding the worker container with `docker compose build`, all ML tasks failed with:
-
-```
-RuntimeError: Cannot re-initialize CUDA in forked subprocess. To use CUDA with
-multiprocessing, you must use the 'spawn' start method
-```
-
-### Root Cause
-
-Celery's default pool is `prefork` — it forks child worker processes from the main process. If CUDA is initialized (even partially, via `import torch`) in the parent process before the fork, the child processes inherit the CUDA context and fail when they try to re-initialize it. With `--concurrency=4`, four children all hit this simultaneously.
-
-The secondary issue: even with `USE_GPU=false` at build time, the worker container runs inside WSL2 which exposes NVIDIA drivers. `torch.cuda.is_available()` returned `True`, and the embedder attempted CUDA initialization before the fork guard could prevent it.
-
-### Fix
-
-Two changes:
-1. Add `--pool=solo` to the Celery worker command — `solo` runs tasks sequentially in the main process with no forking:
-```yaml
-command: sh -c "celery -A celery_app worker --pool=solo ..."
-```
-2. Set `EMBEDDING_DEVICE=cpu` explicitly in the worker environment to prevent any CUDA initialization regardless of hardware availability.
-
-### Lesson
-
-**Any Celery worker that loads a GPU/ML model must use `--pool=solo` or `--pool=threads`.** Prefork + CUDA is fundamentally incompatible because fork copies the CUDA context to child processes where re-initialization fails. `--pool=solo` is the correct setting for single-machine ML workloads. Also: **always set `EMBEDDING_DEVICE=cpu` explicitly when running a CPU-only worker** — relying on `torch.cuda.is_available()` auto-detection is fragile in WSL2 where GPU drivers are visible even in containers built without GPU support.
-
----
-
-## 25. Qdrant Healthcheck Always Fails — No `curl` or `wget` in Image
-
-**Commit(s):** ops — 2026-03-16
-**Component:** `docker-compose.yml`, `docker-compose.second.yml`
-**Severity:** Low — false unhealthy status; no functional impact
-
-### What Broke
-
-Both Qdrant containers showed `(unhealthy)` in `docker ps` despite responding correctly to all API requests. The healthcheck was:
-
-```yaml
-test: ["CMD-SHELL", "curl -f http://localhost:6333/healthz || exit 1"]
-```
-
-### Root Cause
-
-The `qdrant/qdrant` Docker image is a minimal distroless-style image — it contains only the Qdrant binary and its dependencies. Neither `curl` nor `wget` is installed. The healthcheck command failed immediately with `curl: executable file not found`, causing Docker to mark the container unhealthy on every check.
-
-### Fix
-
-Use bash's built-in TCP redirect to check port availability — `bash` is available in the Qdrant image:
-
-```yaml
-test: ["CMD-SHELL", "bash -c '</dev/tcp/localhost/6333' 2>/dev/null"]
-```
-
-This opens a TCP connection to port 6333. Exit code 0 means the port is open and Qdrant is listening; exit code 1 means it is not.
-
-### Lesson
-
-**Always verify that the tools used in a healthcheck exist inside the target container.** Minimal images (distroless, alpine, vendor-provided) routinely omit `curl`, `wget`, and even `sh`. Before writing a healthcheck, run `docker exec <container> which curl` to confirm. The bash `/dev/tcp` trick is a reliable fallback for pure TCP port checks in any container that has `bash`.
+**Module-level `process.env` reads in Next.js API routes are a footgun: move secrets inside the handler where they're evaluated at request time, not build time.** The clue is that `docker compose exec frontend node -e 'console.log(process.env.BACKEND_API_KEY)'` prints the key correctly, but requests still 401 — that rules out the container env and points to the compiled output.
