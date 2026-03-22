@@ -407,8 +407,14 @@ def ingest_media(self, file_path: str, file_type: str):
         ).first()
         if existing:
             if existing.file_path != file_path:
-                # Same content, new location — file was moved/renamed.
-                # Heal the stored path without re-embedding.
+                # Same hash, different path — could be a relocation OR a duplicate copy
+                # (e.g. the same photo exists on a backup drive AND in google-photos/).
+                # Only treat as relocation if the old file is actually gone.
+                old_native = _translate_path(existing.file_path)
+                if not IS_S3 and os.path.isfile(old_native):
+                    print(f"Duplicate copy (both paths exist), skipping: {file_path!r}")
+                    return {"status": "skipped", "reason": "duplicate_copy"}
+                # Old file is gone — heal the stored path without re-embedding.
                 old_path = existing.file_path
                 existing.file_path = file_path
                 db.commit()
@@ -522,7 +528,9 @@ def process_image(self, file_path: str, media_record_id: str):
                     "file_path": file_path,
                     "file_type": "image",
                     "file_hash": media_record.file_hash,
-                    "created_at": datetime.utcnow().isoformat(),
+                    "created_at": datetime.utcfromtimestamp(
+                        os.path.getmtime(native_path)
+                    ).isoformat(),
                     "media_file_id": media_record_id,
                 },
             )
@@ -733,7 +741,9 @@ def process_video(self, file_path: str, media_record_id: str):
                             "file_hash": media_record.file_hash,
                             "frame_index": frame_idx,
                             "timestamp": frame_ts,
-                            "created_at": datetime.utcnow().isoformat(),
+                            "created_at": datetime.utcfromtimestamp(
+                                os.path.getmtime(native_path)
+                            ).isoformat(),
                             "media_file_id": media_record_id,
                             **seg_payload,
                         },
