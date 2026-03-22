@@ -10,7 +10,9 @@ import mimetypes
 import os
 import re
 import shutil
+import threading
 import uuid
+from collections import OrderedDict
 from datetime import datetime, timedelta
 from typing import List
 
@@ -409,6 +411,34 @@ async def stream_media(request: Request, path: str, quality: str = "proxy"):
         )
 
 
+# ---------------------------------------------------------------------------
+# Thumbnail in-memory cache
+# LRU with a hard cap — evicts oldest entry when full.
+# Keyed on (path, rounded_timestamp) so near-identical seeks share entries.
+# Thread-safe via a lock (asyncio tasks run in the same thread but ffmpeg
+# subprocesses and cache writes can overlap across concurrent requests).
+# ---------------------------------------------------------------------------
+_THUMB_CACHE_MAX = int(os.getenv("THUMBNAIL_CACHE_MAX", "500"))
+_thumb_cache: OrderedDict[tuple, bytes] = OrderedDict()
+_thumb_cache_lock = threading.Lock()
+
+
+def _cache_get(key: tuple) -> bytes | None:
+    with _thumb_cache_lock:
+        if key not in _thumb_cache:
+            return None
+        _thumb_cache.move_to_end(key)
+        return _thumb_cache[key]
+
+
+def _cache_set(key: tuple, value: bytes) -> None:
+    with _thumb_cache_lock:
+        _thumb_cache[key] = value
+        _thumb_cache.move_to_end(key)
+        while len(_thumb_cache) > _THUMB_CACHE_MAX:
+            _thumb_cache.popitem(last=False)
+
+
 @router.get("/thumbnail")
 @limiter.limit(LIMIT_THUMBNAIL)
 async def get_thumbnail(request: Request, path: str, t: float = 0.0):
@@ -468,6 +498,16 @@ async def get_thumbnail(request: Request, path: str, t: float = 0.0):
     # Clamp timestamp to >= 0
     seek = max(0.0, t)
 
+    # Cache lookup — round to 1 decimal so t=5.001 and t=5.0 share an entry
+    cache_key = (path, round(seek, 1))
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return Response(
+            content=cached,
+            media_type="image/jpeg",
+            headers={"Cache-Control": "public, max-age=86400", "X-Cache": "HIT"},
+        )
+
     # Fast seek: -ss BEFORE -i jumps to keyframe near the target,
     # then -vframes 1 grabs the first decoded frame.
     # scale=-2:320 preserves aspect ratio (portrait + landscape).
@@ -511,12 +551,14 @@ async def get_thumbnail(request: Request, path: str, t: float = 0.0):
             headers={"Cache-Control": "public, max-age=60"},
         )
 
+    _cache_set(cache_key, stdout)
     return Response(
         content=stdout,
         media_type="image/jpeg",
         headers={
             # Cache in browser for 24 h — thumbnails are deterministic
             "Cache-Control": "public, max-age=86400",
+            "X-Cache": "MISS",
         },
     )
 
