@@ -6,36 +6,245 @@ A living record of every significant bug, outage, and architectural misstep enco
 
 ## Table of Contents
 
-1. [EXIF Bytes Not JSON-Serializable](#1-exif-bytes-not-json-serializable)
-2. [asyncpg Callback Using Non-Existent Method](#2-asyncpg-callback-using-non-existent-method)
-3. [Search Router Never Registered — All Search Endpoints 404](#3-search-router-never-registered--all-search-endpoints-404)
-4. [API Container Importing Worker ML Dependencies](#4-api-container-importing-worker-ml-dependencies)
-5. [WebSocket URL Wrong Protocol (http vs ws)](#5-websocket-url-wrong-protocol-http-vs-ws)
-6. [Infinite WebSocket Reconnect With No Backoff](#6-infinite-websocket-reconnect-with-no-backoff)
-7. [Docker-Internal Hostname Not Resolvable in Browser](#7-docker-internal-hostname-not-resolvable-in-browser)
-8. [CORS Invalid Combination Silently Killed All WebSocket Connections](#8-cors-invalid-combination-silently-killed-all-websocket-connections)
-9. [React useEffect Infinite Loop From Unstable Callback Dependencies](#9-react-useeffect-infinite-loop-from-unstable-callback-dependencies)
-10. [Celery Proxy Task Blocking the Indexing Queue](#10-celery-proxy-task-blocking-the-indexing-queue)
-11. [slowapi Crashes on Redis ConnectionError](#11-slowapi-crashes-on-redis-connectionerror)
-12. [Celery Prefork + CUDA](#12-celery-prefork--cuda)
-13. [task_acks_late=True Causes Duplicate Task Processing on Worker Restart](#13-task_acks_latetrue-causes-duplicate-task-processing-on-worker-restart)
-14. [Stale DB Records From File Renames Leave Tasks Stuck as `pending` Forever](#14-stale-db-records-from-file-renames-leave-tasks-stuck-as-pending-forever)
-15. [Windows ffprobe UnicodeDecodeError on Non-Latin File Metadata](#15-windows-ffprobe-unicodedecodeerror-on-non-latin-file-metadata)
-16. [Qdrant Client API Mismatch](#16-qdrant-client-api-mismatch)
-17. [Worker RAM Thrash](#17-worker-ram-thrash)
-18. [Blocking Proxy Encode in Critical Pipeline Path](#18-blocking-proxy-encode-in-critical-pipeline-path)
-19. [`os.replace()` Fails Across Docker Volume Mount Points](#19-osreplace-fails-across-docker-volume-mount-points)
-20. [`os.getenv('VAR', default)` Does Not Guard Against Empty String](#20-osgetenvvar-default-does-not-guard-against-empty-string)
-21. [CLIP Model / Qdrant Collection Dimension Mismatch — Silent Backlog](#21-clip-model--qdrant-collection-dimension-mismatch--silent-backlog)
-22. [DB Schema Drift Between `init-db.sql` and Migration Scripts](#22-db-schema-drift-between-init-dbsql-and-migration-scripts)
-23. [FastAPI `List[float]` on POST Endpoint Is a Body Param](#23-fastapi-listfloat-on-post-endpoint-is-a-body-param)
-24. [Rate Limiter Redis Connection Kills All Tests in CI](#24-rate-limiter-redis-connection-kills-all-tests-in-ci)
-25. [Next.js Module-Level `process.env` Reads Captured at Build Time](#25-nextjs-module-level-processenv-reads-captured-at-build-time)
-26. [`qdrant-client` Minor Version Removed `.search()` — Mocked Tests Passed, Prod Returned 0 Results](#26-qdrant-client-minor-version-removed-search--mocked-tests-passed-prod-returned-0-results)
+- [A — Data Pipelines & AI/ML in Production](#a--data-pipelines--aiml-in-production)
+  - [A1. Celery Proxy Task Blocking the Indexing Queue](#a1-celery-proxy-task-blocking-the-indexing-queue)
+  - [A2. Celery Prefork + CUDA](#a2-celery-prefork--cuda)
+  - [A3. task_acks_late=True Causes Duplicate Task Processing](#a3-task_acks_latetrue-causes-duplicate-task-processing)
+  - [A4. Blocking Proxy Encode in Critical Pipeline Path](#a4-blocking-proxy-encode-in-critical-pipeline-path)
+  - [A5. CLIP Model / Qdrant Collection Dimension Mismatch](#a5-clip-model--qdrant-collection-dimension-mismatch)
+  - [A6. qdrant-client Minor Version Removed .search() — Mocked Tests Passed, Prod Returned 0 Results](#a6-qdrant-client-minor-version-removed-search--mocked-tests-passed-prod-returned-0-results)
+- [B — Backend Services & REST APIs](#b--backend-services--rest-apis)
+  - [B1. EXIF Bytes Not JSON-Serializable](#b1-exif-bytes-not-json-serializable)
+  - [B2. asyncpg Callback Using Non-Existent Method](#b2-asyncpg-callback-using-non-existent-method)
+  - [B3. Search Router Never Registered — All Search Endpoints 404](#b3-search-router-never-registered--all-search-endpoints-404)
+  - [B4. API Container Importing Worker ML Dependencies](#b4-api-container-importing-worker-ml-dependencies)
+  - [B5. slowapi Crashes on Redis ConnectionError](#b5-slowapi-crashes-on-redis-connectionerror)
+  - [B6. Qdrant Client API Mismatch](#b6-qdrant-client-api-mismatch)
+  - [B7. os.replace() Fails Across Docker Volume Mount Points](#b7-osreplace-fails-across-docker-volume-mount-points)
+  - [B8. os.getenv('VAR', default) Does Not Guard Against Empty String](#b8-osgetenvvar-default-does-not-guard-against-empty-string)
+  - [B9. DB Schema Drift Between init-db.sql and Migration Scripts](#b9-db-schema-drift-between-init-dbsql-and-migration-scripts)
+  - [B10. FastAPI List[float] on POST Endpoint Is a Body Param](#b10-fastapi-listfloat-on-post-endpoint-is-a-body-param)
+- [C — Performance & Optimization](#c--performance--optimization)
+  - [C1. Worker RAM Thrash](#c1-worker-ram-thrash)
+- [D — Production Troubleshooting](#d--production-troubleshooting)
+  - [D1. Stale DB Records From File Renames Leave Tasks Stuck as pending](#d1-stale-db-records-from-file-renames-leave-tasks-stuck-as-pending)
+  - [D2. Windows ffprobe UnicodeDecodeError on Non-Latin File Metadata](#d2-windows-ffprobe-unicodedecodeerror-on-non-latin-file-metadata)
+  - [D3. Rate Limiter Redis Connection Kills All Tests in CI](#d3-rate-limiter-redis-connection-kills-all-tests-in-ci)
+- [E — Frontend & Integration](#e--frontend--integration)
+  - [E1. WebSocket URL Wrong Protocol](#e1-websocket-url-wrong-protocol)
+  - [E2. Infinite WebSocket Reconnect With No Backoff](#e2-infinite-websocket-reconnect-with-no-backoff)
+  - [E3. Docker-Internal Hostname Not Resolvable in Browser](#e3-docker-internal-hostname-not-resolvable-in-browser)
+  - [E4. CORS Invalid Combination Silently Killed All WebSocket Connections](#e4-cors-invalid-combination-silently-killed-all-websocket-connections)
+  - [E5. React useEffect Infinite Loop From Unstable Callback Dependencies](#e5-react-useeffect-infinite-loop-from-unstable-callback-dependencies)
+  - [E6. Next.js Module-Level process.env Reads Captured at Build Time](#e6-nextjs-module-level-processenv-reads-captured-at-build-time)
 
 ---
 
-## 1. EXIF Bytes Not JSON-Serializable
+## A — Data Pipelines & AI/ML in Production
+
+- [A1. Celery Proxy Task Blocking the Indexing Queue](#a1-celery-proxy-task-blocking-the-indexing-queue)
+- [A2. Celery Prefork + CUDA](#a2-celery-prefork--cuda)
+- [A3. task_acks_late=True Causes Duplicate Task Processing](#a3-task_acks_latetrue-causes-duplicate-task-processing)
+- [A4. Blocking Proxy Encode in Critical Pipeline Path](#a4-blocking-proxy-encode-in-critical-pipeline-path)
+- [A5. CLIP Model / Qdrant Collection Dimension Mismatch](#a5-clip-model--qdrant-collection-dimension-mismatch)
+- [A6. qdrant-client Minor Version Removed .search() — Mocked Tests Passed, Prod Returned 0 Results](#a6-qdrant-client-minor-version-removed-search--mocked-tests-passed-prod-returned-0-results)
+
+---
+
+## A1. Celery Proxy Task Blocking the Indexing Queue
+
+**Component:** `scripts/start-windows-worker-*.ps1`
+**Severity:** High — indexing ground to a halt behind proxy encoding jobs
+
+### What Broke
+
+The Windows Celery worker was started with `--queues=celery,proxies`. The `generate_proxy` task encodes 720p H.265 video to H.264 and took ~13 minutes per file. With a backlog of thousands of videos, proxy jobs monopolised every worker slot and CLIP embedding — the actual indexing work — stalled.
+
+### Root Cause
+
+The `celery` and `proxies` queues shared the same worker pool. A long-running CPU-bound task (video encoding) starved the short-running GPU-bound tasks (CLIP embedding). There was no queue priority or dedicated worker separation.
+
+### Fix
+
+Remove `proxies` from the queues argument on all indexing workers. A dedicated encoding worker can be spun up separately when proxy generation is explicitly needed:
+
+```powershell
+# Before
+--queues=celery,proxies
+# After
+--queues=celery
+```
+
+### Lesson
+
+**Long-running CPU tasks and short-running GPU tasks must never share the same Celery worker pool.** Separate queues are not enough — the workers consuming those queues must also be separate. Treat proxy generation as a background maintenance job, not part of the critical indexing path.
+
+---
+
+## A2. Celery Prefork + CUDA → "Cannot Re-initialize CUDA in Forked Subprocess"
+
+**Component:** `docker-compose.yml`, `worker/ml/embedder.py`
+**Severity:** High — all `process_video` and `process_image` tasks failed immediately
+
+### What Broke
+
+After rebuilding the worker container, all ML tasks failed with `RuntimeError: Cannot re-initialize CUDA in forked subprocess`. Celery's default `prefork` pool forks child worker processes. If CUDA is initialized in the parent process before the fork, child processes inherit the CUDA context and fail when they try to re-initialize it. With `--concurrency=4`, four children all hit this simultaneously.
+
+### Root Cause
+
+Celery's `prefork` pool and CUDA are fundamentally incompatible. Even with `USE_GPU=false` at build time, the worker container runs inside WSL2 which exposes NVIDIA drivers — `torch.cuda.is_available()` returned `True`, and the embedder attempted CUDA initialization before the fork guard could prevent it.
+
+### Fix
+
+Two changes applied together. Use `--pool=solo` (runs tasks sequentially in the main process, no forking) and set `EMBEDDING_DEVICE=cpu` explicitly to prevent CUDA initialization regardless of hardware:
+
+```yaml
+command: sh -c "celery -A celery_app worker --pool=solo ..."
+```
+
+### Lesson
+
+**Any Celery worker that loads a GPU/ML model must use `--pool=solo` or `--pool=threads`.** Prefork + CUDA is fundamentally incompatible because fork copies the CUDA context to child processes. Always set `EMBEDDING_DEVICE=cpu` explicitly when running a CPU-only worker — relying on `torch.cuda.is_available()` auto-detection is fragile in WSL2.
+
+---
+
+## A3. task_acks_late=True Causes Duplicate Task Processing on Worker Restart
+
+**Component:** `worker/tasks.py`
+**Severity:** High — caused already-completed files to be fully reprocessed (re-embedded, re-indexed into Qdrant)
+
+### What Broke
+
+A video file that was already `status = "done"` was picked up and fully reprocessed after a worker restart. Celery re-embedded the frames and created duplicate Qdrant points for an already-indexed file.
+
+### Root Cause
+
+`task_acks_late=True` means Celery only acknowledges a task from the broker queue after the task completes. If the worker is restarted while a task is in-flight, the broker redelivers it to the next available worker. The `process_video` and `process_image` tasks had no guard against this — they always ran all processing steps regardless of the file's current `processing_status`.
+
+### Fix
+
+Added an idempotency guard at the very start of each task, before any expensive work:
+
+```python
+# Idempotency guard — redelivered tasks (task_acks_late=True + restart) must not reprocess.
+if media_record.processing_status == "done":
+    log.info("Skipping already-done video: %s", file_path)
+    return {"status": "skipped", "reason": "already_done"}
+```
+
+### Lesson
+
+**`task_acks_late=True` trades task loss for duplicate delivery. Any task that has side effects (DB writes, vector upserts, file I/O) must be idempotent.** The idempotency check must be the very first thing the task does — before any expensive or irreversible operation. The general pattern: read a persistent status flag from the DB; if the work is already done, return early.
+
+---
+
+## A4. Blocking Proxy Encode in Critical Pipeline Path
+
+**Component:** `worker/tasks.py`
+**Severity:** High — 563 video records stuck in `processing`; zero vectors in Qdrant after hours
+
+### What Broke
+
+`process_video` called `apply_faststart()` synchronously before frame extraction. For 4K source files (5–20 GB), this transcode operation took hours per file. With 6 Celery workers and 6 large files, all worker slots were occupied 100% of the time encoding proxies. Frame extraction and Qdrant upserts — the operations that actually produce search results — never ran.
+
+### Root Cause
+
+Three compounding design decisions: (1) a variable-cost blocking step placed before fast invariant steps — proxy encoding cost scales from seconds to hours, while frame extraction and embedding are comparatively fast; (2) no distinction by codec — H264 sources only need a container remux (~30s), not a full transcode (hours); (3) no escape hatch for large files.
+
+### Fix
+
+Three changes applied together:
+
+```
+Option 1: Decouple — generate_proxy dispatched async to 'proxies' queue
+          process_video finishes in minutes regardless of source size
+
+Option 2: Duration threshold — non-H264 files > PROXY_MAX_DURATION_SECS
+          (default 3600s) are skipped; full movies don't block the pipeline
+
+Option 3: Codec-aware routing — H264 sources use -c copy (stream copy, ~30s)
+          only non-H264 sources pay the full transcode cost
+```
+
+### Lesson
+
+**Place cheap invariant operations before expensive variable-cost ones.** When you have a step whose cost can range from seconds to hours depending on input, that step belongs at the end of the chain or in a separate async lane — never before steps that must complete for the pipeline to make progress.
+
+---
+
+## A5. CLIP Model / Qdrant Collection Dimension Mismatch — Silent Backlog
+
+**Component:** `worker/tasks.py`, `worker/ml/embedder.py`
+**Severity:** High — growing `error` count across restarts before it was caught
+
+### What Broke
+
+The Qdrant `media_vectors` collection was recreated at 768 dimensions to match `clip-ViT-L-14`. But `.env` still had `CLIP_MODEL_NAME=clip-ViT-B-32` (512-dim). The worker loaded ViT-B-32 and produced 512-dim vectors, which Qdrant rejected with `INVALID_ARGUMENT`. Because `autoretry_for=(Exception,)` covers all exceptions, every rejected task retried 5× before landing in `error`. The error count grew from 2 → 169 → 269 → 502 across restarts before anyone caught it.
+
+### Root Cause
+
+The collection and the model env var were changed in separate steps with no cross-check. There is no startup assertion that `embedder.embedding_dim == collection.vector_size`. `INVALID_ARGUMENT` errors are not distinguishable from transient errors by the current retry logic, so they waste ~10 minutes of worker time per file before permanent failure.
+
+### Fix
+
+Updated `.env` (`CLIP_MODEL_NAME=clip-ViT-L-14`), reset 502 `INVALID_ARGUMENT` errors to `pending`, and added a startup assertion to catch mismatches loudly at start rather than silently at scale:
+
+```python
+qdrant_info = qdrant_client.get_collection(QDRANT_COLLECTION_NAME)
+collection_dim = qdrant_info.config.params.vectors.size
+if collection_dim != embedder.embedding_dim:
+    raise RuntimeError(
+        f"Dimension mismatch: Qdrant collection is {collection_dim}-dim "
+        f"but {embedder.model_name} produces {embedder.embedding_dim}-dim vectors. "
+        f"Check CLIP_MODEL_NAME in .env."
+    )
+```
+
+### Lesson
+
+**When you change a schema — whether a database column type or a vector dimension — every producer of that schema must be updated atomically.** Add a startup assertion that checks the producer's output format against the store's expected format before any work begins. Fail loud at startup, not silently at scale.
+
+---
+
+## A6. `qdrant-client` Minor Version Removed `.search()` — Mocked Tests Passed, Prod Returned 0 Results
+
+**Component:** `api/agent/steps.py`, `api/requirements.txt`
+**Severity:** High — agent endpoint always returned 0 results on prod; direct search endpoint worked fine
+
+### What Broke
+
+After merging the v2.0.0 multi-agent feature, `POST /api/agent/query` always returned 0 results on prod. The agent coordinator returned in 62ms — too fast for CLIP inference — meaning the search node was silently short-circuiting. `qdrant-client` was pinned to `>=1.7` in `requirements.txt`. Prod had installed `1.17.0`, which removed `QdrantClient.search()` entirely in favor of `query_points()`. All tests mock Qdrant at the dependency-injection layer, so the mock's `.search()` attribute worked fine in CI. On prod the real client raised `AttributeError`, caught by a broad `except Exception` in `QdrantRetrieveStep` and silently turned into an empty result list.
+
+### Root Cause
+
+Open-ended version pinning (`>=1.7`) allowed the prod install to pull in a breaking minor-version change. Mocking at the injection layer — rather than testing the real client method path — meant the breaking rename was invisible in CI. The broad `except Exception` in the search step converted a hard failure into a silent empty result.
+
+### Fix
+
+Replace `self._qdrant.search(...)` with `self._qdrant.query_points(...)`. Pin to an exact minor: `qdrant-client>=1.17.0,<2.0`. Add `threshold`/`limit` fields to `AgentState` TypedDict and thread them through `search_agent_run()` (they were silently ignored).
+
+### Lesson
+
+**Pin third-party SDK versions to an exact minor version — not open-ended `>=X.Y`.** Add a smoke test that calls the real client method path (even with a local Qdrant via a CI service container) to catch removed APIs. When a handler catches `Exception` and returns an empty result, always log a warning — silent failures are extremely hard to diagnose on prod.
+
+---
+
+## B — Backend Services & REST APIs
+
+- [B1. EXIF Bytes Not JSON-Serializable](#b1-exif-bytes-not-json-serializable)
+- [B2. asyncpg Callback Using Non-Existent Method](#b2-asyncpg-callback-using-non-existent-method)
+- [B3. Search Router Never Registered — All Search Endpoints 404](#b3-search-router-never-registered--all-search-endpoints-404)
+- [B4. API Container Importing Worker ML Dependencies](#b4-api-container-importing-worker-ml-dependencies)
+- [B5. slowapi Crashes on Redis ConnectionError](#b5-slowapi-crashes-on-redis-connectionerror)
+- [B6. Qdrant Client API Mismatch](#b6-qdrant-client-api-mismatch)
+- [B7. os.replace() Fails Across Docker Volume Mount Points](#b7-osreplace-fails-across-docker-volume-mount-points)
+- [B8. os.getenv('VAR', default) Does Not Guard Against Empty String](#b8-osgetenvvar-default-does-not-guard-against-empty-string)
+- [B9. DB Schema Drift Between init-db.sql and Migration Scripts](#b9-db-schema-drift-between-init-dbsql-and-migration-scripts)
+- [B10. FastAPI List[float] on POST Endpoint Is a Body Param](#b10-fastapi-listfloat-on-post-endpoint-is-a-body-param)
+
+---
+
+## B1. EXIF Bytes Not JSON-Serializable
 
 **Component:** `worker/tasks.py`
 **Severity:** Medium — caused worker task crashes for images with EXIF data
@@ -66,7 +275,7 @@ if exif_data:
 
 ---
 
-## 2. asyncpg Callback Using Non-Existent Method
+## B2. asyncpg Callback Using Non-Existent Method
 
 **Component:** `api/utils/notifications.py`
 **Severity:** Critical — the entire real-time notification system was silently non-functional
@@ -105,7 +314,7 @@ def _on_notification(self, conn, pid, channel, payload):
 
 ---
 
-## 3. Search Router Never Registered — All Search Endpoints 404
+## B3. Search Router Never Registered — All Search Endpoints 404
 
 **Component:** `api/main.py`
 **Severity:** Critical — all search functionality silently returned 404
@@ -140,7 +349,7 @@ app.include_router(search.router, prefix="/api", tags=["search"])
 
 ---
 
-## 4. API Container Importing Worker ML Dependencies
+## B4. API Container Importing Worker ML Dependencies
 
 **Component:** `api/routers/search.py`
 **Severity:** Critical — API container crashed on startup with ModuleNotFoundError
@@ -179,7 +388,339 @@ results = client.search(collection_name="media", query_vector=vector, limit=limi
 
 ---
 
-## 5. WebSocket URL Wrong Protocol (http vs ws)
+## B5. slowapi Crashes on Redis ConnectionError Due to Wrong Hostname in REDIS_URL
+
+**Component:** `api/rate_limit.py`
+**Severity:** Critical — all API requests returned 500; the error was a slowapi bug triggered by a misconfigured env var
+
+### What Broke
+
+`rate_limit.py` used `os.getenv("REDIS_URL", "redis://redis:6379")` for the slowapi storage URI. The `.env` file had `REDIS_URL=redis://redis:6379` — the hostname `redis` never resolved inside the Docker network. Every request caused slowapi to get a `ConnectionError` and pass it to `_rate_limit_exceeded_handler`, which unconditionally accessed `exc.detail` — crashing with `AttributeError: 'ConnectionError' object has no attribute 'detail'`.
+
+### Root Cause
+
+Two compounding bugs: (1) `REDIS_URL` in `.env` used the wrong container hostname; (2) slowapi's middleware has a latent bug where it routes any exception from Redis — including `ConnectionError` — to `_rate_limit_exceeded_handler`, which expects an `HTTPException` subclass with a `.detail` attribute.
+
+### Fix
+
+Prefer `CELERY_BROKER_URL` (which is always set to the correct container hostname in Compose) over `REDIS_URL`, and add `in_memory_fallback_enabled=True` to fail open if Redis is temporarily unreachable:
+
+```python
+_storage_uri = (
+    os.getenv("CELERY_BROKER_URL")          # already correct in Compose env
+    or os.getenv("REDIS_URL", "redis://lumen-redis:6379")
+)
+
+limiter = Limiter(
+    key_func=get_remote_address,
+    storage_uri=_storage_uri,
+    default_limits=[LIMIT_DEFAULT],
+    in_memory_fallback_enabled=True,  # fail open if Redis is temporarily unreachable
+)
+```
+
+### Lesson
+
+**Verify that `REDIS_URL` matches the actual container hostname before deploying.** In Docker Compose stacks, the hostname is the service name. Run `docker exec <api_container> env | grep REDIS` after any env change to confirm. Add `in_memory_fallback_enabled=True` to any slowapi `Limiter` that uses a Redis backend — without it, a transient Redis unavailability crashes every in-flight request.
+
+---
+
+## B6. Qdrant Client API Mismatch
+
+**Component:** `api/routers/search.py`, `worker/tasks.py`
+**Severity:** High — search returned 500 errors after appearing to work in isolation
+
+### What Broke
+
+The code was written against the Qdrant client docs, but the installed package version (`qdrant-client==1.17.0`) had renamed and restructured its search API multiple times across minor versions. Three consecutive attempts were needed: `.search_points()` → `AttributeError`, `.search_vectors()` → `AttributeError`, `.query_points()` with the correct payload shape → success.
+
+### Root Cause
+
+Qdrant's Python client does not follow semantic versioning strictly. Method names changed between 1.x minor versions without deprecation warnings. The online docs were ahead of the pinned package version, so the published examples referenced methods that didn't exist in the installed release.
+
+### Fix
+
+Pin the exact client version in `requirements.txt` and verify the installed version's actual API surface via `help()` in a REPL or the GitHub tag changelog for the pinned version — not the latest hosted docs:
+
+```
+qdrant-client>=1.17.0,<2.0
+```
+
+### Lesson
+
+**Treat third-party SDK docs with suspicion unless verifying against the exact installed version.** The canonical source of truth is `help(client)` or the GitHub tag for the pinned release, not the latest hosted docs. Always pin transitive dependencies and note the version in a comment next to the call site.
+
+---
+
+## B7. `os.replace()` Fails Across Docker Volume Mount Points
+
+**Component:** `worker/tasks.py`, `worker/ingest/ffmpeg.py`
+**Severity:** High — all `generate_proxy` tasks for HEVC source files failed immediately after FFmpeg succeeded
+
+### What Broke
+
+`apply_faststart()` wrote the FFmpeg output to `tempfile.mktemp(dir="/tmp")`, then called `os.replace(str(tmp_path), str(dest))` to move it to `/mnt/proxies/...`. This raises `OSError: [Errno 18] Invalid cross-device link` whenever source and destination are on different filesystems.
+
+### Root Cause
+
+`os.replace()` is backed by POSIX `rename(2)` — atomic and instant within one filesystem, but always `EXDEV` across filesystems. Docker volume mounts (`/tmp` on the container's overlay filesystem, `/mnt/proxies` on a bind-mounted host path) are always different filesystems. `OSError` was also not in `autoretry_for=(FFmpegError,)`, so tasks went straight to FAILURE with 0 retries.
+
+### Fix
+
+```python
+# Before — fails across volume mounts:
+os.replace(str(tmp_path), str(dest))
+
+# After — copy+delete fallback on cross-device move:
+import shutil
+shutil.move(str(tmp_path), str(dest))
+```
+
+Also updated `autoretry_for=(FFmpegError, OSError)` so future OS-level errors retry with exponential backoff.
+
+### Lesson
+
+**`os.replace()` is POSIX `rename()` — atomic within one filesystem, but always fails across filesystems.** Docker volume mounts are separate filesystems by definition. Whenever source and destination paths could be on different mounts, use `shutil.move()` which falls back to copy+unlink. Also: include `OSError` in `autoretry_for` for I/O-heavy tasks — OS-level I/O failures are transient more often than they are permanent.
+
+---
+
+## B8. `os.getenv('VAR', default)` Does Not Guard Against Empty String
+
+**Component:** `worker/tasks.py`, `worker/ingest/ffmpeg.py`
+**Severity:** High — `process_video` tasks stuck in perpetual RETRY with `ValueError`
+
+### What Broke
+
+`KEYFRAME_RESOLUTION` was declared in `docker-compose.second.yml` as `${KEYFRAME_RESOLUTION:-224}`. The host shell had this variable exported as an empty string. The `:-` default in shell substitution fills in a default only when the variable is **unset or null** — an exported empty-string variable is considered set. The container received `KEYFRAME_RESOLUTION=""`, then `int(os.getenv("KEYFRAME_RESOLUTION", "224"))` returned `int("")` → `ValueError`. Because `autoretry_for=(Exception,)` covers `ValueError`, tasks retried on exponential backoff indefinitely.
+
+### Root Cause
+
+`os.getenv('VAR', 'fallback')` fires only when the key is absent from `os.environ`. An empty-string value is returned as-is. Any subsequent `int()` or `float()` cast will raise.
+
+### Fix
+
+```python
+# Before — silently passes empty string to int():
+resolution = int(os.getenv("KEYFRAME_RESOLUTION", "224"))
+
+# After — empty string is falsy, falls back to default:
+resolution = int(os.getenv("KEYFRAME_RESOLUTION") or "224")
+```
+
+Applied to all five affected variables across `tasks.py` and `ingest/ffmpeg.py`.
+
+### Lesson
+
+**`os.getenv('VAR', default)` and shell `${VAR:-default}` share the same footgun: neither protects against an explicitly-set empty string.** The Python `or` idiom is more defensive because it treats any falsy value (empty string, zero, None) as "use the fallback". For configuration values that will be passed to `int()` or `float()`, always use `os.getenv('VAR') or 'default'`.
+
+---
+
+## B9. DB Schema Drift Between `init-db.sql` and Migration Scripts
+
+**Component:** PostgreSQL `media_files` table, `init-db.sql`
+**Severity:** Critical — workers crashed immediately on every task on a fresh deploy
+
+### What Broke
+
+On a fresh cloud deploy, workers crashed immediately with `sqlalchemy.exc.ProgrammingError: column media_files.embedding_started_at does not exist`. The dev machine had the column because it was added via migrations and manual `ALTER TABLE` commands. The cloud server had a fresh Postgres container that only ran `init-db.sql`, which was never updated as observability columns were added in later PRs.
+
+### Root Cause
+
+Migration scripts and `init-db.sql` diverged. There was one migration script for `model_version` but nothing for `embedding_started_at`, `worker_id`, `frame_cache_hit`, or `embedding_ms` — and `init-db.sql` had none of them. Fresh deploys are silently broken whenever the schema is extended without keeping `init-db.sql` in sync.
+
+### Fix
+
+Manual `ALTER TABLE … ADD COLUMN IF NOT EXISTS` on the running container, then added all 5 columns to `init-db.sql` for future fresh deploys, and created `scripts/migrate_add_observability_columns.sql` for upgrading existing DBs.
+
+### Lesson
+
+**Migration scripts and the init script are two separate code paths that must stay in sync.** Every `ALTER TABLE` that adds a column also gets a matching change to `init-db.sql`. The smell-check before merging any schema PR: "if someone clones this repo today and runs `docker compose up` for the first time, will `init-db.sql` produce the same schema as a fully-migrated dev DB?"
+
+---
+
+## B10. FastAPI `List[float]` on a POST Endpoint Is a Body Param, Not a Query Param
+
+**Component:** `api/routers/search.py`
+**Severity:** Medium — 14 tests all returned 422 Unprocessable Entity
+
+### What Broke
+
+14 new tests for `POST /api/search-vector` all returned 422. The vector was being sent as repeated query params (`?vector=0.1&vector=0.2&…`) following the same pattern used for scalars like `limit`. FastAPI's parameter resolution rules for POST endpoints treat `List[float]` as a body param, not a query param — it expects a raw JSON array body.
+
+### Root Cause
+
+FastAPI has a nuanced rule: the binding location of a parameter depends on its *type*, not just the presence/absence of `Body()`. Scalar types are query params by default on POST; collection types become body params. This is documented but easy to miss when writing tests against existing endpoints.
+
+### Fix
+
+```python
+# Wrong — 422 on every call
+client.post("/api/search-vector", params=[("vector", 0.1), ("vector", 0.2)])
+
+# Correct — raw JSON array body
+client.post("/api/search-vector", json=[0.1, 0.2, 0.3])
+
+# Scalar query params still work alongside the JSON body
+client.post("/api/search-vector", json=[0.1, 0.2], params={"limit": 5})
+```
+
+### Lesson
+
+**FastAPI's implicit parameter binding has non-obvious rules for collection types.** When a test returns 422 and the data looks correct, check the OpenAPI schema first — FastAPI generates it automatically and will show exactly what it expects where. `/docs` showing `vector` under `requestBody` (not `parameters`) immediately explains the 422.
+
+---
+
+## C — Performance & Optimization
+
+- [C1. Worker RAM Thrash](#c1-worker-ram-thrash)
+
+---
+
+## C1. Worker RAM Thrash — Load Average 23.75
+
+**Component:** `docker-compose.yml`, `worker/celery_app.py`
+**Severity:** High — host machine became unresponsive; overall throughput collapsed
+
+### What Broke
+
+Celery defaulted to `--concurrency=24` (one worker per CPU core). Each worker loaded its own copy of the CLIP model into RAM (~600 MB) and spawned FFmpeg subprocesses (~400 MB each for 4K video). With 24 workers: CLIP alone consumed 14.4 GB, FFmpeg peaks added 9.6 GB — exceeding available RAM and causing heavy swap thrashing.
+
+### Root Cause
+
+Default Celery concurrency is based on CPU count, which is correct for I/O-bound tasks but catastrophically wrong for memory-heavy ML workloads. Each worker was also never recycled, so PyTorch and FFmpeg memory leaks accumulated over the lifetime of the process.
+
+### Fix
+
+```
+CELERY_CONCURRENCY=4              # floor(free_RAM_GB / ~2 GB per worker)
+worker_max_tasks_per_child=50     # recycle child after 50 tasks (clears leaks)
+worker_max_memory_per_child=1500000  # hard 1.5 GB ceiling per child
+```
+
+Load average dropped from 23.75 → 8.59.
+
+### Lesson
+
+**Default configurations assume a class of workload.** For memory-heavy ML inference, the right concurrency is `floor(RAM / model_size)`, not CPU count. `max_tasks_per_child` is the Celery equivalent of connection pool recycling — without it, PyTorch's CUDA allocator and FFmpeg's buffer pools cause gradual memory growth that only appears after hours of operation.
+
+---
+
+## D — Production Troubleshooting
+
+- [D1. Stale DB Records From File Renames Leave Tasks Stuck as pending](#d1-stale-db-records-from-file-renames-leave-tasks-stuck-as-pending)
+- [D2. Windows ffprobe UnicodeDecodeError on Non-Latin File Metadata](#d2-windows-ffprobe-unicodedecodeerror-on-non-latin-file-metadata)
+- [D3. Rate Limiter Redis Connection Kills All Tests in CI](#d3-rate-limiter-redis-connection-kills-all-tests-in-ci)
+
+---
+
+## D1. Stale DB Records From File Renames Leave Tasks Stuck as `pending` Forever
+
+**Component:** `worker/tasks.py`, PostgreSQL `media_files` table
+**Severity:** Medium — files permanently stuck as `pending`, never retried
+
+### What Broke
+
+Multiple files were showing as `pending` in the DB but never being picked up for processing. The files had been renamed on disk. The crawler matches files by their full `file_path` — when a file is renamed, the old path no longer exists on disk and the `pending` record is never updated or retried. The new path is treated as a brand new file, creating a duplicate `done` record.
+
+### Root Cause
+
+The crawler has no rename detection — it only matches by exact `file_path`. Renaming a file on disk orphans its DB record permanently, leaving one `done` record for the new name and one `pending` record for the old name that will never be processed.
+
+### Fix
+
+Identify stale records by cross-referencing `pending` paths against what actually exists on disk, then delete them. For now, manual cleanup is the remediation:
+
+```sql
+DELETE FROM media_files
+WHERE processing_status = 'pending'
+  AND file_path LIKE '<affected_directory>/%';
+```
+
+### Lesson
+
+**The crawler has no rename detection — it only matches by exact `file_path`.** If files are regularly renamed, either implement a periodic cleanup query to delete `pending` records whose paths no longer exist on disk, or track files by inode/content hash rather than path.
+
+---
+
+## D2. Windows ffprobe UnicodeDecodeError on Non-Latin File Metadata
+
+**Component:** `worker/ingest/ffmpeg.py`
+**Severity:** Medium — caused worker crashes for files with non-Latin characters in metadata
+
+### What Broke
+
+Files failed with `UnicodeDecodeError: 'cp1252' codec can't decode byte 0x81 in position N`. The worker crashed during `ffprobe` metadata extraction and files were left in `error` status.
+
+### Root Cause
+
+`subprocess.run(..., text=True)` without an explicit `encoding=` argument uses the platform's default encoding. On Windows, this is `cp1252`. ffprobe outputs UTF-8, including metadata fields that may contain Japanese or other non-Latin characters. The Linux worker handled the same files fine because Linux defaults to UTF-8.
+
+### Fix
+
+Added `encoding="utf-8"` explicitly to all `subprocess.run` calls in `ffmpeg.py`, applied to both `probe_media()` and `extract_keyframes()`:
+
+```python
+result = subprocess.run(
+    [...],
+    capture_output=True,
+    text=True,
+    encoding="utf-8",  # prevents cp1252 crash on Windows
+    timeout=30,
+)
+```
+
+### Lesson
+
+**Always specify `encoding="utf-8"` when using `text=True` in `subprocess.run` on cross-platform code.** Never rely on the platform default — Windows cp1252, Linux UTF-8, and macOS UTF-8 will behave differently. Media files routinely contain non-Latin metadata that will silently work on Linux/macOS and crash on Windows without explicit encoding.
+
+---
+
+## D3. Rate Limiter Redis Connection Kills All Tests in CI (109 failures)
+
+**Component:** `api/rate_limit.py`, `conftest.py`
+**Severity:** High — 109 out of 135 tests failed in CI; passed locally
+
+### What Broke
+
+`rate_limit.py` initialises a `slowapi.Limiter` at module import time with `storage_uri = os.getenv("REDIS_URL", "redis://redis:6379")`. The `conftest.py` overrode this to `redis://localhost:6379` for local dev. On the GitHub Actions `ubuntu-latest` runner there is no Redis service — every request that hit a rate-limited endpoint raised `redis.exceptions.ConnectionError`. The module docstring even claimed it "falls back gracefully to in-memory if Redis is unreachable" — this was incorrect.
+
+### Root Cause
+
+Two compounding mistakes: `conftest.py` defaulted `REDIS_URL` to a real Redis address, importing a live-service dependency into a supposedly self-contained test suite; and a misleading code comment implied automatic fallback that doesn't exist in `slowapi`.
+
+### Fix
+
+```python
+# conftest.py — use in-memory backend, zero external dependencies
+os.environ.setdefault("REDIS_URL", "memory://")
+
+# ci.yml — belt-and-suspenders in case env is already set
+- name: Run pytest
+  env:
+    REDIS_URL: memory://
+  run: pytest ...
+```
+
+`limits` (the backend library used by `slowapi`) supports `memory://` as a fully functional in-process counter store.
+
+### Lesson
+
+**"Passes locally" is not evidence that a test is self-contained** — it may just mean the developer machine happens to have a Redis process running. Every external service a test touches either needs to be in a `docker-compose` for the test runner, or needs to be mocked. Audit every `os.getenv()` default in `conftest.py` and ask: "does this URL actually exist on a clean CI runner?"
+
+---
+
+## E — Frontend & Integration
+
+- [E1. WebSocket URL Wrong Protocol](#e1-websocket-url-wrong-protocol)
+- [E2. Infinite WebSocket Reconnect With No Backoff](#e2-infinite-websocket-reconnect-with-no-backoff)
+- [E3. Docker-Internal Hostname Not Resolvable in Browser](#e3-docker-internal-hostname-not-resolvable-in-browser)
+- [E4. CORS Invalid Combination Silently Killed All WebSocket Connections](#e4-cors-invalid-combination-silently-killed-all-websocket-connections)
+- [E5. React useEffect Infinite Loop From Unstable Callback Dependencies](#e5-react-useeffect-infinite-loop-from-unstable-callback-dependencies)
+- [E6. Next.js Module-Level process.env Reads Captured at Build Time](#e6-nextjs-module-level-processenv-reads-captured-at-build-time)
+
+---
+
+## E1. WebSocket URL Wrong Protocol (http vs ws)
 
 **Component:** `frontend/hooks/useMediaUpdates.ts`, `useStatusUpdates.ts`
 **Severity:** High — WebSocket connections failed immediately in browser
@@ -213,7 +754,7 @@ const wsUrl = `${wsProtocol}://${apiHost}/api/ws/processing-status`
 
 ---
 
-## 6. Infinite WebSocket Reconnect With No Backoff
+## E2. Infinite WebSocket Reconnect With No Backoff
 
 **Component:** `frontend/hooks/useMediaUpdates.ts`, `useStatusUpdates.ts`
 **Severity:** High — hammered the API with connection storms during outages
@@ -255,7 +796,7 @@ ws.onclose = () => {
 
 ---
 
-## 7. Docker-Internal Hostname Not Resolvable in Browser
+## E3. Docker-Internal Hostname Not Resolvable in Browser
 
 **Component:** `frontend/hooks/useStatusUpdates.ts`
 **Severity:** High — WebSocket connections failed in browser even after protocol fix
@@ -285,7 +826,7 @@ if (typeof window !== 'undefined' && apiUrl.includes('api:8000')) {
 
 ---
 
-## 8. CORS Invalid Combination Silently Killed All WebSocket Connections
+## E4. CORS Invalid Combination Silently Killed All WebSocket Connections
 
 **Component:** `api/main.py`
 **Severity:** Critical — every browser WebSocket connection rejected with 400
@@ -325,7 +866,7 @@ app.add_middleware(
 
 ---
 
-## 9. React useEffect Infinite Loop From Unstable Callback Dependencies
+## E5. React useEffect Infinite Loop From Unstable Callback Dependencies
 
 **Component:** `frontend/hooks/useStatusUpdates.ts`, `frontend/hooks/useMediaUpdates.ts`
 **Severity:** Critical — generated 100,000+ WebSocket errors; effectively a client-side DoS
@@ -369,469 +910,7 @@ export function useStatusUpdates({ onUpdate, onError }) {
 
 ---
 
-## 10. Celery Proxy Task Blocking the Indexing Queue
-
-**Component:** `scripts/start-windows-worker-*.ps1`
-**Severity:** High — indexing ground to a halt behind proxy encoding jobs
-
-### What Broke
-
-The Windows Celery worker was started with `--queues=celery,proxies`. The `generate_proxy` task encodes 720p H.265 video to H.264 and took ~13 minutes per file. With a backlog of thousands of videos, proxy jobs monopolised every worker slot and CLIP embedding — the actual indexing work — stalled.
-
-### Root Cause
-
-The `celery` and `proxies` queues shared the same worker pool. A long-running CPU-bound task (video encoding) starved the short-running GPU-bound tasks (CLIP embedding). There was no queue priority or dedicated worker separation.
-
-### Fix
-
-Remove `proxies` from the queues argument on all indexing workers. A dedicated encoding worker can be spun up separately when proxy generation is explicitly needed:
-
-```powershell
-# Before
---queues=celery,proxies
-# After
---queues=celery
-```
-
-### Lesson
-
-**Long-running CPU tasks and short-running GPU tasks must never share the same Celery worker pool.** Separate queues are not enough — the workers consuming those queues must also be separate. Treat proxy generation as a background maintenance job, not part of the critical indexing path.
-
----
-
-## 11. slowapi Crashes on Redis ConnectionError Due to Wrong Hostname in REDIS_URL
-
-**Component:** `api/rate_limit.py`
-**Severity:** Critical — all API requests returned 500; the error was a slowapi bug triggered by a misconfigured env var
-
-### What Broke
-
-`rate_limit.py` used `os.getenv("REDIS_URL", "redis://redis:6379")` for the slowapi storage URI. The `.env` file had `REDIS_URL=redis://redis:6379` — the hostname `redis` never resolved inside the Docker network. Every request caused slowapi to get a `ConnectionError` and pass it to `_rate_limit_exceeded_handler`, which unconditionally accessed `exc.detail` — crashing with `AttributeError: 'ConnectionError' object has no attribute 'detail'`.
-
-### Root Cause
-
-Two compounding bugs: (1) `REDIS_URL` in `.env` used the wrong container hostname; (2) slowapi's middleware has a latent bug where it routes any exception from Redis — including `ConnectionError` — to `_rate_limit_exceeded_handler`, which expects an `HTTPException` subclass with a `.detail` attribute.
-
-### Fix
-
-Prefer `CELERY_BROKER_URL` (which is always set to the correct container hostname in Compose) over `REDIS_URL`, and add `in_memory_fallback_enabled=True` to fail open if Redis is temporarily unreachable:
-
-```python
-_storage_uri = (
-    os.getenv("CELERY_BROKER_URL")          # already correct in Compose env
-    or os.getenv("REDIS_URL", "redis://lumen-redis:6379")
-)
-
-limiter = Limiter(
-    key_func=get_remote_address,
-    storage_uri=_storage_uri,
-    default_limits=[LIMIT_DEFAULT],
-    in_memory_fallback_enabled=True,  # fail open if Redis is temporarily unreachable
-)
-```
-
-### Lesson
-
-**Verify that `REDIS_URL` matches the actual container hostname before deploying.** In Docker Compose stacks, the hostname is the service name. Run `docker exec <api_container> env | grep REDIS` after any env change to confirm. Add `in_memory_fallback_enabled=True` to any slowapi `Limiter` that uses a Redis backend — without it, a transient Redis unavailability crashes every in-flight request.
-
----
-
-## 12. Celery Prefork + CUDA → "Cannot Re-initialize CUDA in Forked Subprocess"
-
-**Component:** `docker-compose.yml`, `worker/ml/embedder.py`
-**Severity:** High — all `process_video` and `process_image` tasks failed immediately
-
-### What Broke
-
-After rebuilding the worker container, all ML tasks failed with `RuntimeError: Cannot re-initialize CUDA in forked subprocess`. Celery's default `prefork` pool forks child worker processes. If CUDA is initialized in the parent process before the fork, child processes inherit the CUDA context and fail when they try to re-initialize it. With `--concurrency=4`, four children all hit this simultaneously.
-
-### Root Cause
-
-Celery's `prefork` pool and CUDA are fundamentally incompatible. Even with `USE_GPU=false` at build time, the worker container runs inside WSL2 which exposes NVIDIA drivers — `torch.cuda.is_available()` returned `True`, and the embedder attempted CUDA initialization before the fork guard could prevent it.
-
-### Fix
-
-Two changes applied together. Use `--pool=solo` (runs tasks sequentially in the main process, no forking) and set `EMBEDDING_DEVICE=cpu` explicitly to prevent CUDA initialization regardless of hardware:
-
-```yaml
-command: sh -c "celery -A celery_app worker --pool=solo ..."
-```
-
-### Lesson
-
-**Any Celery worker that loads a GPU/ML model must use `--pool=solo` or `--pool=threads`.** Prefork + CUDA is fundamentally incompatible because fork copies the CUDA context to child processes. Always set `EMBEDDING_DEVICE=cpu` explicitly when running a CPU-only worker — relying on `torch.cuda.is_available()` auto-detection is fragile in WSL2.
-
----
-
-## 13. task_acks_late=True Causes Duplicate Task Processing on Worker Restart
-
-**Component:** `worker/tasks.py`
-**Severity:** High — caused already-completed files to be fully reprocessed (re-embedded, re-indexed into Qdrant)
-
-### What Broke
-
-A video file that was already `status = "done"` was picked up and fully reprocessed after a worker restart. Celery re-embedded the frames and created duplicate Qdrant points for an already-indexed file.
-
-### Root Cause
-
-`task_acks_late=True` means Celery only acknowledges a task from the broker queue after the task completes. If the worker is restarted while a task is in-flight, the broker redelivers it to the next available worker. The `process_video` and `process_image` tasks had no guard against this — they always ran all processing steps regardless of the file's current `processing_status`.
-
-### Fix
-
-Added an idempotency guard at the very start of each task, before any expensive work:
-
-```python
-# Idempotency guard — redelivered tasks (task_acks_late=True + restart) must not reprocess.
-if media_record.processing_status == "done":
-    log.info("Skipping already-done video: %s", file_path)
-    return {"status": "skipped", "reason": "already_done"}
-```
-
-### Lesson
-
-**`task_acks_late=True` trades task loss for duplicate delivery. Any task that has side effects (DB writes, vector upserts, file I/O) must be idempotent.** The idempotency check must be the very first thing the task does — before any expensive or irreversible operation. The general pattern: read a persistent status flag from the DB; if the work is already done, return early.
-
----
-
-## 14. Stale DB Records From File Renames Leave Tasks Stuck as `pending` Forever
-
-**Component:** `worker/tasks.py`, PostgreSQL `media_files` table
-**Severity:** Medium — files permanently stuck as `pending`, never retried
-
-### What Broke
-
-Multiple files were showing as `pending` in the DB but never being picked up for processing. The files had been renamed on disk. The crawler matches files by their full `file_path` — when a file is renamed, the old path no longer exists on disk and the `pending` record is never updated or retried. The new path is treated as a brand new file, creating a duplicate `done` record.
-
-### Root Cause
-
-The crawler has no rename detection — it only matches by exact `file_path`. Renaming a file on disk orphans its DB record permanently, leaving one `done` record for the new name and one `pending` record for the old name that will never be processed.
-
-### Fix
-
-Identify stale records by cross-referencing `pending` paths against what actually exists on disk, then delete them. For now, manual cleanup is the remediation:
-
-```sql
-DELETE FROM media_files
-WHERE processing_status = 'pending'
-  AND file_path LIKE '<affected_directory>/%';
-```
-
-### Lesson
-
-**The crawler has no rename detection — it only matches by exact `file_path`.** If files are regularly renamed, either implement a periodic cleanup query to delete `pending` records whose paths no longer exist on disk, or track files by inode/content hash rather than path.
-
----
-
-## 15. Windows ffprobe UnicodeDecodeError on Non-Latin File Metadata
-
-**Component:** `worker/ingest/ffmpeg.py`
-**Severity:** Medium — caused worker crashes for files with non-Latin characters in metadata
-
-### What Broke
-
-Files failed with `UnicodeDecodeError: 'cp1252' codec can't decode byte 0x81 in position N`. The worker crashed during `ffprobe` metadata extraction and files were left in `error` status.
-
-### Root Cause
-
-`subprocess.run(..., text=True)` without an explicit `encoding=` argument uses the platform's default encoding. On Windows, this is `cp1252`. ffprobe outputs UTF-8, including metadata fields that may contain Japanese or other non-Latin characters. The Linux worker handled the same files fine because Linux defaults to UTF-8.
-
-### Fix
-
-Added `encoding="utf-8"` explicitly to all `subprocess.run` calls in `ffmpeg.py`, applied to both `probe_media()` and `extract_keyframes()`:
-
-```python
-result = subprocess.run(
-    [...],
-    capture_output=True,
-    text=True,
-    encoding="utf-8",  # prevents cp1252 crash on Windows
-    timeout=30,
-)
-```
-
-### Lesson
-
-**Always specify `encoding="utf-8"` when using `text=True` in `subprocess.run` on cross-platform code.** Never rely on the platform default — Windows cp1252, Linux UTF-8, and macOS UTF-8 will behave differently. Media files routinely contain non-Latin metadata that will silently work on Linux/macOS and crash on Windows without explicit encoding.
-
----
-
-## 16. Qdrant Client API Mismatch
-
-**Component:** `api/routers/search.py`, `worker/tasks.py`
-**Severity:** High — search returned 500 errors after appearing to work in isolation
-
-### What Broke
-
-The code was written against the Qdrant client docs, but the installed package version (`qdrant-client==1.17.0`) had renamed and restructured its search API multiple times across minor versions. Three consecutive attempts were needed: `.search_points()` → `AttributeError`, `.search_vectors()` → `AttributeError`, `.query_points()` with the correct payload shape → success.
-
-### Root Cause
-
-Qdrant's Python client does not follow semantic versioning strictly. Method names changed between 1.x minor versions without deprecation warnings. The online docs were ahead of the pinned package version, so the published examples referenced methods that didn't exist in the installed release.
-
-### Fix
-
-Pin the exact client version in `requirements.txt` and verify the installed version's actual API surface via `help()` in a REPL or the GitHub tag changelog for the pinned version — not the latest hosted docs:
-
-```
-qdrant-client>=1.17.0,<2.0
-```
-
-### Lesson
-
-**Treat third-party SDK docs with suspicion unless verifying against the exact installed version.** The canonical source of truth is `help(client)` or the GitHub tag for the pinned release, not the latest hosted docs. Always pin transitive dependencies and note the version in a comment next to the call site.
-
----
-
-## 17. Worker RAM Thrash — Load Average 23.75
-
-**Component:** `docker-compose.yml`, `worker/celery_app.py`
-**Severity:** High — host machine became unresponsive; overall throughput collapsed
-
-### What Broke
-
-Celery defaulted to `--concurrency=24` (one worker per CPU core). Each worker loaded its own copy of the CLIP model into RAM (~600 MB) and spawned FFmpeg subprocesses (~400 MB each for 4K video). With 24 workers: CLIP alone consumed 14.4 GB, FFmpeg peaks added 9.6 GB — exceeding available RAM and causing heavy swap thrashing.
-
-### Root Cause
-
-Default Celery concurrency is based on CPU count, which is correct for I/O-bound tasks but catastrophically wrong for memory-heavy ML workloads. Each worker was also never recycled, so PyTorch and FFmpeg memory leaks accumulated over the lifetime of the process.
-
-### Fix
-
-```
-CELERY_CONCURRENCY=4              # floor(free_RAM_GB / ~2 GB per worker)
-worker_max_tasks_per_child=50     # recycle child after 50 tasks (clears leaks)
-worker_max_memory_per_child=1500000  # hard 1.5 GB ceiling per child
-```
-
-Load average dropped from 23.75 → 8.59.
-
-### Lesson
-
-**Default configurations assume a class of workload.** For memory-heavy ML inference, the right concurrency is `floor(RAM / model_size)`, not CPU count. `max_tasks_per_child` is the Celery equivalent of connection pool recycling — without it, PyTorch's CUDA allocator and FFmpeg's buffer pools cause gradual memory growth that only appears after hours of operation.
-
----
-
-## 18. Blocking Proxy Encode in Critical Pipeline Path
-
-**Component:** `worker/tasks.py`
-**Severity:** High — 563 video records stuck in `processing`; zero vectors in Qdrant after hours
-
-### What Broke
-
-`process_video` called `apply_faststart()` synchronously before frame extraction. For 4K source files (5–20 GB), this transcode operation took hours per file. With 6 Celery workers and 6 large files, all worker slots were occupied 100% of the time encoding proxies. Frame extraction and Qdrant upserts — the operations that actually produce search results — never ran.
-
-### Root Cause
-
-Three compounding design decisions: (1) a variable-cost blocking step placed before fast invariant steps — proxy encoding cost scales from seconds to hours, while frame extraction and embedding are comparatively fast; (2) no distinction by codec — H264 sources only need a container remux (~30s), not a full transcode (hours); (3) no escape hatch for large files.
-
-### Fix
-
-Three changes applied together:
-
-```
-Option 1: Decouple — generate_proxy dispatched async to 'proxies' queue
-          process_video finishes in minutes regardless of source size
-
-Option 2: Duration threshold — non-H264 files > PROXY_MAX_DURATION_SECS
-          (default 3600s) are skipped; full movies don't block the pipeline
-
-Option 3: Codec-aware routing — H264 sources use -c copy (stream copy, ~30s)
-          only non-H264 sources pay the full transcode cost
-```
-
-### Lesson
-
-**Place cheap invariant operations before expensive variable-cost ones.** When you have a step whose cost can range from seconds to hours depending on input, that step belongs at the end of the chain or in a separate async lane — never before steps that must complete for the pipeline to make progress.
-
----
-
-## 19. `os.replace()` Fails Across Docker Volume Mount Points
-
-**Component:** `worker/tasks.py`, `worker/ingest/ffmpeg.py`
-**Severity:** High — all `generate_proxy` tasks for HEVC source files failed immediately after FFmpeg succeeded
-
-### What Broke
-
-`apply_faststart()` wrote the FFmpeg output to `tempfile.mktemp(dir="/tmp")`, then called `os.replace(str(tmp_path), str(dest))` to move it to `/mnt/proxies/...`. This raises `OSError: [Errno 18] Invalid cross-device link` whenever source and destination are on different filesystems.
-
-### Root Cause
-
-`os.replace()` is backed by POSIX `rename(2)` — atomic and instant within one filesystem, but always `EXDEV` across filesystems. Docker volume mounts (`/tmp` on the container's overlay filesystem, `/mnt/proxies` on a bind-mounted host path) are always different filesystems. `OSError` was also not in `autoretry_for=(FFmpegError,)`, so tasks went straight to FAILURE with 0 retries.
-
-### Fix
-
-```python
-# Before — fails across volume mounts:
-os.replace(str(tmp_path), str(dest))
-
-# After — copy+delete fallback on cross-device move:
-import shutil
-shutil.move(str(tmp_path), str(dest))
-```
-
-Also updated `autoretry_for=(FFmpegError, OSError)` so future OS-level errors retry with exponential backoff.
-
-### Lesson
-
-**`os.replace()` is POSIX `rename()` — atomic within one filesystem, but always fails across filesystems.** Docker volume mounts are separate filesystems by definition. Whenever source and destination paths could be on different mounts, use `shutil.move()` which falls back to copy+unlink. Also: include `OSError` in `autoretry_for` for I/O-heavy tasks — OS-level I/O failures are transient more often than they are permanent.
-
----
-
-## 20. `os.getenv('VAR', default)` Does Not Guard Against Empty String
-
-**Component:** `worker/tasks.py`, `worker/ingest/ffmpeg.py`
-**Severity:** High — `process_video` tasks stuck in perpetual RETRY with `ValueError`
-
-### What Broke
-
-`KEYFRAME_RESOLUTION` was declared in `docker-compose.second.yml` as `${KEYFRAME_RESOLUTION:-224}`. The host shell had this variable exported as an empty string. The `:-` default in shell substitution fills in a default only when the variable is **unset or null** — an exported empty-string variable is considered set. The container received `KEYFRAME_RESOLUTION=""`, then `int(os.getenv("KEYFRAME_RESOLUTION", "224"))` returned `int("")` → `ValueError`. Because `autoretry_for=(Exception,)` covers `ValueError`, tasks retried on exponential backoff indefinitely.
-
-### Root Cause
-
-`os.getenv('VAR', 'fallback')` fires only when the key is absent from `os.environ`. An empty-string value is returned as-is. Any subsequent `int()` or `float()` cast will raise.
-
-### Fix
-
-```python
-# Before — silently passes empty string to int():
-resolution = int(os.getenv("KEYFRAME_RESOLUTION", "224"))
-
-# After — empty string is falsy, falls back to default:
-resolution = int(os.getenv("KEYFRAME_RESOLUTION") or "224")
-```
-
-Applied to all five affected variables across `tasks.py` and `ingest/ffmpeg.py`.
-
-### Lesson
-
-**`os.getenv('VAR', default)` and shell `${VAR:-default}` share the same footgun: neither protects against an explicitly-set empty string.** The Python `or` idiom is more defensive because it treats any falsy value (empty string, zero, None) as "use the fallback". For configuration values that will be passed to `int()` or `float()`, always use `os.getenv('VAR') or 'default'`.
-
----
-
-## 21. CLIP Model / Qdrant Collection Dimension Mismatch — Silent Backlog
-
-**Component:** `worker/tasks.py`, `worker/ml/embedder.py`
-**Severity:** High — growing `error` count across restarts before it was caught
-
-### What Broke
-
-The Qdrant `media_vectors` collection was recreated at 768 dimensions to match `clip-ViT-L-14`. But `.env` still had `CLIP_MODEL_NAME=clip-ViT-B-32` (512-dim). The worker loaded ViT-B-32 and produced 512-dim vectors, which Qdrant rejected with `INVALID_ARGUMENT`. Because `autoretry_for=(Exception,)` covers all exceptions, every rejected task retried 5× before landing in `error`. The error count grew from 2 → 169 → 269 → 502 across restarts before anyone caught it.
-
-### Root Cause
-
-The collection and the model env var were changed in separate steps with no cross-check. There is no startup assertion that `embedder.embedding_dim == collection.vector_size`. `INVALID_ARGUMENT` errors are not distinguishable from transient errors by the current retry logic, so they waste ~10 minutes of worker time per file before permanent failure.
-
-### Fix
-
-Updated `.env` (`CLIP_MODEL_NAME=clip-ViT-L-14`), reset 502 `INVALID_ARGUMENT` errors to `pending`, and added a startup assertion to catch mismatches loudly at start rather than silently at scale:
-
-```python
-qdrant_info = qdrant_client.get_collection(QDRANT_COLLECTION_NAME)
-collection_dim = qdrant_info.config.params.vectors.size
-if collection_dim != embedder.embedding_dim:
-    raise RuntimeError(
-        f"Dimension mismatch: Qdrant collection is {collection_dim}-dim "
-        f"but {embedder.model_name} produces {embedder.embedding_dim}-dim vectors. "
-        f"Check CLIP_MODEL_NAME in .env."
-    )
-```
-
-### Lesson
-
-**When you change a schema — whether a database column type or a vector dimension — every producer of that schema must be updated atomically.** Add a startup assertion that checks the producer's output format against the store's expected format before any work begins. Fail loud at startup, not silently at scale.
-
----
-
-## 22. DB Schema Drift Between `init-db.sql` and Migration Scripts
-
-**Component:** PostgreSQL `media_files` table, `init-db.sql`
-**Severity:** Critical — workers crashed immediately on every task on a fresh deploy
-
-### What Broke
-
-On a fresh cloud deploy, workers crashed immediately with `sqlalchemy.exc.ProgrammingError: column media_files.embedding_started_at does not exist`. The dev machine had the column because it was added via migrations and manual `ALTER TABLE` commands. The cloud server had a fresh Postgres container that only ran `init-db.sql`, which was never updated as observability columns were added in later PRs.
-
-### Root Cause
-
-Migration scripts and `init-db.sql` diverged. There was one migration script for `model_version` but nothing for `embedding_started_at`, `worker_id`, `frame_cache_hit`, or `embedding_ms` — and `init-db.sql` had none of them. Fresh deploys are silently broken whenever the schema is extended without keeping `init-db.sql` in sync.
-
-### Fix
-
-Manual `ALTER TABLE … ADD COLUMN IF NOT EXISTS` on the running container, then added all 5 columns to `init-db.sql` for future fresh deploys, and created `scripts/migrate_add_observability_columns.sql` for upgrading existing DBs.
-
-### Lesson
-
-**Migration scripts and the init script are two separate code paths that must stay in sync.** Every `ALTER TABLE` that adds a column also gets a matching change to `init-db.sql`. The smell-check before merging any schema PR: "if someone clones this repo today and runs `docker compose up` for the first time, will `init-db.sql` produce the same schema as a fully-migrated dev DB?"
-
----
-
-## 23. FastAPI `List[float]` on a POST Endpoint Is a Body Param, Not a Query Param
-
-**Component:** `api/routers/search.py`
-**Severity:** Medium — 14 tests all returned 422 Unprocessable Entity
-
-### What Broke
-
-14 new tests for `POST /api/search-vector` all returned 422. The vector was being sent as repeated query params (`?vector=0.1&vector=0.2&…`) following the same pattern used for scalars like `limit`. FastAPI's parameter resolution rules for POST endpoints treat `List[float]` as a body param, not a query param — it expects a raw JSON array body.
-
-### Root Cause
-
-FastAPI has a nuanced rule: the binding location of a parameter depends on its *type*, not just the presence/absence of `Body()`. Scalar types are query params by default on POST; collection types become body params. This is documented but easy to miss when writing tests against existing endpoints.
-
-### Fix
-
-```python
-# Wrong — 422 on every call
-client.post("/api/search-vector", params=[("vector", 0.1), ("vector", 0.2)])
-
-# Correct — raw JSON array body
-client.post("/api/search-vector", json=[0.1, 0.2, 0.3])
-
-# Scalar query params still work alongside the JSON body
-client.post("/api/search-vector", json=[0.1, 0.2], params={"limit": 5})
-```
-
-### Lesson
-
-**FastAPI's implicit parameter binding has non-obvious rules for collection types.** When a test returns 422 and the data looks correct, check the OpenAPI schema first — FastAPI generates it automatically and will show exactly what it expects where. `/docs` showing `vector` under `requestBody` (not `parameters`) immediately explains the 422.
-
----
-
-## 24. Rate Limiter Redis Connection Kills All Tests in CI (109 failures)
-
-**Component:** `api/rate_limit.py`, `conftest.py`
-**Severity:** High — 109 out of 135 tests failed in CI; passed locally
-
-### What Broke
-
-`rate_limit.py` initialises a `slowapi.Limiter` at module import time with `storage_uri = os.getenv("REDIS_URL", "redis://redis:6379")`. The `conftest.py` overrode this to `redis://localhost:6379` for local dev. On the GitHub Actions `ubuntu-latest` runner there is no Redis service — every request that hit a rate-limited endpoint raised `redis.exceptions.ConnectionError`. The module docstring even claimed it "falls back gracefully to in-memory if Redis is unreachable" — this was incorrect.
-
-### Root Cause
-
-Two compounding mistakes: `conftest.py` defaulted `REDIS_URL` to a real Redis address, importing a live-service dependency into a supposedly self-contained test suite; and a misleading code comment implied automatic fallback that doesn't exist in `slowapi`.
-
-### Fix
-
-```python
-# conftest.py — use in-memory backend, zero external dependencies
-os.environ.setdefault("REDIS_URL", "memory://")
-
-# ci.yml — belt-and-suspenders in case env is already set
-- name: Run pytest
-  env:
-    REDIS_URL: memory://
-  run: pytest ...
-```
-
-`limits` (the backend library used by `slowapi`) supports `memory://` as a fully functional in-process counter store.
-
-### Lesson
-
-**"Passes locally" is not evidence that a test is self-contained** — it may just mean the developer machine happens to have a Redis process running. Every external service a test touches either needs to be in a `docker-compose` for the test runner, or needs to be mocked. Audit every `os.getenv()` default in `conftest.py` and ask: "does this URL actually exist on a clean CI runner?"
-
----
-
-## 25. Next.js Module-Level `process.env` Reads Captured at Build Time
+## E6. Next.js Module-Level `process.env` Reads Captured at Build Time
 
 **Component:** `frontend/app/api/**/*.ts`
 **Severity:** High — API key was never forwarded; all authenticated requests returned 401
@@ -860,26 +939,3 @@ export async function POST(request: NextRequest) {
 ### Lesson
 
 **Module-level `process.env` reads in Next.js API routes are a footgun: move secrets inside the handler where they're evaluated at request time, not build time.** The clue is that `docker compose exec frontend node -e 'console.log(process.env.BACKEND_API_KEY)'` prints the key correctly, but requests still 401 — that rules out the container env and points to the compiled output.
-
----
-
-## 26. `qdrant-client` Minor Version Removed `.search()` — Mocked Tests Passed, Prod Returned 0 Results
-
-**Component:** `api/agent/steps.py`, `api/requirements.txt`
-**Severity:** High — agent endpoint always returned 0 results on prod; direct search endpoint worked fine
-
-### What Broke
-
-After merging the v2.0.0 multi-agent feature, `POST /api/agent/query` always returned 0 results on prod. The agent coordinator returned in 62ms — too fast for CLIP inference — meaning the search node was silently short-circuiting. `qdrant-client` was pinned to `>=1.7` in `requirements.txt`. Prod had installed `1.17.0`, which removed `QdrantClient.search()` entirely in favor of `query_points()`. All tests mock Qdrant at the dependency-injection layer, so the mock's `.search()` attribute worked fine in CI. On prod the real client raised `AttributeError`, caught by a broad `except Exception` in `QdrantRetrieveStep` and silently turned into an empty result list.
-
-### Root Cause
-
-Open-ended version pinning (`>=1.7`) allowed the prod install to pull in a breaking minor-version change. Mocking at the injection layer — rather than testing the real client method path — meant the breaking rename was invisible in CI. The broad `except Exception` in the search step converted a hard failure into a silent empty result.
-
-### Fix
-
-Replace `self._qdrant.search(...)` with `self._qdrant.query_points(...)`. Pin to an exact minor: `qdrant-client>=1.17.0,<2.0`. Add `threshold`/`limit` fields to `AgentState` TypedDict and thread them through `search_agent_run()` (they were silently ignored).
-
-### Lesson
-
-**Pin third-party SDK versions to an exact minor version — not open-ended `>=X.Y`.** Add a smoke test that calls the real client method path (even with a local Qdrant via a CI service container) to catch removed APIs. When a handler catches `Exception` and returns an empty result, always log a warning — silent failures are extremely hard to diagnose on prod.
