@@ -20,6 +20,9 @@ A living record of every significant bug, outage, and architectural misstep enco
 23. [Playlist 400 — S3 Object Keys Not in ALLOWED_ROOTS](#23-playlist-400--s3-object-keys-not-in-allowed_roots)
 24. [Celery Prefork + CUDA → "Cannot Re-initialize CUDA in Forked Subprocess"](#24-celery-prefork--cuda--cannot-re-initialize-cuda-in-forked-subprocess)
 25. [Qdrant Healthcheck Always Fails — No `curl` or `wget` in Image](#25-qdrant-healthcheck-always-fails--no-curl-or-wget-in-image)
+26. [task_acks_late=True Causes Duplicate Task Processing on Worker Restart](#26-task_acks_latetrue-causes-duplicate-task-processing-on-worker-restart)
+27. [Stale DB Records From File Renames Leave Tasks Stuck as `pending` Forever](#27-stale-db-records-from-file-renames-leave-tasks-stuck-as-pending-forever)
+28. [Windows ffprobe UnicodeDecodeError on Non-Latin File Metadata](#28-windows-ffprobe-unicodedecodeerror-on-non-latin-file-metadata)
 
 ---
 
@@ -1051,3 +1054,115 @@ This opens a TCP connection to port 6333. Exit code 0 means the port is open and
 ### Lesson
 
 **Always verify that the tools used in a healthcheck exist inside the target container.** Minimal images (distroless, alpine, vendor-provided) routinely omit `curl`, `wget`, and even `sh`. Before writing a healthcheck, run `docker exec <container> which curl` to confirm. The bash `/dev/tcp` trick is a reliable fallback for pure TCP port checks in any container that has `bash`.
+
+---
+
+## 26. task_acks_late=True Causes Duplicate Task Processing on Worker Restart
+
+**Commit(s):** `945cf20` — 2026-03-20
+**Component:** `worker/tasks.py`
+**Severity:** High — caused already-completed files to be fully reprocessed (re-embedded, re-indexed into Qdrant)
+
+### What Broke
+
+A video file that was already in `status = "done"` was picked up and fully reprocessed after a worker restart. Celery re-embedded the frames and created duplicate Qdrant points for an already-indexed file.
+
+### Root Cause
+
+`task_acks_late=True` is set on the worker. This means Celery only acknowledges (removes) a task from the broker queue **after** the task completes — not when it starts. If the worker is restarted while a task is in-flight, the broker redelivers it to the next available worker. This guarantees at-least-once delivery, but without an idempotency check the task executes twice.
+
+The `process_video` and `process_image` tasks had no guard against this — they always ran all processing steps regardless of the file's current `processing_status`.
+
+### Fix
+
+Added an idempotency guard at the very start of `process_video` and `process_image`, before any expensive work:
+
+```python
+# Idempotency guard — redelivered tasks (task_acks_late=True + restart) must not reprocess.
+if media_record.processing_status == "done":
+    log.info("Skipping already-done video: %s", file_path)
+    return {"status": "skipped", "reason": "already_done"}
+```
+
+### Lesson
+
+**`task_acks_late=True` trades task loss for duplicate delivery. Any task that has side effects (DB writes, vector upserts, file I/O) must be idempotent.** The idempotency check must be the very first thing the task does — before any expensive or irreversible operation. The general pattern: read a persistent status flag from the DB; if the work is already done, return early.
+
+---
+
+## 27. Stale DB Records From File Renames Leave Tasks Stuck as `pending` Forever
+
+**Commit(s):** ops — 2026-03-20
+**Component:** `worker/tasks.py`, PostgreSQL `media_files` table
+**Severity:** Medium — files permanently stuck as `pending`, never retried
+
+### What Broke
+
+Multiple files were showing as `pending` in the DB but never being picked up for processing. The crawler never re-dispatched them.
+
+### Root Cause
+
+The files had been renamed on disk. The crawler matches files by their full `file_path`. When a file is renamed:
+
+1. The old path no longer exists on disk → the crawler never sees it again → the `pending` record is never updated or retried.
+2. The new path is treated as a brand new file → a new `done` record is created for it.
+
+The result: two DB records for the same content — one `done` (new name), one `pending` (old name) stuck forever.
+
+### Fix
+
+Identify stale records by cross-referencing `pending` paths against what actually exists on disk, then delete them:
+
+```sql
+DELETE FROM media_files
+WHERE processing_status = 'pending'
+  AND file_path LIKE '<affected_directory>/%';
+```
+
+### Lesson
+
+**The crawler has no rename detection — it only matches by exact `file_path`.** Renaming a file on disk orphans its DB record permanently. If files are regularly renamed, either: (a) implement a periodic cleanup query to delete `pending` records whose paths no longer exist on disk, or (b) track files by inode/content hash rather than path. For now, manual cleanup is the remediation.
+
+---
+
+## 28. Windows ffprobe UnicodeDecodeError on Non-Latin File Metadata
+
+**Commit(s):** `945cf20` — 2026-03-20
+**Component:** `worker/ingest/ffmpeg.py`
+**Severity:** Medium — caused worker crashes for files with non-Latin characters in metadata (Japanese titles, etc.)
+
+### What Broke
+
+Files failed with:
+
+```
+UnicodeDecodeError: 'cp1252' codec can't decode byte 0x81 in position N: ...
+```
+
+The worker crashed during `ffprobe` metadata extraction and the files were left in `error` status.
+
+### Root Cause
+
+`subprocess.run(..., text=True)` without an explicit `encoding=` argument uses the platform's default encoding. On Windows, this is `cp1252` (Windows-1252). ffprobe outputs UTF-8, including metadata fields that may contain Japanese or other non-Latin characters. When a byte invalid in cp1252 appeared in the output, Python raised `UnicodeDecodeError`.
+
+The Linux worker handled the same files fine because Linux defaults to UTF-8.
+
+### Fix
+
+Added `encoding="utf-8"` explicitly to all `subprocess.run` calls in `ffmpeg.py`:
+
+```python
+result = subprocess.run(
+    [...],
+    capture_output=True,
+    text=True,
+    encoding="utf-8",  # prevents cp1252 crash on Windows
+    timeout=30,
+)
+```
+
+Applied to both `probe_media()` and `extract_keyframes()`.
+
+### Lesson
+
+**Always specify `encoding="utf-8"` when using `text=True` in `subprocess.run` on cross-platform code.** Never rely on the platform default — Windows cp1252, Linux UTF-8, and macOS UTF-8 will behave differently. Media files routinely contain non-Latin metadata (Japanese, Korean, Arabic titles) that will silently work on Linux/macOS and crash on Windows without explicit encoding.
