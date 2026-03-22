@@ -26,6 +26,7 @@ A living record of every significant bug, outage, and architectural misstep enco
   - [B10. FastAPI List[float] on POST Endpoint Is a Body Param](#b10-fastapi-listfloat-on-post-endpoint-is-a-body-param)
 - [C — Performance & Optimization](#c--performance--optimization)
   - [C1. Worker RAM Thrash](#c1-worker-ram-thrash)
+  - [C2. Thumbnail API 2.9s Latency — Dual-Layer Cache](#c2-thumbnail-api-29s-latency--dual-layer-cache)
 - [D — Production Troubleshooting](#d--production-troubleshooting)
   - [D1. Stale DB Records From File Renames Leave Tasks Stuck as pending](#d1-stale-db-records-from-file-renames-leave-tasks-stuck-as-pending)
   - [D2. Windows ffprobe UnicodeDecodeError on Non-Latin File Metadata](#d2-windows-ffprobe-unicodedecodeerror-on-non-latin-file-metadata)
@@ -573,6 +574,7 @@ client.post("/api/search-vector", json=[0.1, 0.2], params={"limit": 5})
 ## C — Performance & Optimization
 
 - [C1. Worker RAM Thrash](#c1-worker-ram-thrash)
+- [C2. Thumbnail API 2.9s Latency — Dual-Layer Cache](#c2-thumbnail-api-29s-latency--dual-layer-cache)
 
 ---
 
@@ -602,6 +604,69 @@ Load average dropped from 23.75 → 8.59.
 ### Lesson
 
 **Default configurations assume a class of workload.** For memory-heavy ML inference, the right concurrency is `floor(RAM / model_size)`, not CPU count. `max_tasks_per_child` is the Celery equivalent of connection pool recycling — without it, PyTorch's CUDA allocator and FFmpeg's buffer pools cause gradual memory growth that only appears after hours of operation.
+
+---
+
+## C2. Thumbnail API 2.9s Latency — Dual-Layer Cache
+
+**Component:** `api/routers/ingest.py`, Cloudflare Cache Rules
+**Severity:** Medium — 1,066 production requests averaging 2.9s, P95 4.87s; noticeable UI lag on thumbnail grid load
+
+### What Broke
+
+Audit logs revealed `/api/thumbnail` was the slowest endpoint by a wide margin. Every request — including repeated thumbnails for the same video at the same timestamp — ran FFmpeg end-to-end, extracting a JPEG frame from scratch each time. With 1,066 origin hits averaging 2.94s, the thumbnail grid felt sluggish.
+
+### Root Cause
+
+No caching existed at any layer:
+1. **No CDN caching**: Cloudflare was configured as DNS-only for the thumbnail path — every request passed through to the origin server.
+2. **No server-side caching**: Each `GET /api/thumbnail?path=…&t=…` call unconditionally spawned an FFmpeg subprocess, even for identical `(path, t)` combinations loaded in the same browser session.
+
+### Fix
+
+Two-layer caching:
+
+**Layer 1 — Cloudflare Edge Cache Rule** (eliminates origin hits entirely for repeat requests):
+- Rule: `http.request.full_uri wildcard "https://lumen.danhle.net/api/thumbnail*"`
+- Edge TTL: 1 day, eligible for cache
+- `Cache-Control: public, max-age=86400` response header instructs Cloudflare to store the response
+
+**Layer 2 — Server-side LRU Cache** (handles cold misses that reach origin):
+```python
+_THUMB_CACHE_MAX = int(os.getenv("THUMBNAIL_CACHE_MAX", "500"))
+_thumb_cache: OrderedDict[tuple, bytes] = OrderedDict()
+_thumb_cache_lock = threading.Lock()
+
+cache_key = (path, round(seek, 1))
+cached = _cache_get(cache_key)
+if cached is not None:
+    return Response(content=cached, media_type="image/jpeg",
+        headers={"Cache-Control": "public, max-age=86400", "X-Cache": "HIT"})
+# ... ffmpeg call ...
+_cache_set(cache_key, stdout)
+return Response(..., headers={..., "X-Cache": "MISS"})
+```
+
+### Results (stress test: 20 sequential requests, same URL)
+
+| | Before | After |
+|---|---|---|
+| Origin hits (1,066 requests) | 1,066 | ~2 (Cloudflare served the rest) |
+| Avg origin latency | 2,938ms | 868ms |
+| P95 origin latency | 4,872ms | 892ms |
+| Request 1 (cold) | 2,030ms | 2,030ms |
+| Requests 2–20 (same URL) | 2,900ms avg | ~85ms (Cloudflare HIT) |
+
+18 of 20 stress test requests were served by Cloudflare's edge — those never appeared in `audit_logs` at all because they never reached the origin. The 2 that did reach origin averaged 868ms (down from 2.9s).
+
+### Lesson
+
+**Measure before optimizing.** The `audit_logs` table (`endpoint`, `response_ms`, `PERCENTILE_CONT(0.95)`) made it trivial to find the worst offender. Once identified, the fix was a 15-minute two-layer approach:
+
+1. **CDN first** — eliminates the problem at the edge for repeat requests. Zero code change.
+2. **In-process LRU second** — handles misses and cross-session uniqueness with a stdlib `OrderedDict` + `threading.Lock`. No Redis, no external dependency.
+
+The `X-Cache: HIT/MISS` header on responses gives instant observability into which layer is serving each request.
 
 ---
 
