@@ -7,17 +7,28 @@ Qdrant. Labels are auto-assigned from inspection milestone dates.
 
 Usage:
     pip install qdrant-client numpy pandas scikit-learn matplotlib joblib
-    python scripts/train_phase_classifier.py
+    python scripts/train_phase_classifier.py [--eval-strategy STRATEGY]
+
+Eval strategies:
+    random    — stratified random 80/20 split (baseline, default)
+    temporal  — within each phase, train on early frames, test on late frames
+    boundary  — test only on frames within 14 days of a phase transition
+    camera    — train on Pixel (Construction Timeline), test on DJI (Construction Phase)
+
+    all       — run all four strategies and print a comparison table
 
 Output:
-    models/phase_classifier.joblib   — trained model + label encoder
-    models/phase_classifier_report.txt — classification report
-    models/phase_classifier_cm.png   — confusion matrix heatmap
+    models/phase_classifier.joblib      — trained model + label encoder (from --eval-strategy or random)
+    models/phase_classifier_report.txt  — classification report
+    models/phase_classifier_cm.png      — confusion matrix heatmap
 """
 
+import argparse
 import os
 import re
 import sys
+sys.stdout.reconfigure(encoding="utf-8")
+import time
 from pathlib import Path
 
 import joblib
@@ -30,24 +41,35 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import classification_report, confusion_matrix, ConfusionMatrixDisplay
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import LabelEncoder
-from sklearn.svm import SVC
 
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
-QDRANT_HOST       = os.environ.get("QDRANT_HOST", "localhost")
-QDRANT_PORT       = int(os.environ.get("QDRANT_PORT", 6333))
-COLLECTION_NAME   = os.environ.get("QDRANT_COLLECTION_NAME", "media_vectors")
+QDRANT_HOST          = os.environ.get("QDRANT_HOST", "localhost")
+QDRANT_PORT          = int(os.environ.get("QDRANT_PORT", 6333))
+COLLECTION_NAME      = os.environ.get("QDRANT_COLLECTION_NAME", "media_vectors")
 CONFIDENCE_THRESHOLD = 0.85
+BOUNDARY_DAYS        = 14  # days around each phase transition to use as boundary test set
 
 # Phase windows: (label, start_inclusive, end_inclusive)
-# Dates are inspection/completion dates = END of each phase.
-# Phase 3/4 overlap: both trades on-site simultaneously Feb 12–19 2026.
+# Boundaries derived from actual inspection approval dates.
+#
+# Phase 1: Site Mobilization  -> Sep 1   – Oct 8, 2025
+# Phase 2: Foundation         -> Oct 9   – Nov 6, 2025   (Underground plumbing Oct 29 [x], Footing/Steel Nov 6 [x])
+# Phase 3a: Rough Framing     -> Nov 7   – Feb 2, 2026   (Floor joists Nov 26 [x] -> Shear wall + Roof framing/sheathing Feb 2 [x])
+# Phase 3b: MEP & Framing     -> Feb 3   – Feb 19, 2026  (MEPS Feb 17 [x], Framing final sign-off Feb 20 [x])
+# Phase 4: Exterior Finish    -> Feb 20  – Mar 2, 2026   (Interior lath Feb 20 [x], Exterior lath Feb 23 [x], Insulation Feb 25 [x], Drywall Mar 2 [x])
+# Phase 5: Final Completion   -> Mar 3   – Dec 31, 2026
+#
+# Splitting the former monolithic Phase 3 (Nov 7 – Feb 19) at Feb 2 addresses the
+# temporal accuracy gap: early framing (open structure) is visually distinct from
+# MEP rough-in (enclosed structure with trades inside).
 PHASE_WINDOWS = [
     ("Phase 1: Site Mobilization",  "2025-09-01", "2025-10-08"),
     ("Phase 2: Foundation",         "2025-10-09", "2025-11-06"),
-    ("Phase 3: Rough MEP & Framing","2025-11-07", "2026-02-19"),  # MEP + framing done in tandem
-    ("Phase 4: Exterior",           "2026-02-20", "2026-03-02"),
+    ("Phase 3a: Rough Framing",     "2025-11-07", "2026-02-02"),
+    ("Phase 3b: MEP & Framing",     "2026-02-03", "2026-02-19"),
+    ("Phase 4: Exterior Finish",    "2026-02-20", "2026-03-02"),
     ("Phase 5: Final Completion",   "2026-03-03", "2026-12-31"),
 ]
 
@@ -77,6 +99,7 @@ def _date_from_filename(file_path: str) -> pd.Timestamp | None:
 # Step 1 — Pull all vectors from Qdrant
 # ---------------------------------------------------------------------------
 def fetch_vectors(client: QdrantClient) -> pd.DataFrame:
+    t0 = time.perf_counter()
     print(f"Connecting to Qdrant at {QDRANT_HOST}:{QDRANT_PORT} …")
     # Only train on verified construction media — curated folders that contain
     # nothing but construction photos/videos.  Pixel 9 monthly backups and other
@@ -88,7 +111,6 @@ def fetch_vectors(client: QdrantClient) -> pd.DataFrame:
     ])
     rows = []
     offset = None
-    batch = 0
 
     while True:
         records, next_offset = client.scroll(
@@ -111,23 +133,24 @@ def fetch_vectors(client: QdrantClient) -> pd.DataFrame:
                 raw = r.payload.get("created_at")
                 ts = pd.to_datetime(raw, errors="coerce", utc=True) if raw else None
             rows.append({
-                "id":         r.id,
-                "vector":     r.vector,
-                "created_at": ts,
-                "file_path":  fp,
-                "file_type":  r.payload.get("file_type"),
+                "id":           r.id,
+                "vector":       r.vector,
+                "created_at":   ts,
+                "file_path":    fp,
+                "file_type":    r.payload.get("file_type"),
+                "yolo_labels":  r.payload.get("yolo_labels") or [],
+                "yolo_count":   r.payload.get("yolo_object_count") or 0,
             })
 
-        batch += 1
         print(f"  Fetched {len(rows):,} records …", end="\r")
 
         if next_offset is None:
             break
         offset = next_offset
 
-    print(f"\nTotal records fetched: {len(rows):,}")
-    df = pd.DataFrame(rows)
-    return df
+    elapsed = time.perf_counter() - t0
+    print(f"\nTotal records fetched: {len(rows):,}  ({elapsed:.1f}s)")
+    return pd.DataFrame(rows)
 
 
 # ---------------------------------------------------------------------------
@@ -145,6 +168,7 @@ def assign_phases(created_at) -> list:
 
 
 def label_data(df: pd.DataFrame) -> pd.DataFrame:
+    t0 = time.perf_counter()
     df["phases"] = df["created_at"].apply(assign_phases)
     labeled = (
         df[df["phases"].map(len) > 0]
@@ -152,26 +176,189 @@ def label_data(df: pd.DataFrame) -> pd.DataFrame:
         .rename(columns={"phases": "phase"})
         .dropna(subset=["vector"])
     )
-    print("\nLabel distribution:")
+    elapsed = time.perf_counter() - t0
+    print(f"\nLabel distribution:  ({elapsed:.2f}s)")
     print(labeled["phase"].value_counts().to_string())
     return labeled
 
 
 # ---------------------------------------------------------------------------
-# Step 3 — Train
+# Step 2b — Build YOLO multi-hot features
 # ---------------------------------------------------------------------------
-def train(labeled: pd.DataFrame):
-    X = np.vstack(labeled["vector"].values)   # (n_samples, 768)
+def build_yolo_features(labeled: pd.DataFrame) -> tuple:
+    """
+    Build a multi-hot + count feature matrix from yolo_labels / yolo_count.
+    Returns (feature_matrix np.ndarray, vocab list[str]).
+
+    Each row: [0/1 per COCO class ... | object_count_normalised]
+    Vocab is derived from all labels present in the dataset (typically a
+    subset of the 80 COCO classes that YOLO actually detected).
+    """
+    # Build vocab from training data
+    all_labels: set = set()
+    for labels in labeled["yolo_labels"]:
+        if isinstance(labels, list):
+            all_labels.update(labels)
+    vocab = sorted(all_labels)
+    vocab_index = {lbl: i for i, lbl in enumerate(vocab)}
+    n_vocab = len(vocab)
+
+    max_count = labeled["yolo_count"].max() or 1.0  # for normalisation
+
+    rows = []
+    for _, row in labeled.iterrows():
+        vec = np.zeros(n_vocab + 1, dtype=np.float32)
+        for lbl in (row["yolo_labels"] or []):
+            if lbl in vocab_index:
+                vec[vocab_index[lbl]] = 1.0
+        vec[-1] = float(row["yolo_count"] or 0) / max_count
+        rows.append(vec)
+
+    feat_matrix = np.vstack(rows)
+    print(f"\nYOLO features: {n_vocab} classes detected, {feat_matrix.shape[1]} dims total")
+    print(f"  Classes: {', '.join(vocab[:20])}{'...' if len(vocab) > 20 else ''}")
+    return feat_matrix, vocab
+
+
+# ---------------------------------------------------------------------------
+# Step 3 — Split strategies
+# ---------------------------------------------------------------------------
+def split_random(labeled: pd.DataFrame):
+    """Baseline: stratified random 80/20."""
+    X = np.vstack(labeled["features"].values)
     le = LabelEncoder()
     y = le.fit_transform(labeled["phase"])
-
-    print(f"\nTraining on {len(X):,} samples, {len(le.classes_)} classes, {X.shape[1]} dims")
-
     X_train, X_test, y_train, y_test = train_test_split(
         X, y, test_size=0.2, random_state=42, stratify=y
     )
+    return X_train, X_test, y_train, y_test, le
 
-    # Random Forest — handles 768-dim well with limited/noisy labels
+
+def split_temporal(labeled: pd.DataFrame):
+    """
+    Within each phase, sort by date and hold out the last 20% of frames.
+    Tests whether the model generalizes across time within a phase — early
+    footage predicts late footage.
+    """
+    train_frames, test_frames = [], []
+    for phase, group in labeled.groupby("phase"):
+        group_sorted = group.sort_values("created_at")
+        split_idx = int(len(group_sorted) * 0.8)
+        if split_idx == 0 or split_idx == len(group_sorted):
+            # Too few samples — fall back to including all in train
+            train_frames.append(group_sorted)
+            continue
+        train_frames.append(group_sorted.iloc[:split_idx])
+        test_frames.append(group_sorted.iloc[split_idx:])
+
+    if not test_frames:
+        print("  [temporal] Not enough samples per phase for temporal split — falling back to random.")
+        return split_random(labeled)
+
+    train_df = pd.concat(train_frames)
+    test_df  = pd.concat(test_frames)
+
+    le = LabelEncoder()
+    le.fit(labeled["phase"])
+
+    X_train = np.vstack(train_df["features"].values)
+    y_train = le.transform(train_df["phase"])
+    X_test  = np.vstack(test_df["features"].values)
+    y_test  = le.transform(test_df["phase"])
+
+    print(f"  [temporal] train={len(X_train):,}  test={len(X_test):,} "
+          f"(last 20% of each phase by date)")
+    return X_train, X_test, y_train, y_test, le
+
+
+def split_boundary(labeled: pd.DataFrame):
+    """
+    Test set = frames within BOUNDARY_DAYS of any phase transition.
+    Train set = everything else.
+    Tests the hardest cases: visually ambiguous frames at phase edges.
+    """
+    boundary_mask = pd.Series(False, index=labeled.index)
+    for _, _, end in PHASE_WINDOWS[:-1]:  # no boundary after the last phase
+        end_ts = pd.Timestamp(end, tz="UTC")
+        boundary_mask |= (
+            (labeled["created_at"] >= end_ts - pd.Timedelta(days=BOUNDARY_DAYS)) &
+            (labeled["created_at"] <= end_ts + pd.Timedelta(days=BOUNDARY_DAYS))
+        )
+
+    test_df  = labeled[boundary_mask]
+    train_df = labeled[~boundary_mask]
+
+    if len(test_df) < 10:
+        print(f"  [boundary] Only {len(test_df)} boundary frames found "
+              f"(need ≥10) — falling back to random.")
+        return split_random(labeled)
+
+    le = LabelEncoder()
+    le.fit(labeled["phase"])
+
+    # Ensure all classes are represented in train
+    missing = set(le.classes_) - set(train_df["phase"].unique())
+    if missing:
+        print(f"  [boundary] Classes missing from train set: {missing} — falling back to random.")
+        return split_random(labeled)
+
+    X_train = np.vstack(train_df["features"].values)
+    y_train = le.transform(train_df["phase"])
+    X_test  = np.vstack(test_df["features"].values)
+    y_test  = le.transform(test_df["phase"])
+
+    print(f"  [boundary] train={len(X_train):,}  test={len(X_test):,} "
+          f"(frames within ±{BOUNDARY_DAYS}d of phase transitions)")
+    return X_train, X_test, y_train, y_test, le
+
+
+def split_camera(labeled: pd.DataFrame):
+    """
+    Train on Pixel phone footage (Construction Timeline),
+    test on DJI drone footage (Construction Phase).
+    Tests cross-camera generalization — different angle, altitude, lens.
+    """
+    pixel_mask = labeled["file_path"].str.contains("Construction Timeline", na=False)
+    dji_mask   = labeled["file_path"].str.contains("Construction Phase",    na=False)
+
+    train_df = labeled[pixel_mask]
+    test_df  = labeled[dji_mask]
+
+    if len(train_df) < 10 or len(test_df) < 10:
+        print(f"  [camera] Insufficient data — "
+              f"Pixel={len(train_df):,}  DJI={len(test_df):,} — falling back to random.")
+        return split_random(labeled)
+
+    le = LabelEncoder()
+    le.fit(labeled["phase"])
+
+    # Ensure all test classes appear in training
+    missing = set(test_df["phase"].unique()) - set(train_df["phase"].unique())
+    if missing:
+        print(f"  [camera] DJI has phases not in Pixel training set: {missing} — falling back to random.")
+        return split_random(labeled)
+
+    X_train = np.vstack(train_df["features"].values)
+    y_train = le.transform(train_df["phase"])
+    X_test  = np.vstack(test_df["features"].values)
+    y_test  = le.transform(test_df["phase"])
+
+    print(f"  [camera] train={len(X_train):,} (Pixel)  test={len(X_test):,} (DJI)")
+    return X_train, X_test, y_train, y_test, le
+
+
+SPLIT_STRATEGIES = {
+    "random":   split_random,
+    "temporal": split_temporal,
+    "boundary": split_boundary,
+    "camera":   split_camera,
+}
+
+
+# ---------------------------------------------------------------------------
+# Step 4 — Train
+# ---------------------------------------------------------------------------
+def train(X_train, y_train):
     clf = RandomForestClassifier(
         n_estimators=200,
         max_depth=12,
@@ -180,65 +367,92 @@ def train(labeled: pd.DataFrame):
         n_jobs=-1,
     )
     print("Fitting Random Forest …")
+    t0 = time.perf_counter()
     clf.fit(X_train, y_train)
-
-    return clf, le, X_test, y_test
+    elapsed = time.perf_counter() - t0
+    print(f"Fitting done  ({elapsed:.1f}s)")
+    return clf
 
 
 # ---------------------------------------------------------------------------
-# Step 4 — Evaluate
+# Step 5 — Evaluate
 # ---------------------------------------------------------------------------
-def evaluate(clf, le, X_test, y_test) -> str:
+def evaluate(clf, le, X_test, y_test, strategy: str, save_artifacts: bool = True) -> str:
+    t0     = time.perf_counter()
     y_pred = clf.predict(X_test)
-    report = classification_report(y_test, y_pred, target_names=le.classes_)
-    print("\n" + report)
 
-    # Confusion matrix
-    cm = confusion_matrix(y_test, y_pred)
-    fig, ax = plt.subplots(figsize=(9, 7))
-    disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=le.classes_)
-    disp.plot(ax=ax, xticks_rotation=30, colorbar=False)
-    ax.set_title("Construction Phase Classifier — Confusion Matrix")
-    plt.tight_layout()
+    # Only report on classes that actually appear in this test set —
+    # e.g. the camera strategy DJI set may not cover all 5 phases.
+    present_labels = np.unique(np.concatenate([y_test, y_pred]))
+    present_names  = le.classes_[present_labels]
 
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    cm_path = OUTPUT_DIR / "phase_classifier_cm.png"
-    plt.savefig(cm_path, dpi=150)
-    print(f"Confusion matrix saved → {cm_path}")
+    report   = classification_report(y_test, y_pred, labels=present_labels, target_names=present_names)
+    accuracy = (y_pred == y_test).mean()
+    elapsed  = time.perf_counter() - t0
+    print(f"\n[{strategy}] accuracy={accuracy:.1%}  inference={elapsed:.2f}s\n" + report)
 
-    # Confidence distribution
-    probs = clf.predict_proba(X_test)
-    max_conf = probs.max(axis=1)
-    auto = (max_conf >= CONFIDENCE_THRESHOLD).sum()
-    review = (max_conf < CONFIDENCE_THRESHOLD).sum()
-    print(f"\nAt {CONFIDENCE_THRESHOLD:.0%} threshold:")
-    print(f"  Auto-labeled:      {auto:,} ({auto/len(X_test):.1%})")
-    print(f"  Flagged for review: {review:,} ({review/len(X_test):.1%})")
+    if len(present_labels) < len(le.classes_):
+        missing = set(le.classes_) - set(present_names)
+        print(f"  [i] Classes absent from this test set (not scored): {sorted(missing)}")
 
-    return report
+    if save_artifacts:
+        cm = confusion_matrix(y_test, y_pred, labels=present_labels)
+        fig, ax = plt.subplots(figsize=(9, 7))
+        disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=present_names)
+        disp.plot(ax=ax, xticks_rotation=30, colorbar=False)
+        ax.set_title(f"Construction Phase Classifier — Confusion Matrix ({strategy})")
+        plt.tight_layout()
+        OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+        cm_path = OUTPUT_DIR / f"phase_classifier_cm_{strategy}.png"
+        plt.savefig(cm_path, dpi=150)
+        plt.close()
+        print(f"Confusion matrix saved -> {cm_path}")
+
+        probs    = clf.predict_proba(X_test)
+        max_conf = probs.max(axis=1)
+        auto     = (max_conf >= CONFIDENCE_THRESHOLD).sum()
+        review   = (max_conf < CONFIDENCE_THRESHOLD).sum()
+        print(f"\nAt {CONFIDENCE_THRESHOLD:.0%} threshold:")
+        print(f"  Auto-labeled:       {auto:,} ({auto/len(X_test):.1%})")
+        print(f"  Flagged for review: {review:,} ({review/len(X_test):.1%})")
+
+    return report, accuracy
 
 
 # ---------------------------------------------------------------------------
-# Step 5 — Save
+# Step 6 — Save
 # ---------------------------------------------------------------------------
-def save_model(clf, le, report: str):
+def save_model(clf, le, report: str, strategy: str):
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     model_path = OUTPUT_DIR / "phase_classifier.joblib"
     joblib.dump({"model": clf, "label_encoder": le}, model_path)
-    print(f"Model saved → {model_path}")
+    print(f"Model saved -> {model_path}")
 
     report_path = OUTPUT_DIR / "phase_classifier_report.txt"
-    report_path.write_text(report)
-    print(f"Report saved → {report_path}")
+    report_path.write_text(f"Eval strategy: {strategy}\n\n" + report)
+    print(f"Report saved -> {report_path}")
 
 
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 def main():
-    client = QdrantClient(host=QDRANT_HOST, port=QDRANT_PORT)
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--eval-strategy",
+        choices=[*SPLIT_STRATEGIES.keys(), "all"],
+        default="random",
+        help="How to split train/test data (default: random)",
+    )
+    parser.add_argument(
+        "--use-yolo",
+        action="store_true",
+        help="Concatenate YOLO multi-hot features to CLIP embeddings",
+    )
+    args = parser.parse_args()
 
-    df = fetch_vectors(client)
+    client  = QdrantClient(host=QDRANT_HOST, port=QDRANT_PORT)
+    df      = fetch_vectors(client)
     if df.empty:
         print("No records found in Qdrant. Is the collection populated?")
         sys.exit(1)
@@ -248,10 +462,10 @@ def main():
         print("No records fall within any phase window. Check created_at timestamps.")
         sys.exit(1)
 
-    # Require at least 2 samples per class for stratified split
-    counts = labeled["phase"].value_counts()
+    # Drop phases with too few samples
+    counts       = labeled["phase"].value_counts()
     valid_phases = counts[counts >= 5].index
-    dropped = counts[counts < 5]
+    dropped      = counts[counts < 5]
     if not dropped.empty:
         print(f"\nDropping phases with < 5 samples: {dropped.to_dict()}")
         labeled = labeled[labeled["phase"].isin(valid_phases)]
@@ -260,9 +474,56 @@ def main():
         print("Need at least 2 phases to train a classifier.")
         sys.exit(1)
 
-    clf, le, X_test, y_test = train(labeled)
-    report = evaluate(clf, le, X_test, y_test)
-    save_model(clf, le, report)
+    # Build feature matrix — optionally augment CLIP with YOLO multi-hot
+    if args.use_yolo:
+        yolo_matrix, yolo_vocab = build_yolo_features(labeled)
+        clip_matrix = np.vstack(labeled["vector"].values)
+        combined = np.hstack([clip_matrix, yolo_matrix])
+        labeled = labeled.copy()
+        labeled["features"] = list(combined)
+        print(f"  Combined features: {combined.shape[1]} dims (768 CLIP + {yolo_matrix.shape[1]} YOLO)")
+    else:
+        labeled = labeled.copy()
+        labeled["features"] = labeled["vector"]
+
+    strategies = list(SPLIT_STRATEGIES.keys()) if args.eval_strategy == "all" else [args.eval_strategy]
+    summary: list[tuple[str, float]] = []
+
+    for strategy in strategies:
+        t_strategy = time.perf_counter()
+        print(f"\n{'='*60}")
+        print(f"  Strategy: {strategy.upper()}")
+        print(f"{'='*60}")
+
+        X_train, X_test, y_train, y_test, le = SPLIT_STRATEGIES[strategy](labeled)
+        print(f"  Training on {len(X_train):,} samples, {len(le.classes_)} classes, {X_train.shape[1]} dims")
+
+        clf = train(X_train, y_train)
+
+        is_primary = strategy == strategies[-1]  # save artifacts + model for the last strategy
+        report, accuracy = evaluate(clf, le, X_test, y_test, strategy, save_artifacts=is_primary)
+        summary.append((strategy, accuracy, time.perf_counter() - t_strategy))
+
+        if is_primary:
+            save_model(clf, le, report, strategy)
+
+    if len(summary) > 1:
+        print(f"\n{'='*60}")
+        print("  GENERALIZATION SUMMARY")
+        print(f"{'='*60}")
+        print(f"  {'Strategy':<12}  {'Accuracy':>8}  {'vs random':>10}  {'Time':>8}")
+        baseline = next((acc for s, acc, _ in summary if s == "random"), summary[0][1])
+        for strat, acc, elapsed in summary:
+            delta = acc - baseline
+            sign  = "+" if delta >= 0 else ""
+            print(f"  {strat:<12}  {acc:>7.1%}  {sign}{delta:>8.1%}  {elapsed:>6.1f}s")
+        print()
+        drop = min(acc for _, acc, _ in summary) - baseline
+        if drop < -0.10:
+            print("  ⚠  Accuracy drops >10% on a stricter strategy — model may be")
+            print("     overfitting to temporal or camera-specific patterns.")
+        else:
+            print("  ✓  Accuracy is stable across strategies — model is generalizing.")
 
     print("\nDone. Next: run predict_phases.py to label your full Qdrant collection.")
 
