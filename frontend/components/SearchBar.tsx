@@ -11,6 +11,7 @@ export interface SearchFilters {
   maxResults?: number
   dedup?: boolean
   audioSegmentType?: 'speech' | 'non_verbal' | 'music' | 'ambient' | 'event' | 'silence' | ''
+  constructionPhase?: string
 }
 
 interface SearchBarProps {
@@ -364,6 +365,27 @@ export default function SearchBar({ onSearch, isLoading = false, suggestions, ex
             </select>
           </div>
 
+          {/* Construction Phase Filter */}
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm font-semibold text-gray-300">🏗️ Construction Phase</p>
+              <p className="text-xs text-gray-500 mt-0.5">Filter by ADU build phase</p>
+            </div>
+            <select
+              value={filters.constructionPhase ?? ''}
+              onChange={(e) => setFilters({ ...filters, constructionPhase: e.target.value || undefined })}
+              className="bg-gray-700 text-gray-300 text-sm rounded px-2 py-1 border border-gray-600 focus:outline-none focus:border-blue-500"
+            >
+              <option value="">Any</option>
+              <option value="Phase 1: Site Mobilization">Phase 1: Site Mobilization</option>
+              <option value="Phase 2: Foundation">Phase 2: Foundation</option>
+              <option value="Phase 3: Rough MEP">Phase 3: Rough MEP</option>
+              <option value="Phase 4: Framing">Phase 4: Framing</option>
+              <option value="Phase 5: Exterior">Phase 5: Exterior</option>
+              <option value="Phase 6: Final Completion">Phase 6: Final Completion</option>
+            </select>
+          </div>
+
           {/* Reset Filters */}
           <button
             type="button"
@@ -374,6 +396,7 @@ export default function SearchBar({ onSearch, isLoading = false, suggestions, ex
                 maxResults: 20,
                 dedup: true,
                 audioSegmentType: '',
+                constructionPhase: undefined,
               })
             }
             className="w-full px-4 py-2 bg-gray-700 hover:bg-gray-600 text-gray-300 hover:text-white rounded transition text-sm font-semibold"

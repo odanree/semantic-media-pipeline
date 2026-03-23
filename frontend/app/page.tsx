@@ -79,6 +79,9 @@ export default function SearchPage() {
       if (filters.audioSegmentType) {
         payload.audio_segment_type = filters.audioSegmentType
       }
+      if (filters.constructionPhase) {
+        payload.construction_phase = filters.constructionPhase
+      }
 
       const response = await fetch('/api/search', {
         method: 'POST',
