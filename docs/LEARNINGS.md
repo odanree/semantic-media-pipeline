@@ -1285,6 +1285,7 @@ A full `down` + `up` is not required; `restart` is sufficient to re-establish po
 
 - [F1. Playlist 400 — S3 Object Keys Not in ALLOWED_ROOTS](#f1-playlist-400--s3-object-keys-not-in-allowed_roots)
 - [F2. Qdrant Healthcheck Always Fails — No `curl` or `wget` in Image](#f2-qdrant-healthcheck-always-fails--no-curl-or-wget-in-image)
+- [C4. YOLO Batch Enrichment — Video Seeking vs Frame Cache, Write Bottleneck](#c4-yolo-batch-enrichment--video-seeking-vs-frame-cache-write-bottleneck)
 
 ---
 
@@ -1345,3 +1346,115 @@ test: ["CMD-SHELL", "bash -c '</dev/tcp/localhost/6333' 2>/dev/null"]
 ### Lesson
 
 **Always verify that tools used in a healthcheck exist inside the target container.** Run `docker exec <container> which curl` before writing the healthcheck. The bash `/dev/tcp` trick is a reliable fallback for any container that has `bash`.
+
+---
+
+## C4. YOLO Batch Enrichment — Video Seeking vs Frame Cache, Write Bottleneck
+
+**Component:** `scripts/enrich_yolo.py`
+**Severity:** High — initial implementation would have taken 106+ minutes; optimized to 2.1 minutes
+
+### What Broke (Three Compounding Problems)
+
+**Problem 1 — OpenCV video seeking on corrupt HEVC files hangs indefinitely.**
+
+Initial approach: for each Qdrant record, open the source MP4 with `cv2.VideoCapture`, seek to `timestamp * 1000` ms, decode the frame. On corrupt or partially-written HEVC files (DJI footage), `cap.read()` never returned — it silently hung. With 8 IO threads all blocked on corrupt files, inference throughput dropped to 0 img/s and the ETA showed 570 minutes.
+
+**Problem 2 — Video seek is I/O-bound, not GPU-bound.**
+
+Even on healthy files, seeking into large MP4s on a spinning/external drive dominated latency. Measured throughput: 7 img/s with OpenCV seeking vs 63 img/s reading cached JPEGs — a 9× difference driven entirely by I/O.
+
+**Problem 3 — Synchronous per-point Qdrant writes blocked GPU inference.**
+
+Initial write strategy used `batch_update_points` with one `SetPayloadOperation` per point (32 operations per batch call). With writes on the critical path, throughput dropped from 7 img/s (dry-run) to 1 img/s (live run) — a 7× write penalty.
+
+### Root Cause
+
+Qdrant records store the original video `file_path` and a `timestamp`, but the ingest pipeline already extracted and cached frames as `frame_*.jpg` files in `FRAME_CACHE_DIR` (keyed by `sha256("{file_hash}:fps={fps}:res={resolution}")[:16]`). The enrichment script was re-doing work the ingest pipeline had already done.
+
+### Fix
+
+**1 — Read from the frame cache instead of seeking videos:**
+
+```python
+def _cache_dir(file_hash: str) -> Path:
+    raw = f"{file_hash}:fps={KEYFRAME_FPS}:res={KEYFRAME_RESOLUTION}"
+    key = hashlib.sha256(raw.encode()).hexdigest()[:16]
+    return FRAME_CACHE_DIR / key
+
+def _load_cached_frame(args):
+    pid, file_hash, frame_index = args
+    frames = sorted(_cache_dir(file_hash).glob("frame_*.jpg"))
+    arr = cv2.cvtColor(cv2.imread(str(frames[frame_index])), cv2.COLOR_BGR2RGB)
+    return pid, arr
+```
+
+Fetch `file_hash` and `frame_index` from Qdrant payload instead of `file_path` and `timestamp`. Check for `.done` sentinel before queuing (guards against incomplete cache entries).
+
+**2 — Background writer thread to decouple GPU from Qdrant I/O:**
+
+```python
+write_queue = queue.Queue(maxsize=32)
+
+def _writer():
+    while True:
+        item = write_queue.get()
+        if item is None: break
+        # grouped set_payload calls — one per unique label set, one per unique count
+        ...
+
+threading.Thread(target=_writer, daemon=True).start()
+
+# In inference loop — never blocks
+write_queue.put(item)
+```
+
+**3 — Group writes by value, not per point:**
+
+```python
+# One set_payload call per unique label set (typically 2–5 calls per batch of 32)
+label_groups = defaultdict(list)
+for pid, result in zip(ids, results):
+    label_key = ",".join(sorted_labels)
+    label_groups[label_key].append(pid)
+
+for label_key, pids in label_groups.items():
+    client.set_payload(collection_name=..., payload={"yolo_labels": ...}, points=pids)
+```
+
+**4 — Timeout hung IO threads:**
+
+```python
+done, pending = futures_wait(futures, timeout=15)
+for future in pending:
+    future.cancel()  # corrupt file — skip, don't hang
+    skipped += 1
+```
+
+**5 — Enable `MatchText` on `file_path` for fast server-side scan:**
+
+`file_path` defaults to a keyword index (exact match only). Create a text index once to enable `MatchText` filtering:
+
+```python
+client.create_payload_index(
+    collection_name="media_vectors",
+    field_name="file_path",
+    field_schema=TextIndexParams(type="text", tokenizer=TokenizerType.WORD, lowercase=True),
+)
+```
+
+### Result
+
+| Approach | Throughput | ETA (7,136 frames) |
+|---|---|---|
+| OpenCV video seek, sync writes | 1 img/s | ~106 min |
+| OpenCV video seek, async writes | 7 img/s | ~17 min |
+| Frame cache JPEGs, async writes | **63 img/s** | **~2 min** |
+
+### Lesson
+
+**If your ingest pipeline caches intermediate artifacts, use them in downstream scripts — don't re-derive them.** The frame cache existed specifically to avoid re-extracting frames on every run. Reading a 224px JPEG is ~9× faster than seeking into a multi-GB HEVC video. Always check what the pipeline already computed before writing new extraction logic.
+
+**Decouple GPU inference from storage writes.** A background writer thread with a bounded queue costs ~10 lines and eliminates the write bottleneck entirely. GPU should never wait on network I/O.
+
+**`batch_update_points` with N `SetPayloadOperation` items is still N individual point updates.** It saves one HTTP round-trip but not N database writes. The real optimization is grouping points by shared values and calling `set_payload` once per unique value.
