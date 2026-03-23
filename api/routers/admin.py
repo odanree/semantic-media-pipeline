@@ -100,7 +100,7 @@ async def trigger_backfill_yolo(body: BackfillRequest = BackfillRequest()) -> Ba
         result = _celery.send_task(
             "tasks.backfill_yolo",
             kwargs={"dry_run": body.dry_run},
-            queue="celery",
+            queue="gpu",
         )
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"Failed to dispatch task: {exc}") from exc
