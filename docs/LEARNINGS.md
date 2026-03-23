@@ -589,6 +589,9 @@ client.post("/api/search-vector", json=[0.1, 0.2], params={"limit": 5})
 - [C1. Worker RAM Thrash](#c1-worker-ram-thrash)
 - [C2. Thumbnail API 2.9s Latency — Dual-Layer Cache](#c2-thumbnail-api-29s-latency--dual-layer-cache)
 - [C3. Qdrant Batch Operations — Individual set_payload Calls Don't Scale](#c3-qdrant-batch-operations--individual-set_payload-calls-dont-scale)
+- [C4. YOLO Batch Enrichment — Video Seeking vs Frame Cache, Write Bottleneck](#c4-yolo-batch-enrichment--video-seeking-vs-frame-cache-write-bottleneck)
+- [C5. Qdrant Write Throughput — Docker NAT Bottleneck, Queue Saturation, JSON Route](#c5-qdrant-write-throughput--docker-nat-bottleneck-queue-saturation-json-route)
+- [C6. YOLO Multi-Hot Features Don't Close the Temporal Accuracy Gap](#c6-yolo-multi-hot-features-dont-close-the-temporal-accuracy-gap)
 
 ---
 
@@ -1287,7 +1290,6 @@ A full `down` + `up` is not required; `restart` is sufficient to re-establish po
 
 - [F1. Playlist 400 — S3 Object Keys Not in ALLOWED_ROOTS](#f1-playlist-400--s3-object-keys-not-in-allowed_roots)
 - [F2. Qdrant Healthcheck Always Fails — No `curl` or `wget` in Image](#f2-qdrant-healthcheck-always-fails--no-curl-or-wget-in-image)
-- [C4. YOLO Batch Enrichment — Video Seeking vs Frame Cache, Write Bottleneck](#c4-yolo-batch-enrichment--video-seeking-vs-frame-cache-write-bottleneck)
 
 ---
 
@@ -1555,3 +1557,62 @@ Add Docker→Windows path translation (`MOUNT_MAP`) and load images directly wit
 **`IsEmptyCondition` matches absent fields AND empty arrays.** Use a field that is always written on success (e.g., `yolo_model`) as the enrichment indicator, not a field that may legitimately be empty (e.g., `yolo_labels: []` for frames with no detections).
 
 **Split GPU work from network writes when they live on different network segments.** Produce a local artifact (JSON file), transfer it once, apply it from inside the target network. Two-phase beats bidirectional round-trips every time.
+
+---
+
+## C6. YOLO Multi-Hot Features Don't Close the Temporal Accuracy Gap
+
+**Component:** `scripts/train_phase_classifier.py`
+**Severity:** Low — experiment yielded null result; no regression, understanding gained
+
+### What Was Tried
+
+After enriching all 7,642 construction frames with YOLOv8n detections (`yolo_labels`, `yolo_object_count`), YOLO features were appended to the CLIP embeddings as a multi-hot vector to improve temporal generalization.
+
+**Feature engineering approach:**
+
+```python
+def build_yolo_features(labeled):
+    vocab = sorted({lbl for row in labeled["yolo_labels"] for lbl in row})
+    # Multi-hot: 1.0 if class detected, else 0.0
+    # Final dim: normalized detection count (yolo_count / max_count)
+    feat_matrix = np.zeros((len(labeled), len(vocab) + 1))
+    ...
+    return feat_matrix, vocab  # shape: (N, 72)
+
+# Concatenate: 768 CLIP + 72 YOLO = 840 dims
+combined = np.hstack([clip_matrix, yolo_matrix])
+```
+
+### Result
+
+| Strategy | CLIP only (768d) | CLIP + YOLO (840d) | Delta |
+|----------|------------------|--------------------|-------|
+| random   | 88.6%            | 88.4%              | -0.2% |
+| temporal | 54.6%            | 54.6%              | 0%    |
+| boundary | 88.6%            | 88.4%              | 0%    |
+| camera   | 85.6%            | 87.2%              | +1.6% |
+
+The temporal gap remained exactly -34.0%. YOLO features provided a marginal camera generalization improvement (+1.6%) but no benefit for temporal accuracy.
+
+### Root Cause
+
+The temporal gap is not a feature richness problem — it's a distributional shift problem. The temporal test set is the *last 20% of each phase chronologically*. The model learns the average appearance of Phase 3a across the full phase, but the tail of Phase 3a (just before Phase 4 begins) looks visually different from the start.
+
+COCO-class YOLO labels (person, car, bird, banana...) are generic and roughly constant throughout any construction phase. A frame from week 2 of framing and week 8 of framing both contain "person" and maybe "car." YOLO has no COCO class for "partially-erected wall stud" vs "fully-enclosed exterior." The features that YOLO adds are orthogonal to the temporal drift the classifier is failing on.
+
+### Why +1.6% on Camera
+
+Camera generalization improved slightly because object presence (detected via bounding boxes) is more invariant to camera angle, altitude, and lens than CLIP embeddings. A person is a person from any height. CLIP embeddings are sensitive to color palette, composition, and framing — all of which differ significantly between a Pixel phone (eye level) and a DJI drone (overhead).
+
+### Lesson
+
+**YOLO COCO classes are not discriminative for intra-phase temporal variation.** They describe *what type of objects are present* in a generic scene, not *how far along a construction phase is*. For temporal drift, the signal would need to come from construction-domain features: amount of visible structure, material coverage ratios, or explicit timestamp/progress metadata.
+
+**Multi-hot feature engineering is the right tool, just applied to the wrong vocabulary.** The approach of building a binary feature vector per COCO class is sound. The limitation is COCO's 80-class vocabulary was designed for everyday scenes, not construction documentation.
+
+**For temporal accuracy, the right approaches are:**
+1. Add `created_at` as a numeric feature (elapsed days since project start)
+2. A sequence model (LSTM/transformer) that respects temporal ordering rather than treating each frame as i.i.d.
+3. Better phase boundary definitions that don't overlap temporally
+
