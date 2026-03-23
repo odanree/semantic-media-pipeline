@@ -137,6 +137,22 @@ class IngestRequest(BaseModel):
     media_root: str
 
 
+class GooglePhotosIngestRequest(BaseModel):
+    """Google Photos ingest request model"""
+
+    start_date: str  # ISO date, e.g. "2025-10-08"
+    end_date: str    # ISO date, e.g. "2026-03-21"
+
+
+class GooglePhotosIngestResponse(BaseModel):
+    status: str
+    timestamp: str
+    start_date: str
+    end_date: str
+    task_id: str
+    message: str
+
+
 class IngestResponse(BaseModel):
     """Ingest response model"""
 
@@ -180,6 +196,41 @@ async def start_ingest(request: IngestRequest):
         )
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/ingest/google-photos")
+async def ingest_google_photos(request: GooglePhotosIngestRequest):
+    """
+    Fetch media from Google Photos for a date range and enqueue ingest tasks.
+
+    Requires GOOGLE_PHOTOS_CLIENT_ID, GOOGLE_PHOTOS_CLIENT_SECRET, and
+    GOOGLE_PHOTOS_REFRESH_TOKEN set in the worker's environment.
+    Run scripts/google_photos_auth.py once to generate the refresh token.
+
+    Args:
+        start_date: ISO date string, e.g. "2025-10-08"
+        end_date:   ISO date string, e.g. "2026-03-21"
+    """
+    try:
+        from datetime import datetime as _dt
+        _dt.fromisoformat(request.start_date)
+        _dt.fromisoformat(request.end_date)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=f"Invalid date format: {e}")
+
+    task = celery_app.send_task(
+        "tasks.crawl_google_photos",
+        args=(request.start_date, request.end_date),
+    )
+
+    return GooglePhotosIngestResponse(
+        status="accepted",
+        timestamp=datetime.utcnow().isoformat(),
+        start_date=request.start_date,
+        end_date=request.end_date,
+        task_id=task.id,
+        message=f"Fetching Google Photos from {request.start_date} to {request.end_date}",
+    )
 
 
 class TaskStatusResponse(BaseModel):

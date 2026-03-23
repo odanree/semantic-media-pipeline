@@ -33,6 +33,7 @@ from ingest.audio_segmenter import (
     segment_to_payload,
 )
 from ingest.crawler import crawl_media, crawl_s3
+from ingest.google_photos import GooglePhotosClient
 from ingest.ffmpeg import (
     FFmpegError,
     apply_faststart,
@@ -285,13 +286,15 @@ def _save_frame_cache(file_hash: str, fps: float, resolution: int, frame_paths: 
     retry_jitter=True,
     max_retries=5,
 )
-def crawl_and_dispatch(self, media_root: str):
+def crawl_and_dispatch(self, media_root: str, force_relocate: bool = False):
     """
     Crawl media directory and dispatch ingest tasks.
     Main entry point for the pipeline.
 
     Args:
         media_root: Root directory to crawl
+        force_relocate: If True, treat the crawled path as canonical and update
+            file_path in DB + Qdrant even when the old file still exists elsewhere.
     """
     try:
         print(f"Starting crawl of {media_root}")
@@ -316,7 +319,7 @@ def crawl_and_dispatch(self, media_root: str):
             # Strip /mnt/source/ prefix — store mount-relative paths so
             # changing the Windows host drive/folder never requires a DB migration.
             file_path = _to_relative_path(file_path)
-            ingest_media.delay(file_path, file_type)
+            ingest_media.delay(file_path, file_type, force_relocate=force_relocate)
 
         return {"status": "dispatched", "count": len(files)}
     except Exception as e:
@@ -330,9 +333,85 @@ def crawl_and_dispatch(self, media_root: str):
     retry_backoff=True,
     retry_backoff_max=600,
     retry_jitter=True,
+    max_retries=3,
+)
+def crawl_google_photos(self, start_date: str, end_date: str):
+    """
+    Fetch media from Google Photos for the given date range, download to the
+    local mount, and dispatch ingest tasks for each file.
+
+    Downloaded files are saved under /mnt/source/google-photos/YYYY/MM/ so
+    they persist and are served by the same file path as locally-ingested media.
+    File mtime is set to the photo's original creationTime so that created_at
+    in Qdrant reflects the actual capture date, not the download date.
+
+    Args:
+        start_date: ISO date string, e.g. "2025-10-08"
+        end_date:   ISO date string, e.g. "2026-03-21"
+    """
+    start = datetime.fromisoformat(start_date)
+    end   = datetime.fromisoformat(end_date)
+
+    client = GooglePhotosClient()
+    dispatched = 0
+    skipped    = 0
+
+    for item in client.search_media_items(start, end):
+        creation_time_str = item.get("mediaMetadata", {}).get("creationTime", "")
+        try:
+            creation_dt = datetime.fromisoformat(creation_time_str.replace("Z", "+00:00"))
+        except (ValueError, AttributeError):
+            creation_dt = start
+
+        # Store under /mnt/source/google-photos/YYYY/MM/<gphoto_id>
+        # Using the Google Photos item ID as the filename keeps it idempotent
+        # and avoids collisions when multiple photos share the same filename.
+        # GOOGLE_PHOTOS_DOWNLOAD_ROOT should be a /mnt/source/... Linux path so
+        # that _translate_path() maps it to the correct Windows drive (e.g. J:)
+        # via LUMEN_PATH_MAP.  Example .env entry:
+        #   GOOGLE_PHOTOS_DOWNLOAD_ROOT=/mnt/source/google-photos
+        download_root = os.environ.get(
+            "GOOGLE_PHOTOS_DOWNLOAD_ROOT", "/mnt/source/google-photos"
+        ).rstrip("/")
+        year_month = creation_dt.strftime("%Y/%m")
+        filename   = item.get("filename", item["id"])
+        linux_path = f"{download_root}/{year_month}/{item['id']}_{filename}"
+        dest_path  = _translate_path(linux_path)
+
+        result = client.download_item(item, dest_path)
+        if result is None:
+            skipped += 1
+            continue
+
+        final_path, file_type = result
+
+        # linux_path already has the correct /mnt/source/... form — use it
+        # directly rather than reverse-translating the native Windows path.
+        # download_item may have appended a file extension, so sync the suffix.
+        suffix = Path(final_path).suffix
+        if not linux_path.endswith(suffix):
+            linux_path += suffix
+        rel_path = _to_relative_path(linux_path)
+
+        ingest_media.delay(rel_path, file_type)
+        dispatched += 1
+
+    log.info(
+        "Google Photos crawl complete: dispatched=%d skipped=%d range=[%s, %s]",
+        dispatched, skipped, start_date, end_date,
+    )
+    return {"status": "dispatched", "dispatched": dispatched, "skipped": skipped}
+
+
+@app.task(
+    bind=True,
+    autoretry_for=(Exception,),
+    retry_backoff=True,
+    retry_backoff_max=600,
+    retry_jitter=True,
     max_retries=5,
 )
-def ingest_media(self, file_path: str, file_type: str):
+def ingest_media(self, file_path: str, file_type: str, force_relocate: bool = False):
     """
     Lightweight ingestion task - creates DB record and dispatches to processor.
     File hash computation moved to child task to free up worker pool faster.
@@ -407,8 +486,14 @@ def ingest_media(self, file_path: str, file_type: str):
         ).first()
         if existing:
             if existing.file_path != file_path:
-                # Same content, new location — file was moved/renamed.
-                # Heal the stored path without re-embedding.
+                # Same hash, different path — could be a relocation OR a duplicate copy
+                # (e.g. the same photo exists on a backup drive AND in google-photos/).
+                # Only treat as relocation if the old file is actually gone.
+                old_native = _translate_path(existing.file_path)
+                if not IS_S3 and os.path.isfile(old_native) and not force_relocate:
+                    print(f"Duplicate copy (both paths exist), skipping: {file_path!r}")
+                    return {"status": "skipped", "reason": "duplicate_copy"}
+                # Old file is gone, or caller asserted this path is canonical — heal the stored path.
                 old_path = existing.file_path
                 existing.file_path = file_path
                 db.commit()
@@ -522,7 +607,9 @@ def process_image(self, file_path: str, media_record_id: str):
                     "file_path": file_path,
                     "file_type": "image",
                     "file_hash": media_record.file_hash,
-                    "created_at": datetime.utcnow().isoformat(),
+                    "created_at": datetime.utcfromtimestamp(
+                        os.path.getmtime(native_path)
+                    ).isoformat(),
                     "media_file_id": media_record_id,
                 },
             )
@@ -733,7 +820,9 @@ def process_video(self, file_path: str, media_record_id: str):
                             "file_hash": media_record.file_hash,
                             "frame_index": frame_idx,
                             "timestamp": frame_ts,
-                            "created_at": datetime.utcnow().isoformat(),
+                            "created_at": datetime.utcfromtimestamp(
+                                os.path.getmtime(native_path)
+                            ).isoformat(),
                             "media_file_id": media_record_id,
                             **seg_payload,
                         },
