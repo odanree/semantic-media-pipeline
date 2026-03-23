@@ -572,6 +572,40 @@ def collection_info():
         except Exception:
             pass  # degrade gracefully — caption stats are non-critical
 
+        # Distinct construction_phase values present in Qdrant
+        construction_phases: list[str] = []
+        try:
+            from qdrant_client.http import models as qmodels
+            qdrant = _get_qdrant()
+            collection_name = os.getenv("QDRANT_COLLECTION_NAME", "media_vectors")
+            phase_filter = qmodels.Filter(
+                must_not=[
+                    qmodels.IsEmptyCondition(
+                        is_empty=qmodels.PayloadField(key="construction_phase")
+                    )
+                ]
+            )
+            seen: set[str] = set()
+            offset = None
+            while True:
+                records, offset = qdrant.scroll(
+                    collection_name=collection_name,
+                    scroll_filter=phase_filter,
+                    with_payload=["construction_phase"],
+                    with_vectors=False,
+                    limit=1000,
+                    offset=offset,
+                )
+                for r in records:
+                    val = r.payload.get("construction_phase")
+                    if val:
+                        seen.add(val)
+                if offset is None:
+                    break
+            construction_phases = sorted(seen)
+        except Exception:
+            pass  # degrade gracefully — phase filter is non-critical
+
         # Semantic topic tags: CLIP-based vocabulary probe (see _compute_topic_tags)
         try:
             top_topics = _compute_topic_tags(k=10)
@@ -587,6 +621,7 @@ def collection_info():
             "vector_points": vector_points,
             "captioned_count": captioned_count,
             "caption_pct": caption_pct,
+            "construction_phases": construction_phases,
         }
     finally:
         db.close()
