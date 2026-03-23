@@ -32,6 +32,8 @@ A living record of every significant bug, outage, and architectural misstep enco
   - [C1. Worker RAM Thrash](#c1-worker-ram-thrash)
   - [C2. Thumbnail API 2.9s Latency — Dual-Layer Cache](#c2-thumbnail-api-29s-latency--dual-layer-cache)
   - [C3. Qdrant Batch Operations — Individual set_payload Calls Don't Scale](#c3-qdrant-batch-operations--individual-set_payload-calls-dont-scale)
+  - [C4. YOLO Batch Enrichment — Video Seeking vs Frame Cache, Write Bottleneck](#c4-yolo-batch-enrichment--video-seeking-vs-frame-cache-write-bottleneck)
+  - [C5. Qdrant Write Throughput — Docker NAT Bottleneck, Queue Saturation, JSON Route](#c5-qdrant-write-throughput--docker-nat-bottleneck-queue-saturation-json-route)
 - [D — Production Troubleshooting](#d--production-troubleshooting)
   - [D1. Stale DB Records From File Renames Leave Tasks Stuck as pending](#d1-stale-db-records-from-file-renames-leave-tasks-stuck-as-pending)
   - [D2. Windows ffprobe UnicodeDecodeError on Non-Latin File Metadata](#d2-windows-ffprobe-unicodedecodeerror-on-non-latin-file-metadata)
@@ -1458,3 +1460,98 @@ client.create_payload_index(
 **Decouple GPU inference from storage writes.** A background writer thread with a bounded queue costs ~10 lines and eliminates the write bottleneck entirely. GPU should never wait on network I/O.
 
 **`batch_update_points` with N `SetPayloadOperation` items is still N individual point updates.** It saves one HTTP round-trip but not N database writes. The real optimization is grouping points by shared values and calling `set_payload` once per unique value.
+
+---
+
+## C5. Qdrant Write Throughput — Docker NAT Bottleneck, Queue Saturation, JSON Route
+
+**Component:** `scripts/enrich_yolo.py`, `scripts/apply_yolo_payload.py`
+**Severity:** High — live write throughput settled at 7 img/s despite GPU running at 300+ img/s dry-run
+
+### What Broke
+
+After the C4 optimizations, dry-run throughput reached 213–324 img/s. Live runs started fast then dropped to 7 img/s and kept declining. The backfill task was estimated at 164 minutes despite the GPU being mostly idle.
+
+**Problem 1 — Docker NAT adds ~2s per Qdrant HTTP call.**
+
+The Windows worker connects to Qdrant at `localhost:6333`, which routes through Docker Desktop's Hyper-V/WSL2 NAT layer. Each `set_payload` call with `wait=true` (the default) blocks for the full server round-trip — ~2s per call through NAT vs ~0.1ms on Docker's internal network. With 5–15 unique label groups per batch of 32 frames, this produced 5–15 blocking 2s calls per batch.
+
+**Problem 2 — Bounded queue caused GPU stall (producer-consumer saturation).**
+
+The write queue had `maxsize=32`. GPU produces batches faster than the writer consumes them. Once the queue fills, `write_queue.put()` blocks the main thread. The GPU stalls waiting for the writer to drain, which itself is bottlenecked on Docker NAT. Result: sustained throughput collapses to writer speed (~7 img/s), not GPU speed.
+
+**Problem 3 — `wait=True` (default) is synchronous across Docker NAT.**
+
+Even after switching to `wait=False`, each HTTP request still traverses the NAT stack (~50ms). Better than 2s, but with many calls still causes queue saturation.
+
+**Problem 4 — `IsEmptyCondition` treats `yolo_labels: []` as absent.**
+
+Progress queries using `IsEmptyCondition(is_empty=PayloadField(key="yolo_labels"))` counted frames with zero detections (`yolo_labels: []`) as "not enriched." Use a field that is always written regardless of detection count — `yolo_model` — as the true enrichment indicator.
+
+**Problem 5 — Images (HEIC/JPG) have no frame cache entry.**
+
+650 construction records were images, not video frames. The frame cache (`.done` sentinel) only exists for extracted video keyframes. `cv2.imread` silently returns `None` for HEIC files.
+
+### Fix
+
+**1 — Unbounded queue so GPU never blocks:**
+
+```python
+write_queue = queue.Queue(maxsize=0)  # GPU runs free; writer drains after
+```
+
+GPU completes all 6,682 frames in ~23s, then the write queue drains independently.
+
+**2 — Double-buffering: prefetch next IO batch while GPU runs:**
+
+```python
+# Submit next batch IO before waiting for current batch results
+next_futures = _submit_batch(pool, assets[next:next+batch_size])
+# ... GPU inference runs here ...
+done, pending = futures_wait(current_futures, timeout=15)
+```
+
+Eliminates IO idle time between batches. Combined with `IO_THREADS=16` (up from 8): 63 → 220–324 img/s.
+
+**3 — JSON route: GPU on Windows → apply writes from inside Docker:**
+
+Since Windows → Docker NAT is unavoidable for the GPU machine, split into two phases:
+
+```bash
+# Phase 1: GPU inference on Windows → JSON file (~23s, 300+ img/s)
+python scripts/enrich_yolo.py --output-file yolo_results.json
+
+# Phase 2: apply writes from inside Docker (internal network, ~0.1ms/call)
+docker cp yolo_results.json lumen-worker:/tmp/yolo_results.json
+MSYS_NO_PATHCONV=1 docker exec lumen-worker python /tmp/apply_yolo_payload.py /tmp/yolo_results.json
+```
+
+Result: 287 Qdrant calls completed in 0.2s at 1,325 calls/s vs the original ~0.5 calls/s through NAT.
+
+**4 — Direct image loading for non-video assets:**
+
+```python
+if ft == "image" and fp and not fp.lower().endswith(".heic"):
+    if _resolve_path(fp).exists():
+        image_assets.append((r.id, fp))
+```
+
+Add Docker→Windows path translation (`MOUNT_MAP`) and load images directly with `cv2.imread` bypassing the frame cache entirely.
+
+### Result
+
+| Approach | Throughput | Total time (7,634 frames) |
+|---|---|---|
+| Celery task via Docker NAT, `wait=True` | 7 img/s | ~164 min (estimated) |
+| Standalone script, unbounded queue, `wait=False` | ~11 img/s | ~12 min |
+| JSON route (GPU on Windows → apply in Docker) | **300+ img/s GPU / 35k frames/s apply** | **<1 min** |
+
+### Lesson
+
+**Docker NAT is a hidden write bottleneck.** `localhost:port` from a Windows host goes through Hyper-V/WSL2 NAT — every HTTP call adds ~50ms overhead minimum. For bulk writes, this dominates over everything else including GPU inference time.
+
+**Producer-consumer queue saturation is silent.** A bounded queue looks fine until it fills, then it serializes the entire pipeline to the consumer's speed. Use an unbounded queue when the producer (GPU) is faster than the consumer (network I/O) and the total memory cost is acceptable.
+
+**`IsEmptyCondition` matches absent fields AND empty arrays.** Use a field that is always written on success (e.g., `yolo_model`) as the enrichment indicator, not a field that may legitimately be empty (e.g., `yolo_labels: []` for frames with no detections).
+
+**Split GPU work from network writes when they live on different network segments.** Produce a local artifact (JSON file), transfer it once, apply it from inside the target network. Two-phase beats bidirectional round-trips every time.
