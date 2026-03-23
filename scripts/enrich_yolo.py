@@ -19,17 +19,33 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 from qdrant_client import QdrantClient
-from qdrant_client.models import Filter, FieldCondition, MatchText
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from worker.ml.yolo_detector import detect_from_path, get_yolo_model
+from worker.ml.yolo_detector import get_yolo_model
 
 QDRANT_HOST     = os.environ.get("QDRANT_HOST", "localhost")
 QDRANT_PORT     = int(os.environ.get("QDRANT_PORT", 6333))
 COLLECTION_NAME = os.environ.get("QDRANT_COLLECTION_NAME", "media_vectors")
 
+# Docker container paths → local Windows paths
+# /mnt/i-media  →  I:/i-media
+MOUNT_MAP: list[tuple[str, str]] = [
+    ("/mnt/i-media", "I:/i-media"),
+    ("/mnt/j-media", "J:/j-media"),
+]
+
 # Number of images to prefetch from disk while GPU processes the current batch
 IO_THREADS = 8
+
+
+def _resolve_path(qdrant_path: str) -> str | None:
+    """Translate a Docker mount path to the local Windows path."""
+    for mnt, local in MOUNT_MAP:
+        if qdrant_path.startswith(mnt):
+            local_path = local + qdrant_path[len(mnt):]
+            # Qdrant stores forward slashes; Path handles mixed separators on Windows
+            return local_path
+    return None
 
 
 def _load_image(file_path: str) -> tuple[str, np.ndarray | None]:
@@ -52,15 +68,12 @@ def main(dry_run: bool = False, batch_size: int = 32):
 
     # Pass 1 — collect all construction asset IDs + file paths
     print("Pass 1: scanning Qdrant for construction assets …")
-    path_filter = Filter(must=[
-        FieldCondition(key="file_path", match=MatchText(text="Construction Timeline")),
-    ])
-    assets: list[tuple[int | str, str]] = []  # (point_id, file_path)
+    assets: list[tuple[int | str, str]] = []  # (point_id, local_windows_path)
+    scanned = 0
     offset = None
     while True:
         records, next_offset = client.scroll(
             collection_name=COLLECTION_NAME,
-            scroll_filter=path_filter,
             with_vectors=False,
             with_payload=["file_path"],
             limit=1000,
@@ -68,11 +81,15 @@ def main(dry_run: bool = False, batch_size: int = 32):
         )
         if not records:
             break
+        scanned += len(records)
         for r in records:
             fp = (r.payload or {}).get("file_path", "")
-            if fp and Path(fp).exists():
-                assets.append((r.id, fp))
-        print(f"  {len(assets):,} assets found …", end="\r")
+            if "Construction Timeline" not in fp:
+                continue
+            local = _resolve_path(fp)
+            if local and Path(local).exists():
+                assets.append((r.id, local))
+        print(f"  scanned {scanned:,}  found {len(assets):,} …", end="\r")
         if next_offset is None:
             break
         offset = next_offset
