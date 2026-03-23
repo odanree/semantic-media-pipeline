@@ -11,6 +11,8 @@ Usage:
 
 import argparse
 import os
+os.environ["YOLO_AUTOINSTALL"] = "False"   # suppress ultralytics pip auto-update noise
+os.environ["YOLO_VERBOSE"]     = "False"
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
