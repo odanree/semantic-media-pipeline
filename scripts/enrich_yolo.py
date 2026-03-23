@@ -83,13 +83,15 @@ def main(dry_run: bool = False, batch_size: int = 32):
 
     client = QdrantClient(host=QDRANT_HOST, port=QDRANT_PORT)
 
+    t_model_start = time.perf_counter()
     model = get_yolo_model()
-    print(f"YOLO model ready.\n")
+    t_model_ready = time.perf_counter()
+    print(f"YOLO model ready.  ({t_model_ready - t_model_start:.1f}s)\n")
 
     # Pass 1 — collect construction asset IDs, local paths, and timestamps
+    # file_path is a keyword index (exact match only) — filter in Python by substring
     print("Pass 1: scanning Qdrant for construction assets …")
-    # (point_id, local_path, timestamp_sec)
-    assets: list[tuple[int | str, str, float]] = []
+    assets: list[tuple[int | str, str, float]] = []  # (point_id, local_path, timestamp_sec)
     scanned = 0
     offset = None
     while True:
@@ -118,7 +120,7 @@ def main(dry_run: bool = False, batch_size: int = 32):
         offset = next_offset
 
     t_scan = time.perf_counter()
-    print(f"\n{len(assets):,} construction assets to enrich  ({t_scan - t_start:.1f}s scan)\n")
+    print(f"\n{len(assets):,} construction assets to enrich  ({t_scan - t_model_ready:.1f}s scan)\n")
 
     if not assets:
         print("Nothing to process.")
@@ -225,7 +227,8 @@ def main(dry_run: bool = False, batch_size: int = 32):
     print(f"  Done.")
     print(f"  Updated : {updated:,}")
     print(f"  Skipped : {skipped:,}  (unreadable frame)")
-    print(f"  Scan    : {t_scan - t_start:.1f}s")
+    print(f"  Model load : {t_model_ready - t_model_start:.1f}s")
+    print(f"  Scan       : {t_scan - t_model_ready:.1f}s  ({scanned:,} records)")
     print(f"  Inference + write: {inference_time:.1f}s  ({rate:.0f} img/s)")
     print(f"  Total   : {total/60:.1f} min  ({total:.0f}s)")
     if dry_run:
