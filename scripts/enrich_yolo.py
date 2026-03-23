@@ -14,7 +14,9 @@ import argparse
 import os
 os.environ["YOLO_AUTOINSTALL"] = "False"   # suppress ultralytics pip auto-update noise
 os.environ["YOLO_VERBOSE"]     = "False"
+import queue
 import sys
+import threading
 import time
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -23,7 +25,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 from qdrant_client import QdrantClient
-from qdrant_client.models import Filter, FieldCondition, MatchText, SetPayloadOperation, SetPayload
+from qdrant_client.models import Filter, FieldCondition, MatchText
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from worker.ml.yolo_detector import get_yolo_model
@@ -128,8 +130,49 @@ def main(dry_run: bool = False, batch_size: int = 32):
         print("Nothing to process.")
         return
 
-    # Pass 2 — read frames in parallel, run YOLO in batches, write payloads
+    # Pass 2 — GPU inference + background Qdrant writer
+    # Writer thread consumes a queue of (label_groups, count_groups) dicts
+    # so the GPU never blocks on network I/O.
     print(f"Pass 2: YOLO inference  (batch={batch_size}, io_threads={IO_THREADS}) …")
+
+    write_queue: queue.Queue = queue.Queue(maxsize=32)
+    write_errors: list[str] = []
+
+    def _writer():
+        yolo_model_name = os.environ.get("YOLO_MODEL_NAME", "yolov8n")
+        while True:
+            item = write_queue.get()
+            if item is None:
+                write_queue.task_done()
+                break
+            try:
+                # item = dict: label_key -> list of point ids
+                #         plus "_counts": dict pid -> count
+                counts = item.pop("_counts")
+                for label_key, pids in item.items():
+                    labels = label_key.split(",") if label_key else []
+                    client.set_payload(
+                        collection_name=COLLECTION_NAME,
+                        payload={"yolo_labels": labels, "yolo_model": yolo_model_name},
+                        points=pids,
+                    )
+                # Write counts grouped by value to minimise calls
+                count_groups: dict[int, list] = defaultdict(list)
+                for pid, cnt in counts.items():
+                    count_groups[cnt].append(pid)
+                for cnt, pids in count_groups.items():
+                    client.set_payload(
+                        collection_name=COLLECTION_NAME,
+                        payload={"yolo_object_count": cnt},
+                        points=pids,
+                    )
+            except Exception as e:
+                write_errors.append(str(e))
+            finally:
+                write_queue.task_done()
+
+    writer_thread = threading.Thread(target=_writer, daemon=True)
+    writer_thread.start()
 
     updated = 0
     skipped = 0
@@ -157,53 +200,20 @@ def main(dry_run: bool = False, batch_size: int = 32):
             results = model.predict(source=arrs, conf=0.25, verbose=False)
 
             if not dry_run:
-                payloads_by_id: dict[int | str, dict] = {}
+                label_groups: dict[str, list] = defaultdict(list)
+                counts: dict[int | str, int] = {}
                 for pid, result in zip(ids, results):
                     boxes = result.boxes
-                    detections = []
+                    labels: list[str] = []
                     if boxes is not None:
-                        for box in boxes:
-                            cls_id = int(box.cls[0])
-                            label  = result.names.get(cls_id, str(cls_id))
-                            conf   = round(float(box.conf[0]), 4)
-                            bbox   = [round(float(v), 1) for v in box.xyxy[0].tolist()]
-                            detections.append({"label": label, "confidence": conf, "bbox": bbox})
-                    payloads_by_id[pid] = {
-                        "yolo_labels":       sorted({d["label"] for d in detections}),
-                        "yolo_detections":   detections,
-                        "yolo_object_count": len(detections),
-                        "yolo_model":        os.environ.get("YOLO_MODEL_NAME", "yolov8n"),
-                    }
+                        labels = sorted({result.names.get(int(b.cls[0]), str(int(b.cls[0]))) for b in boxes})
+                    label_key = ",".join(labels)
+                    label_groups[label_key].append(pid)
+                    counts[pid] = len(boxes) if boxes is not None else 0
 
-                # Group by identical label sets → fewer set_payload calls
-                label_groups: dict[str, list] = defaultdict(list)
-                for pid, payload in payloads_by_id.items():
-                    label_groups[",".join(payload["yolo_labels"])].append(pid)
-
-                for label_key, pids in label_groups.items():
-                    client.set_payload(
-                        collection_name=COLLECTION_NAME,
-                        payload={"yolo_labels": label_key.split(",") if label_key else []},
-                        points=pids,
-                    )
-
-                # Per-point fields in one batched op
-                client.batch_update_points(
-                    collection_name=COLLECTION_NAME,
-                    update_operations=[
-                        SetPayloadOperation(
-                            set_payload=SetPayload(
-                                payload={
-                                    "yolo_detections":   payloads_by_id[pid]["yolo_detections"],
-                                    "yolo_object_count": payloads_by_id[pid]["yolo_object_count"],
-                                    "yolo_model":        payloads_by_id[pid]["yolo_model"],
-                                },
-                                points=[pid],
-                            )
-                        )
-                        for pid in ids
-                    ],
-                )
+                item = dict(label_groups)
+                item["_counts"] = counts
+                write_queue.put(item)
 
             updated += len(loaded)
 
@@ -219,6 +229,13 @@ def main(dry_run: bool = False, batch_size: int = 32):
                     end="\r",
                 )
                 t_last_print = now
+
+    # Signal writer to finish and wait
+    write_queue.put(None)
+    write_queue.join()
+    writer_thread.join()
+    if write_errors:
+        print(f"\n  ⚠  {len(write_errors)} write error(s): {write_errors[0]}")
 
     t_end = time.perf_counter()
     total = t_end - t_start
