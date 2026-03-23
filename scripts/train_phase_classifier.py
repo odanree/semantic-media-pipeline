@@ -51,23 +51,24 @@ CONFIDENCE_THRESHOLD = 0.85
 BOUNDARY_DAYS        = 14  # days around each phase transition to use as boundary test set
 
 # Phase windows: (label, start_inclusive, end_inclusive)
-# Boundaries derived from actual inspection approval dates — BLDG25-0501.
+# Boundaries derived from actual inspection approval dates.
 #
 # Phase 1: Site Mobilization     → Sep 1   – Oct 8, 2025
 # Phase 2: Foundation            → Oct 9   – Nov 6, 2025   (Underground plumbing Oct 29 ✅, Footing/Steel Nov 6 ✅)
-# Phase 3a: Rough Framing        → Nov 7   – Feb 2, 2026   (Floor joists Nov 26 ✅ → Roof framing/sheathing + Shear wall Feb 2 ✅)
-# Phase 3b: MEP & Framing        → Feb 3   – Feb 19, 2026  (MEPS Feb 17 ✅, Framing final sign-off Feb 20 ✅)
+# Phase 3a: Rough Wall Framing   → Nov 7   – Jan 5, 2026   (Floor joists Nov 26 ✅, open studs / early sheathing)
+# Phase 3b: Structural Closeout  → Jan 6   – Feb 2, 2026   (Shear wall Jan 6 first attempt → Feb 2 ✅, Roof framing/sheathing Feb 2 ✅)
+# Phase 3c: MEP & Framing        → Feb 3   – Feb 19, 2026  (MEPS Feb 17 ✅, Framing final Feb 20 ✅)
 # Phase 4: Exterior Finish       → Feb 20  – Mar 2, 2026   (Interior lath Feb 20 ✅, Exterior lath Feb 23 ✅, Insulation Feb 25 ✅, Drywall Mar 2 ✅)
 # Phase 5: Final Completion      → Mar 3   – Dec 31, 2026
 #
-# Splitting the former monolithic Phase 3 (Nov 7 – Feb 19) at Feb 2 addresses the
-# 39.5% temporal accuracy drop: early framing (open structure) is visually distinct
-# from MEP rough-in (enclosed structure with trades inside).
+# Phase 3a/3b split at Jan 6 (Shear Wall first inspection): walls are substantially
+# framed by this point — visually distinct from the open-stud early framing period.
 PHASE_WINDOWS = [
     ("Phase 1: Site Mobilization",  "2025-09-01", "2025-10-08"),
     ("Phase 2: Foundation",         "2025-10-09", "2025-11-06"),
-    ("Phase 3a: Rough Framing",     "2025-11-07", "2026-02-02"),
-    ("Phase 3b: MEP & Framing",     "2026-02-03", "2026-02-19"),
+    ("Phase 3a: Rough Wall Framing","2025-11-07", "2026-01-05"),
+    ("Phase 3b: Structural Closeout","2026-01-06", "2026-02-02"),
+    ("Phase 3c: MEP & Framing",     "2026-02-03", "2026-02-19"),
     ("Phase 4: Exterior Finish",    "2026-02-20", "2026-03-02"),
     ("Phase 5: Final Completion",   "2026-03-03", "2026-12-31"),
 ]
