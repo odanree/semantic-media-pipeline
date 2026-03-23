@@ -51,13 +51,24 @@ CONFIDENCE_THRESHOLD = 0.85
 BOUNDARY_DAYS        = 14  # days around each phase transition to use as boundary test set
 
 # Phase windows: (label, start_inclusive, end_inclusive)
-# Dates are inspection/completion dates = END of each phase.
-# Phase 3/4 overlap: both trades on-site simultaneously Feb 12–19 2026.
+# Boundaries derived from actual inspection approval dates — BLDG25-0501.
+#
+# Phase 1: Site Mobilization     → Sep 1   – Oct 8, 2025
+# Phase 2: Foundation            → Oct 9   – Nov 6, 2025   (Underground plumbing Oct 29 ✅, Footing/Steel Nov 6 ✅)
+# Phase 3a: Rough Framing        → Nov 7   – Feb 2, 2026   (Floor joists Nov 26 ✅ → Roof framing/sheathing + Shear wall Feb 2 ✅)
+# Phase 3b: MEP & Framing        → Feb 3   – Feb 19, 2026  (MEPS Feb 17 ✅, Framing final sign-off Feb 20 ✅)
+# Phase 4: Exterior Finish       → Feb 20  – Mar 2, 2026   (Interior lath Feb 20 ✅, Exterior lath Feb 23 ✅, Insulation Feb 25 ✅, Drywall Mar 2 ✅)
+# Phase 5: Final Completion      → Mar 3   – Dec 31, 2026
+#
+# Splitting the former monolithic Phase 3 (Nov 7 – Feb 19) at Feb 2 addresses the
+# 39.5% temporal accuracy drop: early framing (open structure) is visually distinct
+# from MEP rough-in (enclosed structure with trades inside).
 PHASE_WINDOWS = [
     ("Phase 1: Site Mobilization",  "2025-09-01", "2025-10-08"),
     ("Phase 2: Foundation",         "2025-10-09", "2025-11-06"),
-    ("Phase 3: Rough MEP & Framing","2025-11-07", "2026-02-19"),  # MEP + framing done in tandem
-    ("Phase 4: Exterior",           "2026-02-20", "2026-03-02"),
+    ("Phase 3a: Rough Framing",     "2025-11-07", "2026-02-02"),
+    ("Phase 3b: MEP & Framing",     "2026-02-03", "2026-02-19"),
+    ("Phase 4: Exterior Finish",    "2026-02-20", "2026-03-02"),
     ("Phase 5: Final Completion",   "2026-03-03", "2026-12-31"),
 ]
 
