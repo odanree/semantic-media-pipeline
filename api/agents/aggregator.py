@@ -20,6 +20,10 @@ You have results from multiple specialized agents:
 Synthesize all available information into a clear, grounded answer.
 When audio results are present, use the transcript, segment type, and event labels
 to answer questions about what is being said or heard in the media.
+When construction_phase is present, use it to answer questions about construction
+progress, timelines, or what stage the work was at when media was captured.
+When yolo_labels are present, use them as supporting evidence for what objects
+appear in the frame.
 Do not invent details not supported by the provided context."""
 
 
@@ -47,8 +51,16 @@ async def build_final_answer(state: dict) -> str:
     parts = []
 
     if state.get("search_results"):
-        lines = [f"  - {r['file_path']} (similarity: {r['similarity']:.3f})"
-                 for r in state["search_results"][:5]]
+        lines = []
+        for r in state["search_results"][:5]:
+            line = f"  - {r['file_path']} (similarity: {r['similarity']:.3f})"
+            if r.get("construction_phase"):
+                conf = r.get("phase_confidence")
+                conf_str = f", {conf:.0%} confidence" if conf is not None else ""
+                line += f"\n    • Phase: {r['construction_phase']}{conf_str}"
+            if r.get("yolo_labels"):
+                line += f"\n    • Objects detected: {', '.join(r['yolo_labels'])}"
+            lines.append(line)
         parts.append("Visual matches:\n" + "\n".join(lines))
 
     if state.get("metadata_results"):

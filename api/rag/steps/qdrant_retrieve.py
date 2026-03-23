@@ -47,6 +47,7 @@ class QdrantRetrieveStep:
         items = []
         for hit in hits:
             p = hit.payload or {}
+            yolo = p.get("yolo_labels")
             items.append(RetrievedItem(
                 file_path=p.get("file_path", ""),
                 file_type=p.get("file_type", "unknown"),
@@ -54,6 +55,9 @@ class QdrantRetrieveStep:
                 caption=p.get("caption"),
                 frame_index=p.get("frame_index"),
                 timestamp=p.get("timestamp"),
+                construction_phase=p.get("construction_phase"),
+                phase_confidence=p.get("phase_confidence"),
+                yolo_labels=yolo if yolo else None,
             ))
 
         if context.dedup:
