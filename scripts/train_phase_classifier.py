@@ -344,9 +344,9 @@ def evaluate(clf, le, X_test, y_test, strategy: str, save_artifacts: bool = True
         print(f"  ℹ  Classes absent from this test set (not scored): {sorted(missing)}")
 
     if save_artifacts:
-        cm = confusion_matrix(y_test, y_pred)
+        cm = confusion_matrix(y_test, y_pred, labels=present_labels)
         fig, ax = plt.subplots(figsize=(9, 7))
-        disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=le.classes_)
+        disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=present_names)
         disp.plot(ax=ax, xticks_rotation=30, colorbar=False)
         ax.set_title(f"Construction Phase Classifier — Confusion Matrix ({strategy})")
         plt.tight_layout()
