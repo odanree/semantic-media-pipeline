@@ -52,9 +52,8 @@ def main(dry_run: bool = False, batch_size: int = 32):
 
     # Pass 1 — collect all construction asset IDs + file paths
     print("Pass 1: scanning Qdrant for construction assets …")
-    path_filter = Filter(should=[
+    path_filter = Filter(must=[
         FieldCondition(key="file_path", match=MatchText(text="Construction Timeline")),
-        FieldCondition(key="file_path", match=MatchText(text="DJI")),
     ])
     assets: list[tuple[int | str, str]] = []  # (point_id, file_path)
     offset = None
