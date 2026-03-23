@@ -108,6 +108,7 @@ def fetch_vectors(client: QdrantClient) -> pd.DataFrame:
     construction_filter = Filter(should=[
         FieldCondition(key="file_path", match=MatchText(text="Construction Timeline")),
         FieldCondition(key="file_path", match=MatchText(text="Construction Phase")),
+        FieldCondition(key="file_path", match=MatchText(text="DJI 20251201")),
     ])
     rows = []
     offset = None

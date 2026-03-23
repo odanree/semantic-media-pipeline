@@ -53,7 +53,7 @@ def main(dry_run: bool = False):
     bundle = joblib.load(MODEL_PATH)
     clf = bundle["model"]
     le  = bundle["label_encoder"]
-    print(f"Loaded model: {len(le.classes_)} classes → {list(le.classes_)}")
+    print(f"Loaded model: {len(le.classes_)} classes -> {list(le.classes_)}")
 
     client = QdrantClient(host=QDRANT_HOST, port=QDRANT_PORT)
 
@@ -91,7 +91,8 @@ def main(dry_run: bool = False):
     offset = None
     path_filter = Filter(should=[
         FieldCondition(key="file_path", match=MatchText(text="Construction Timeline")),
-        FieldCondition(key="file_path", match=MatchText(text="DJI")),
+        FieldCondition(key="file_path", match=MatchText(text="Construction Phase")),
+        FieldCondition(key="file_path", match=MatchText(text="DJI 20251201")),
     ])
     while True:
         records, next_offset = client.scroll(

@@ -37,6 +37,9 @@ class RetrievedItem:
     frame_index: Optional[int] = None
     timestamp: Optional[float] = None
     rerank_score: Optional[float] = None
+    construction_phase: Optional[str] = None
+    phase_confidence: Optional[float] = None
+    yolo_labels: Optional[list] = None
 
 
 @dataclass
