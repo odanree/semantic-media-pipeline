@@ -23,7 +23,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 from qdrant_client import QdrantClient
-from qdrant_client.models import SetPayloadOperation, SetPayload
+from qdrant_client.models import Filter, FieldCondition, MatchText, SetPayloadOperation, SetPayload
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from worker.ml.yolo_detector import get_yolo_model
@@ -89,14 +89,18 @@ def main(dry_run: bool = False, batch_size: int = 32):
     print(f"YOLO model ready.  ({t_model_ready - t_model_start:.1f}s)\n")
 
     # Pass 1 — collect construction asset IDs, local paths, and timestamps
-    # file_path is a keyword index (exact match only) — filter in Python by substring
+    # file_path has a text index — MatchText filters server-side, no full scan needed
     print("Pass 1: scanning Qdrant for construction assets …")
     assets: list[tuple[int | str, str, float]] = []  # (point_id, local_path, timestamp_sec)
     scanned = 0
+    construction_filter = Filter(must=[
+        FieldCondition(key="file_path", match=MatchText(text="Construction")),
+    ])
     offset = None
     while True:
         records, next_offset = client.scroll(
             collection_name=COLLECTION_NAME,
+            scroll_filter=construction_filter,
             with_vectors=False,
             with_payload=["file_path", "timestamp"],
             limit=1000,
@@ -107,14 +111,12 @@ def main(dry_run: bool = False, batch_size: int = 32):
         scanned += len(records)
         for r in records:
             fp = (r.payload or {}).get("file_path", "")
-            if "Construction Timeline" not in fp:
-                continue
             local = _resolve_path(fp)
             if not local or not Path(local).exists():
                 continue
             timestamp = float((r.payload or {}).get("timestamp", 0.0))
             assets.append((r.id, local, timestamp))
-        print(f"  scanned {scanned:,}  found {len(assets):,} …", end="\r")
+        print(f"  found {len(assets):,} …", end="\r")
         if next_offset is None:
             break
         offset = next_offset
