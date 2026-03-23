@@ -25,6 +25,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from qdrant_client import QdrantClient
+from qdrant_client.models import Filter, FieldCondition, MatchText
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import classification_report, confusion_matrix, ConfusionMatrixDisplay
 from sklearn.model_selection import train_test_split
@@ -43,12 +44,11 @@ CONFIDENCE_THRESHOLD = 0.85
 # Dates are inspection/completion dates = END of each phase.
 # Phase 3/4 overlap: both trades on-site simultaneously Feb 12–19 2026.
 PHASE_WINDOWS = [
-    ("Phase 1: Site Mobilization", "2025-09-01", "2025-10-08"),
-    ("Phase 2: Foundation",        "2025-10-09", "2025-11-06"),
-    ("Phase 3: Rough MEP",         "2025-11-07", "2026-02-19"),  # extended through framing overlap
-    ("Phase 4: Framing",           "2026-02-12", "2026-02-19"),  # overlaps Phase 3
-    ("Phase 5: Exterior",          "2026-02-20", "2026-03-02"),
-    ("Phase 6: Final Completion",  "2026-03-03", "2026-12-31"),
+    ("Phase 1: Site Mobilization",  "2025-09-01", "2025-10-08"),
+    ("Phase 2: Foundation",         "2025-10-09", "2025-11-06"),
+    ("Phase 3: Rough MEP & Framing","2025-11-07", "2026-02-19"),  # MEP + framing done in tandem
+    ("Phase 4: Exterior",           "2026-02-20", "2026-03-02"),
+    ("Phase 5: Final Completion",   "2026-03-03", "2026-12-31"),
 ]
 
 OUTPUT_DIR = Path(__file__).parent.parent / "models"
@@ -78,6 +78,14 @@ def _date_from_filename(file_path: str) -> pd.Timestamp | None:
 # ---------------------------------------------------------------------------
 def fetch_vectors(client: QdrantClient) -> pd.DataFrame:
     print(f"Connecting to Qdrant at {QDRANT_HOST}:{QDRANT_PORT} …")
+    # Only train on verified construction media — curated folders that contain
+    # nothing but construction photos/videos.  Pixel 9 monthly backups and other
+    # mixed folders are intentionally excluded; they will be classified later
+    # using the model trained here.
+    construction_filter = Filter(should=[
+        FieldCondition(key="file_path", match=MatchText(text="Construction Timeline")),
+        FieldCondition(key="file_path", match=MatchText(text="Construction Phase")),
+    ])
     rows = []
     offset = None
     batch = 0
@@ -85,6 +93,7 @@ def fetch_vectors(client: QdrantClient) -> pd.DataFrame:
     while True:
         records, next_offset = client.scroll(
             collection_name=COLLECTION_NAME,
+            scroll_filter=construction_filter,
             with_vectors=True,
             with_payload=True,
             limit=1000,

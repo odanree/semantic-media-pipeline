@@ -379,10 +379,9 @@ export default function SearchBar({ onSearch, isLoading = false, suggestions, ex
               <option value="">Any</option>
               <option value="Phase 1: Site Mobilization">Phase 1: Site Mobilization</option>
               <option value="Phase 2: Foundation">Phase 2: Foundation</option>
-              <option value="Phase 3: Rough MEP">Phase 3: Rough MEP</option>
-              <option value="Phase 4: Framing">Phase 4: Framing</option>
-              <option value="Phase 5: Exterior">Phase 5: Exterior</option>
-              <option value="Phase 6: Final Completion">Phase 6: Final Completion</option>
+              <option value="Phase 3: Rough MEP & Framing">Phase 3: Rough MEP &amp; Framing</option>
+              <option value="Phase 4: Exterior">Phase 4: Exterior</option>
+              <option value="Phase 5: Final Completion">Phase 5: Final Completion</option>
             </select>
           </div>
 
