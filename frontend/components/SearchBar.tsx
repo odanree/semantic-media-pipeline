@@ -19,9 +19,10 @@ interface SearchBarProps {
   isLoading?: boolean
   suggestions?: string[]
   externalQuery?: string
+  constructionPhases?: string[]
 }
 
-export default function SearchBar({ onSearch, isLoading = false, suggestions, externalQuery }: SearchBarProps) {
+export default function SearchBar({ onSearch, isLoading = false, suggestions, externalQuery, constructionPhases = [] }: SearchBarProps) {
   const [query, setQuery] = useState('')
   const [showFilters, setShowFilters] = useState(false)
   const [showHistory, setShowHistory] = useState(false)
@@ -366,25 +367,25 @@ export default function SearchBar({ onSearch, isLoading = false, suggestions, ex
             </select>
           </div>
 
-          {/* Construction Phase Filter */}
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-sm font-semibold text-gray-300">🏗️ Construction Phase</p>
-              <p className="text-xs text-gray-500 mt-0.5">Filter by ADU build phase</p>
+          {/* Construction Phase Filter — only shown when phases exist in the collection */}
+          {constructionPhases.length > 0 && (
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm font-semibold text-gray-300">🏗️ Construction Phase</p>
+                <p className="text-xs text-gray-500 mt-0.5">Filter by build phase</p>
+              </div>
+              <select
+                value={filters.constructionPhase ?? ''}
+                onChange={(e) => setFilters({ ...filters, constructionPhase: e.target.value || undefined })}
+                className="bg-gray-700 text-gray-300 text-sm rounded px-2 py-1 border border-gray-600 focus:outline-none focus:border-blue-500"
+              >
+                <option value="">Any</option>
+                {constructionPhases.map((phase) => (
+                  <option key={phase} value={phase}>{phase}</option>
+                ))}
+              </select>
             </div>
-            <select
-              value={filters.constructionPhase ?? ''}
-              onChange={(e) => setFilters({ ...filters, constructionPhase: e.target.value || undefined })}
-              className="bg-gray-700 text-gray-300 text-sm rounded px-2 py-1 border border-gray-600 focus:outline-none focus:border-blue-500"
-            >
-              <option value="">Any</option>
-              <option value="Phase 1: Site Mobilization">Phase 1: Site Mobilization</option>
-              <option value="Phase 2: Foundation">Phase 2: Foundation</option>
-              <option value="Phase 3: Rough MEP & Framing">Phase 3: Rough MEP &amp; Framing</option>
-              <option value="Phase 4: Exterior">Phase 4: Exterior</option>
-              <option value="Phase 5: Final Completion">Phase 5: Final Completion</option>
-            </select>
-          </div>
+          )}
 
           {/* Reset Filters */}
           <button
