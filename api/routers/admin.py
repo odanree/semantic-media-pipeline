@@ -88,6 +88,31 @@ async def trigger_backfill_moov_sidecars(body: BackfillRequest = BackfillRequest
     }
 
 
+@router.post("/admin/backfill-yolo", response_model=BackfillResponse, tags=["admin"])
+async def trigger_backfill_yolo(body: BackfillRequest = BackfillRequest()) -> BackfillResponse:
+    """
+    Dispatch YOLO object detection backfill for all construction frames missing yolo_labels.
+
+    Reads from the JPEG frame cache — no video seeking.  Skips frames that already
+    have yolo_labels.  Safe to call multiple times — idempotent.
+    """
+    try:
+        result = _celery.send_task(
+            "tasks.backfill_yolo",
+            kwargs={"dry_run": body.dry_run},
+            queue="celery",
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Failed to dispatch task: {exc}") from exc
+
+    mode = "dry-run" if body.dry_run else "live"
+    return BackfillResponse(
+        task_id=result.id,
+        dry_run=body.dry_run,
+        message=f"YOLO backfill dispatched ({mode}). Poll /api/admin/task/{result.id} for status.",
+    )
+
+
 @router.get("/admin/task/{task_id}", response_model=TaskStatusResponse, tags=["admin"])
 async def get_task_status(task_id: str) -> TaskStatusResponse:
     """Poll the status of a Celery task by ID."""
