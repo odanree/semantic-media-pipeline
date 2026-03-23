@@ -27,6 +27,7 @@ import argparse
 import os
 import re
 import sys
+import time
 from pathlib import Path
 
 import joblib
@@ -86,6 +87,7 @@ def _date_from_filename(file_path: str) -> pd.Timestamp | None:
 # Step 1 — Pull all vectors from Qdrant
 # ---------------------------------------------------------------------------
 def fetch_vectors(client: QdrantClient) -> pd.DataFrame:
+    t0 = time.perf_counter()
     print(f"Connecting to Qdrant at {QDRANT_HOST}:{QDRANT_PORT} …")
     # Only train on verified construction media — curated folders that contain
     # nothing but construction photos/videos.  Pixel 9 monthly backups and other
@@ -132,7 +134,8 @@ def fetch_vectors(client: QdrantClient) -> pd.DataFrame:
             break
         offset = next_offset
 
-    print(f"\nTotal records fetched: {len(rows):,}")
+    elapsed = time.perf_counter() - t0
+    print(f"\nTotal records fetched: {len(rows):,}  ({elapsed:.1f}s)")
     return pd.DataFrame(rows)
 
 
@@ -151,6 +154,7 @@ def assign_phases(created_at) -> list:
 
 
 def label_data(df: pd.DataFrame) -> pd.DataFrame:
+    t0 = time.perf_counter()
     df["phases"] = df["created_at"].apply(assign_phases)
     labeled = (
         df[df["phases"].map(len) > 0]
@@ -158,7 +162,8 @@ def label_data(df: pd.DataFrame) -> pd.DataFrame:
         .rename(columns={"phases": "phase"})
         .dropna(subset=["vector"])
     )
-    print("\nLabel distribution:")
+    elapsed = time.perf_counter() - t0
+    print(f"\nLabel distribution:  ({elapsed:.2f}s)")
     print(labeled["phase"].value_counts().to_string())
     return labeled
 
@@ -310,7 +315,10 @@ def train(X_train, y_train):
         n_jobs=-1,
     )
     print("Fitting Random Forest …")
+    t0 = time.perf_counter()
     clf.fit(X_train, y_train)
+    elapsed = time.perf_counter() - t0
+    print(f"Fitting done  ({elapsed:.1f}s)")
     return clf
 
 
@@ -318,10 +326,22 @@ def train(X_train, y_train):
 # Step 5 — Evaluate
 # ---------------------------------------------------------------------------
 def evaluate(clf, le, X_test, y_test, strategy: str, save_artifacts: bool = True) -> str:
-    y_pred  = clf.predict(X_test)
-    report  = classification_report(y_test, y_pred, target_names=le.classes_)
+    t0     = time.perf_counter()
+    y_pred = clf.predict(X_test)
+
+    # Only report on classes that actually appear in this test set —
+    # e.g. the camera strategy DJI set may not cover all 5 phases.
+    present_labels = np.unique(np.concatenate([y_test, y_pred]))
+    present_names  = le.classes_[present_labels]
+
+    report   = classification_report(y_test, y_pred, labels=present_labels, target_names=present_names)
     accuracy = (y_pred == y_test).mean()
-    print(f"\n[{strategy}] accuracy={accuracy:.1%}\n" + report)
+    elapsed  = time.perf_counter() - t0
+    print(f"\n[{strategy}] accuracy={accuracy:.1%}  inference={elapsed:.2f}s\n" + report)
+
+    if len(present_labels) < len(le.classes_):
+        missing = set(le.classes_) - set(present_names)
+        print(f"  ℹ  Classes absent from this test set (not scored): {sorted(missing)}")
 
     if save_artifacts:
         cm = confusion_matrix(y_test, y_pred)
@@ -401,6 +421,7 @@ def main():
     summary: list[tuple[str, float]] = []
 
     for strategy in strategies:
+        t_strategy = time.perf_counter()
         print(f"\n{'='*60}")
         print(f"  Strategy: {strategy.upper()}")
         print(f"{'='*60}")
@@ -412,7 +433,7 @@ def main():
 
         is_primary = strategy == strategies[-1]  # save artifacts + model for the last strategy
         report, accuracy = evaluate(clf, le, X_test, y_test, strategy, save_artifacts=is_primary)
-        summary.append((strategy, accuracy))
+        summary.append((strategy, accuracy, time.perf_counter() - t_strategy))
 
         if is_primary:
             save_model(clf, le, report, strategy)
@@ -421,14 +442,14 @@ def main():
         print(f"\n{'='*60}")
         print("  GENERALIZATION SUMMARY")
         print(f"{'='*60}")
-        print(f"  {'Strategy':<12}  {'Accuracy':>8}  {'vs random':>10}")
-        baseline = next((acc for s, acc in summary if s == "random"), summary[0][1])
-        for strat, acc in summary:
+        print(f"  {'Strategy':<12}  {'Accuracy':>8}  {'vs random':>10}  {'Time':>8}")
+        baseline = next((acc for s, acc, _ in summary if s == "random"), summary[0][1])
+        for strat, acc, elapsed in summary:
             delta = acc - baseline
             sign  = "+" if delta >= 0 else ""
-            print(f"  {strat:<12}  {acc:>7.1%}  {sign}{delta:>8.1%}")
+            print(f"  {strat:<12}  {acc:>7.1%}  {sign}{delta:>8.1%}  {elapsed:>6.1f}s")
         print()
-        drop = min(acc for _, acc in summary) - baseline
+        drop = min(acc for _, acc, _ in summary) - baseline
         if drop < -0.10:
             print("  ⚠  Accuracy drops >10% on a stricter strategy — model may be")
             print("     overfitting to temporal or camera-specific patterns.")
