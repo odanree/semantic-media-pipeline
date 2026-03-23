@@ -135,6 +135,7 @@ class IngestRequest(BaseModel):
     """Ingest request model"""
 
     media_root: str
+    force_relocate: bool = False
 
 
 class IngestResponse(BaseModel):
@@ -169,6 +170,7 @@ async def start_ingest(request: IngestRequest):
         task = celery_app.send_task(
             "tasks.crawl_and_dispatch",
             args=(request.media_root,),
+            kwargs={"force_relocate": request.force_relocate},
         )
 
         return IngestResponse(

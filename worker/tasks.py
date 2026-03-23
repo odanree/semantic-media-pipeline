@@ -285,13 +285,17 @@ def _save_frame_cache(file_hash: str, fps: float, resolution: int, frame_paths: 
     retry_jitter=True,
     max_retries=5,
 )
-def crawl_and_dispatch(self, media_root: str):
+def crawl_and_dispatch(self, media_root: str, force_relocate: bool = False):
     """
     Crawl media directory and dispatch ingest tasks.
     Main entry point for the pipeline.
 
     Args:
         media_root: Root directory to crawl
+        force_relocate: If True, treat the crawled path as canonical and update
+            file_path in DB + Qdrant even when the old file still exists elsewhere.
+            Use this for curated folders (e.g. Construction Timeline) that should
+            override wherever the file was originally indexed from.
     """
     try:
         print(f"Starting crawl of {media_root}")
@@ -316,7 +320,7 @@ def crawl_and_dispatch(self, media_root: str):
             # Strip /mnt/source/ prefix — store mount-relative paths so
             # changing the Windows host drive/folder never requires a DB migration.
             file_path = _to_relative_path(file_path)
-            ingest_media.delay(file_path, file_type)
+            ingest_media.delay(file_path, file_type, force_relocate=force_relocate)
 
         return {"status": "dispatched", "count": len(files)}
     except Exception as e:
@@ -332,7 +336,7 @@ def crawl_and_dispatch(self, media_root: str):
     retry_jitter=True,
     max_retries=5,
 )
-def ingest_media(self, file_path: str, file_type: str):
+def ingest_media(self, file_path: str, file_type: str, force_relocate: bool = False):
     """
     Lightweight ingestion task - creates DB record and dispatches to processor.
     File hash computation moved to child task to free up worker pool faster.
@@ -340,6 +344,8 @@ def ingest_media(self, file_path: str, file_type: str):
     Args:
         file_path: Full path to media file
         file_type: 'image' or 'video'
+        force_relocate: When True, treat file_path as canonical — update DB + Qdrant
+            even if the old file still exists at its previous path (duplicate_copy case).
     """
     db = SyncSessionLocal()
     try:
@@ -411,10 +417,10 @@ def ingest_media(self, file_path: str, file_type: str):
                 # (e.g. the same photo exists on a backup drive AND in google-photos/).
                 # Only treat as relocation if the old file is actually gone.
                 old_native = _translate_path(existing.file_path)
-                if not IS_S3 and os.path.isfile(old_native):
+                if not IS_S3 and os.path.isfile(old_native) and not force_relocate:
                     print(f"Duplicate copy (both paths exist), skipping: {file_path!r}")
                     return {"status": "skipped", "reason": "duplicate_copy"}
-                # Old file is gone — heal the stored path without re-embedding.
+                # Old file is gone, or caller asserted this path is canonical — heal the stored path.
                 old_path = existing.file_path
                 existing.file_path = file_path
                 db.commit()
