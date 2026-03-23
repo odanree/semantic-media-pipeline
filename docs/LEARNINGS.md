@@ -13,6 +13,8 @@ A living record of every significant bug, outage, and architectural misstep enco
   - [A4. Blocking Proxy Encode in Critical Pipeline Path](#a4-blocking-proxy-encode-in-critical-pipeline-path)
   - [A5. CLIP Model / Qdrant Collection Dimension Mismatch](#a5-clip-model--qdrant-collection-dimension-mismatch)
   - [A6. qdrant-client Minor Version Removed .search() — Mocked Tests Passed, Prod Returned 0 Results](#a6-qdrant-client-minor-version-removed-search--mocked-tests-passed-prod-returned-0-results)
+  - [A7. Google Takeout Zip Extraction Resets File mtime — Use Filename Date Parsing](#a7-google-takeout-zip-extraction-resets-file-mtime--use-filename-date-parsing)
+  - [A8. ML Classifier Path Filter Must Cover All Source Folders, Not Just the Export Folder](#a8-ml-classifier-path-filter-must-cover-all-source-folders-not-just-the-export-folder)
 - [B — Backend Services & REST APIs](#b--backend-services--rest-apis)
   - [B1. EXIF Bytes Not JSON-Serializable](#b1-exif-bytes-not-json-serializable)
   - [B2. asyncpg Callback Using Non-Existent Method](#b2-asyncpg-callback-using-non-existent-method)
@@ -24,13 +26,18 @@ A living record of every significant bug, outage, and architectural misstep enco
   - [B8. os.getenv('VAR', default) Does Not Guard Against Empty String](#b8-osgetenvvar-default-does-not-guard-against-empty-string)
   - [B9. DB Schema Drift Between init-db.sql and Migration Scripts](#b9-db-schema-drift-between-init-dbsql-and-migration-scripts)
   - [B10. FastAPI List[float] on POST Endpoint Is a Body Param](#b10-fastapi-listfloat-on-post-endpoint-is-a-body-param)
+  - [B11. Next.js API Proxy Routes Silently Drop Body Params Not Explicitly Destructured](#b11-nextjs-api-proxy-routes-silently-drop-body-params-not-explicitly-destructured)
+  - [B12. Flower 2.0 CLI Breaking Change — --broker Must Precede the flower Subcommand](#b12-flower-20-cli-breaking-change----broker-must-precede-the-flower-subcommand)
 - [C — Performance & Optimization](#c--performance--optimization)
   - [C1. Worker RAM Thrash](#c1-worker-ram-thrash)
   - [C2. Thumbnail API 2.9s Latency — Dual-Layer Cache](#c2-thumbnail-api-29s-latency--dual-layer-cache)
+  - [C3. Qdrant Batch Operations — Individual set_payload Calls Don't Scale](#c3-qdrant-batch-operations--individual-set_payload-calls-dont-scale)
 - [D — Production Troubleshooting](#d--production-troubleshooting)
   - [D1. Stale DB Records From File Renames Leave Tasks Stuck as pending](#d1-stale-db-records-from-file-renames-leave-tasks-stuck-as-pending)
   - [D2. Windows ffprobe UnicodeDecodeError on Non-Latin File Metadata](#d2-windows-ffprobe-unicodedecodeerror-on-non-latin-file-metadata)
   - [D3. Rate Limiter Redis Connection Kills All Tests in CI](#d3-rate-limiter-redis-connection-kills-all-tests-in-ci)
+  - [D4. pillow_heif register_heic_opener Renamed to register_heif_opener](#d4-pillow_heif-register_heic_opener-renamed-to-register_heif_opener)
+  - [D5. WSL2 Shutdown Breaks Docker Port Bindings — Restart Containers After wsl --shutdown](#d5-wsl2-shutdown-breaks-docker-port-bindings--restart-containers-after-wsl---shutdown)
 - [E — Frontend & Integration](#e--frontend--integration)
   - [E1. WebSocket URL Wrong Protocol](#e1-websocket-url-wrong-protocol)
   - [E2. Infinite WebSocket Reconnect With No Backoff](#e2-infinite-websocket-reconnect-with-no-backoff)
@@ -49,6 +56,8 @@ A living record of every significant bug, outage, and architectural misstep enco
 - [A4. Blocking Proxy Encode in Critical Pipeline Path](#a4-blocking-proxy-encode-in-critical-pipeline-path)
 - [A5. CLIP Model / Qdrant Collection Dimension Mismatch](#a5-clip-model--qdrant-collection-dimension-mismatch)
 - [A6. qdrant-client Minor Version Removed .search() — Mocked Tests Passed, Prod Returned 0 Results](#a6-qdrant-client-minor-version-removed-search--mocked-tests-passed-prod-returned-0-results)
+- [A7. Google Takeout Zip Extraction Resets File mtime — Use Filename Date Parsing](#a7-google-takeout-zip-extraction-resets-file-mtime--use-filename-date-parsing)
+- [A8. ML Classifier Path Filter Must Cover All Source Folders, Not Just the Export Folder](#a8-ml-classifier-path-filter-must-cover-all-source-folders-not-just-the-export-folder)
 
 ---
 
@@ -242,6 +251,8 @@ Replace `self._qdrant.search(...)` with `self._qdrant.query_points(...)`. Pin to
 - [B8. os.getenv('VAR', default) Does Not Guard Against Empty String](#b8-osgetenvvar-default-does-not-guard-against-empty-string)
 - [B9. DB Schema Drift Between init-db.sql and Migration Scripts](#b9-db-schema-drift-between-init-dbsql-and-migration-scripts)
 - [B10. FastAPI List[float] on POST Endpoint Is a Body Param](#b10-fastapi-listfloat-on-post-endpoint-is-a-body-param)
+- [B11. Next.js API Proxy Routes Silently Drop Body Params Not Explicitly Destructured](#b11-nextjs-api-proxy-routes-silently-drop-body-params-not-explicitly-destructured)
+- [B12. Flower 2.0 CLI Breaking Change — --broker Must Precede the flower Subcommand](#b12-flower-20-cli-breaking-change----broker-must-precede-the-flower-subcommand)
 
 ---
 
@@ -575,6 +586,7 @@ client.post("/api/search-vector", json=[0.1, 0.2], params={"limit": 5})
 
 - [C1. Worker RAM Thrash](#c1-worker-ram-thrash)
 - [C2. Thumbnail API 2.9s Latency — Dual-Layer Cache](#c2-thumbnail-api-29s-latency--dual-layer-cache)
+- [C3. Qdrant Batch Operations — Individual set_payload Calls Don't Scale](#c3-qdrant-batch-operations--individual-set_payload-calls-dont-scale)
 
 ---
 
@@ -675,6 +687,8 @@ The `X-Cache: HIT/MISS` header on responses gives instant observability into whi
 - [D1. Stale DB Records From File Renames Leave Tasks Stuck as pending](#d1-stale-db-records-from-file-renames-leave-tasks-stuck-as-pending)
 - [D2. Windows ffprobe UnicodeDecodeError on Non-Latin File Metadata](#d2-windows-ffprobe-unicodedecodeerror-on-non-latin-file-metadata)
 - [D3. Rate Limiter Redis Connection Kills All Tests in CI](#d3-rate-limiter-redis-connection-kills-all-tests-in-ci)
+- [D4. pillow_heif register_heic_opener Renamed to register_heif_opener](#d4-pillow_heif-register_heic_opener-renamed-to-register_heif_opener)
+- [D5. WSL2 Shutdown Breaks Docker Port Bindings — Restart Containers After wsl --shutdown](#d5-wsl2-shutdown-breaks-docker-port-bindings--restart-containers-after-wsl---shutdown)
 
 ---
 
@@ -1004,3 +1018,263 @@ export async function POST(request: NextRequest) {
 ### Lesson
 
 **Module-level `process.env` reads in Next.js API routes are a footgun: move secrets inside the handler where they're evaluated at request time, not build time.** The clue is that `docker compose exec frontend node -e 'console.log(process.env.BACKEND_API_KEY)'` prints the key correctly, but requests still 401 — that rules out the container env and points to the compiled output.
+
+---
+
+## A7. Google Takeout Zip Extraction Resets File mtime — Use Filename Date Parsing
+
+**Component:** `worker/tasks.py`, `scripts/train_phase_classifier.py`, `scripts/predict_phases.py`
+**Severity:** High — all 22,000+ exported photos received a `created_at` of the extraction date (March 22, 2026) instead of their true capture date
+
+### What Broke
+
+Google Takeout packages photos into zip archives. When extracted with standard tools (Windows Explorer, 7-Zip, `zipfile`), the OS sets each extracted file's `mtime` to the current time, not the original capture date embedded in the photo. The pipeline used `os.path.getmtime()` to set `created_at` in both the DB and the Qdrant payload — so every Construction Timeline photo appeared to be taken on the day of extraction. Date-range filters returned nonsense, and the classifier training script would have used the extraction date as the temporal label.
+
+### Root Cause
+
+Zip archives store a `last_modified` timestamp in the local file header, but this is set to the compression date when Google creates the archive — not the original EXIF capture date. `mtime` after extraction reflects neither capture date nor EXIF.
+
+### Fix
+
+Parse the capture date from the filename when available. Google Pixel photos follow the pattern `PXL_YYYYMMDD_HHmmssNNN.jpg`. A regex fallback chains EXIF → filename → `mtime`:
+
+```python
+import re
+
+_PIXEL_DATE_RE = re.compile(r'PXL_(\d{4})(\d{2})(\d{2})_')
+
+def parse_date_from_filename(path: str) -> datetime | None:
+    m = _PIXEL_DATE_RE.search(os.path.basename(path))
+    if m:
+        return datetime(int(m[1]), int(m[2]), int(m[3]))
+    return None
+```
+
+Training and prediction scripts also extract capture dates from filenames rather than relying on `mtime` or `created_at` in the Qdrant payload.
+
+### Lesson
+
+**Never trust `mtime` for media files that may have been extracted from an archive.** The safest priority chain is: EXIF `DateTimeOriginal` → filename date pattern → filesystem `mtime` as last resort. Document which source was used in the metadata payload so temporal bugs are debuggable. This applies to any bulk export workflow (Google Takeout, iCloud Export, OneDrive download).
+
+---
+
+## A8. ML Classifier Path Filter Must Cover All Source Folders, Not Just the Export Folder
+
+**Component:** `scripts/predict_phases.py`
+**Severity:** Medium — Foundation phase (Oct–Nov 2025) was underrepresented in classifier training and prediction because its photos lived in a different source folder
+
+### What Broke
+
+`predict_phases.py` filtered Qdrant records using a `should` (OR) filter on `file_path` containing `"Construction Timeline"` or `"DJI"`. This matched ~26,021 vectors correctly. However, Foundation-window photos (October 9 – November 6, 2025) taken before the Google Takeout export was organized were stored under `/mnt/source/Pre-Dec 2025/` — a different path entirely. These 18+ photos were never labeled, making Foundation the thinnest class (18 training examples) in an otherwise 26k-record dataset.
+
+### Root Cause
+
+The classification problem is defined by *date window* (when construction happened), but the path filter was defined by *folder name* (where photos happened to land after export). These two dimensions don't fully overlap — photos taken during construction but saved to a generic folder before the export was set up are excluded.
+
+### Fix
+
+Either (a) expand the path filter to include all folders that may contain construction-window dates, or (b) use a date-window filter (`created_at` range) instead of a path filter, after verifying that `created_at` is set from EXIF/filename (see A7). Option (b) is more robust because it captures any future photos regardless of folder structure.
+
+### Lesson
+
+**Define classification scope by the property that matters (time window, subject) rather than the folder structure.** Folder-based filters are convenient but brittle — photos move, exports are reorganized, and new source folders are added. When the labeling criterion is temporal (e.g., "photos taken during Phase 2"), use a date-range filter as the primary selector and treat folder names as a secondary sanity check.
+
+---
+
+## B11. Next.js API Proxy Routes Silently Drop Body Params Not Explicitly Destructured
+
+**Component:** `frontend/app/api/search/route.ts`
+**Severity:** High — `construction_phase` filter was sent by the frontend but never forwarded to the backend; filter appeared to work but had no effect
+
+### What Broke
+
+The `/api/search` Next.js proxy handler destructured only the original set of body parameters. When `construction_phase` was added to the frontend payload, the route handler received it in `body` but never destructured it — so the `JSON.stringify(...)` forwarded to the FastAPI backend simply omitted the field. The backend received a valid request, ran a search without the phase filter, and returned unfiltered results. No error was thrown anywhere in the chain.
+
+### Root Cause
+
+JavaScript spread (`...body`) is not used in the proxy — each forwarded field is explicitly listed. This is intentional (it prevents accidentally forwarding unknown or dangerous fields), but it means every new filter parameter requires a matching destructure line in the proxy handler or it is silently dropped.
+
+### Fix
+
+```typescript
+// Add to destructuring:
+const { query, limit = 20, threshold, min_similarity, dedup,
+        audio_segment_type, audio_event_top, construction_phase } = body
+
+// Add to forwarded body:
+...(construction_phase && { construction_phase }),
+```
+
+### Lesson
+
+**Every new filter added to the frontend payload requires a matching destructure + spread in the Next.js proxy route.** The silence of the failure (no error, just missing results) makes this easy to ship and hard to notice. Write an integration test that posts a request with the new field and asserts the backend received it, or use `...body` spread with an allowlist for known-safe fields.
+
+---
+
+## B12. Flower 2.0 CLI Breaking Change — `--broker` Must Precede the `flower` Subcommand
+
+**Component:** `docker-compose.yml`
+**Severity:** Medium — Celery Flower container crashed on startup with `"incorrectly specified celery arguments"`
+
+### What Broke
+
+The `flower` Docker service used the command form `celery flower --broker=... --purge_offline_workers=...`. After upgrading to `mher/flower:2.0.1`, the container exited immediately with:
+
+```
+Error: use -A to specify the app to use, or see --help for options.
+Incorrectly specified celery arguments: ['--broker=redis://...']
+```
+
+### Root Cause
+
+Flower 2.0 changed the CLI contract: `--broker` (and other Celery-level arguments) must come *before* the `flower` subcommand, because they are arguments to the `celery` parent command, not to `flower` itself. The pre-2.0 form happened to work by accident.
+
+### Fix
+
+```yaml
+# WRONG (Flower <2.0 syntax)
+command: celery flower --broker=redis://... --purge_offline_workers=1800
+
+# CORRECT (Flower 2.0+)
+command: >
+  celery --broker=${CELERY_BROKER_URL:-redis://lumen-redis:6379/0}
+  flower --purge_offline_workers=1800
+```
+
+### Lesson
+
+**When upgrading Celery tooling, check the CLI argument order for subcommands.** Flower's changelog documents this as a breaking change in 2.0. The diagnostic is the exact phrase `"incorrectly specified celery arguments"` in the container logs — it's unambiguous once you know to look for it. Pin Flower to a minor version in `docker-compose.yml` to avoid surprise upgrades.
+
+---
+
+## C3. Qdrant Batch Operations — Individual `set_payload` Calls Don't Scale
+
+**Component:** `scripts/predict_phases.py`
+**Severity:** Medium — writing phase labels to 26,021 vectors took ~70,000 HTTP calls instead of ~6
+
+### What Broke
+
+The initial predict_phases implementation called `client.set_payload(...)` once per record inside a loop. With 26,021 records, this produced one HTTP round-trip per record — roughly 70,000 calls (including confidence values). At ~5ms per call on a local network, this would take ~6 minutes for payload writes alone.
+
+Additionally, the initial Pass 1 used Python-side scanning (fetch all 84k records, filter in Python) instead of a server-side Qdrant filter, adding unnecessary data transfer.
+
+### Fix
+
+**Server-side filtering (Pass 1):** Use a Qdrant `Filter` with `FieldCondition(key="file_path", match=MatchText(...))` so only matching records are transferred:
+
+```python
+path_filter = Filter(should=[
+    FieldCondition(key="file_path", match=MatchText(text="Construction Timeline")),
+    FieldCondition(key="file_path", match=MatchText(text="DJI")),
+])
+records, _ = client.scroll(collection_name=..., scroll_filter=path_filter, with_vectors=True, limit=batch_size)
+```
+
+**Batch inference (Pass 2):** Build the full feature matrix, run `clf.predict_proba(X)` once, extract argmax in numpy:
+
+```python
+X = np.array([r.vector for r in valid_records])
+probs_all = clf.predict_proba(X)  # shape: (N, 6)
+idxs = probs_all.argmax(axis=1)
+```
+
+**Grouped payload writes:** Group point IDs by predicted phase, then call `set_payload` once per phase (6 calls max):
+
+```python
+from collections import defaultdict
+phase_groups = defaultdict(list)
+for pid, phase in zip(ids, phases):
+    phase_groups[phase].append(pid)
+
+for phase, pids in phase_groups.items():
+    client.set_payload(collection_name=COLLECTION_NAME,
+                       payload={"construction_phase": phase}, points=pids)
+```
+
+**Batch confidence writes:** Use `batch_update_points` with `SetPayloadOperation` for per-record confidence values:
+
+```python
+from qdrant_client.models import SetPayload, SetPayloadOperation
+ops = [SetPayloadOperation(set_payload=SetPayload(
+           payload={"phase_confidence": conf}, points=[pid]))
+       for pid, conf in zip(ids, confs)]
+client.batch_update_points(collection_name=COLLECTION_NAME, update_operations=ops)
+```
+
+### Lesson
+
+**Always use server-side Qdrant filters for selective reads — never scan the full collection in Python.** For payload writes, group by value and call `set_payload` once per unique value, then use `batch_update_points` for heterogeneous per-record values. The rule of thumb: the number of Qdrant API calls should be proportional to the number of *unique values* being written, not the number of records.
+
+Requires `file_path` to have a keyword payload index (`PayloadSchemaType.Keyword`) in Qdrant for `MatchText` to be efficient.
+
+---
+
+## D4. pillow_heif `register_heic_opener` Renamed to `register_heif_opener`
+
+**Component:** `worker/ingest/ffmpeg.py`
+**Severity:** Medium — HEIC/HEIF photo ingestion failed silently; all HEIC files were skipped
+
+### What Broke
+
+The worker imported `from pillow_heif import register_heic_opener` and called it at module load. With the installed version of `pillow_heif`, this raised `ImportError: cannot import name 'register_heic_opener'`, causing the entire ingest module to fail to import and all HEIC files to be skipped without an explicit error in the task log.
+
+### Root Cause
+
+`pillow_heif` renamed its Pillow integration function between versions:
+- Old API: `register_heic_opener()`
+- New API: `register_heif_opener()`
+
+The rename reflects that the library handles the full HEIF container format (not just the HEIC subtype). The old name was removed in the installed version.
+
+### Fix
+
+```python
+# WRONG
+from pillow_heif import register_heic_opener
+register_heic_opener()
+
+# CORRECT
+from pillow_heif import register_heif_opener
+register_heif_opener()
+```
+
+### Lesson
+
+**When an ingest module silently processes zero files of a specific type, check for import errors at the top of the module — they suppress the entire module without appearing in per-task logs.** Pin `pillow_heif` to an exact version in `requirements.txt` to prevent silent renames from breaking production. `register_heif_opener()` is the stable API going forward.
+
+---
+
+## D5. WSL2 Shutdown Breaks Docker Port Bindings — Restart Containers After `wsl --shutdown`
+
+**Component:** Production Docker Compose stacks
+**Severity:** High — all container ports became unreachable after a `wsl --shutdown` command; services appeared healthy but were inaccessible
+
+### What Broke
+
+After running `wsl --shutdown` (to free WSL2 memory), all Docker containers on both stacks were still listed as `Up (healthy)` but every port binding was silently broken. `curl http://localhost:8000/health` timed out. The Docker Desktop UI showed containers running normally.
+
+### Root Cause
+
+Docker Desktop on Windows uses WSL2 as its backend. When `wsl --shutdown` terminates the WSL2 kernel, Docker's internal networking (`vpnkit` / `wsl-vm` bridge) is torn down. When WSL2 restarts, Docker reconnects the containers to the daemon but does not automatically re-establish the `localhost` → container port forwarding rules. Containers keep their internal IPs and inter-container networking works, but host-side port bindings are gone.
+
+### Diagnosis
+
+1. `docker ps` shows all containers as `Up (healthy)` — misleading.
+2. `curl http://localhost:8000` times out or connection refused.
+3. `docker compose exec api curl http://localhost:8000/health` succeeds — confirms internal networking is fine.
+4. Host-side bindings are the missing layer.
+
+### Fix
+
+Restart all containers after any `wsl --shutdown`:
+
+```bash
+# Restart each active stack
+docker compose restart
+```
+
+A full `down` + `up` is not required; `restart` is sufficient to re-establish port bindings.
+
+### Lesson
+
+**`wsl --shutdown` is not safe to use when Docker containers need to remain accessible from the Windows host.** After any WSL2 restart (manual or Windows Update), run `docker compose restart` on every active stack before assuming services are reachable. Add this to any runbook covering Windows host reboots or WSL2 maintenance. Prefer `wsl --terminate <distro>` to shut down a specific distro without triggering a full Docker backend teardown.
