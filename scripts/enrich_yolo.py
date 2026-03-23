@@ -19,7 +19,7 @@ import sys
 import threading
 import time
 from collections import defaultdict
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, wait as futures_wait
 from pathlib import Path
 
 import cv2
@@ -63,7 +63,10 @@ def _load_frame(args: tuple) -> tuple:
     try:
         ext = Path(local_path).suffix.lower()
         if ext in VIDEO_EXTS:
+            os.environ["OPENCV_FFMPEG_LOGLEVEL"] = "quiet"
             cap = cv2.VideoCapture(local_path)
+            cap.set(cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 8000)
+            cap.set(cv2.CAP_PROP_READ_TIMEOUT_MSEC, 5000)
             cap.set(cv2.CAP_PROP_POS_MSEC, timestamp * 1000)
             ok, frame = cap.read()
             cap.release()
@@ -184,7 +187,11 @@ def main(dry_run: bool = False, batch_size: int = 32):
 
             futures = {pool.submit(_load_frame, item): item[0] for item in batch}
             loaded: list[tuple[int | str, np.ndarray]] = []
-            for future in as_completed(futures):
+            done, pending = futures_wait(futures, timeout=15)
+            for future in pending:
+                future.cancel()
+                skipped += 1
+            for future in done:
                 pid, arr = future.result()
                 if arr is not None:
                     loaded.append((pid, arr))
