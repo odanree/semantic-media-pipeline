@@ -27,6 +27,7 @@ import argparse
 import os
 import re
 import sys
+sys.stdout.reconfigure(encoding="utf-8")
 import time
 from pathlib import Path
 
@@ -53,12 +54,12 @@ BOUNDARY_DAYS        = 14  # days around each phase transition to use as boundar
 # Phase windows: (label, start_inclusive, end_inclusive)
 # Boundaries derived from actual inspection approval dates.
 #
-# Phase 1: Site Mobilization  → Sep 1   – Oct 8, 2025
-# Phase 2: Foundation         → Oct 9   – Nov 6, 2025   (Underground plumbing Oct 29 ✅, Footing/Steel Nov 6 ✅)
-# Phase 3a: Rough Framing     → Nov 7   – Feb 2, 2026   (Floor joists Nov 26 ✅ → Shear wall + Roof framing/sheathing Feb 2 ✅)
-# Phase 3b: MEP & Framing     → Feb 3   – Feb 19, 2026  (MEPS Feb 17 ✅, Framing final sign-off Feb 20 ✅)
-# Phase 4: Exterior Finish    → Feb 20  – Mar 2, 2026   (Interior lath Feb 20 ✅, Exterior lath Feb 23 ✅, Insulation Feb 25 ✅, Drywall Mar 2 ✅)
-# Phase 5: Final Completion   → Mar 3   – Dec 31, 2026
+# Phase 1: Site Mobilization  -> Sep 1   – Oct 8, 2025
+# Phase 2: Foundation         -> Oct 9   – Nov 6, 2025   (Underground plumbing Oct 29 [x], Footing/Steel Nov 6 [x])
+# Phase 3a: Rough Framing     -> Nov 7   – Feb 2, 2026   (Floor joists Nov 26 [x] -> Shear wall + Roof framing/sheathing Feb 2 [x])
+# Phase 3b: MEP & Framing     -> Feb 3   – Feb 19, 2026  (MEPS Feb 17 [x], Framing final sign-off Feb 20 [x])
+# Phase 4: Exterior Finish    -> Feb 20  – Mar 2, 2026   (Interior lath Feb 20 [x], Exterior lath Feb 23 [x], Insulation Feb 25 [x], Drywall Mar 2 [x])
+# Phase 5: Final Completion   -> Mar 3   – Dec 31, 2026
 #
 # Splitting the former monolithic Phase 3 (Nov 7 – Feb 19) at Feb 2 addresses the
 # temporal accuracy gap: early framing (open structure) is visually distinct from
@@ -132,11 +133,13 @@ def fetch_vectors(client: QdrantClient) -> pd.DataFrame:
                 raw = r.payload.get("created_at")
                 ts = pd.to_datetime(raw, errors="coerce", utc=True) if raw else None
             rows.append({
-                "id":         r.id,
-                "vector":     r.vector,
-                "created_at": ts,
-                "file_path":  fp,
-                "file_type":  r.payload.get("file_type"),
+                "id":           r.id,
+                "vector":       r.vector,
+                "created_at":   ts,
+                "file_path":    fp,
+                "file_type":    r.payload.get("file_type"),
+                "yolo_labels":  r.payload.get("yolo_labels") or [],
+                "yolo_count":   r.payload.get("yolo_object_count") or 0,
             })
 
         print(f"  Fetched {len(rows):,} records …", end="\r")
@@ -180,11 +183,49 @@ def label_data(df: pd.DataFrame) -> pd.DataFrame:
 
 
 # ---------------------------------------------------------------------------
+# Step 2b — Build YOLO multi-hot features
+# ---------------------------------------------------------------------------
+def build_yolo_features(labeled: pd.DataFrame) -> tuple:
+    """
+    Build a multi-hot + count feature matrix from yolo_labels / yolo_count.
+    Returns (feature_matrix np.ndarray, vocab list[str]).
+
+    Each row: [0/1 per COCO class ... | object_count_normalised]
+    Vocab is derived from all labels present in the dataset (typically a
+    subset of the 80 COCO classes that YOLO actually detected).
+    """
+    # Build vocab from training data
+    all_labels: set = set()
+    for labels in labeled["yolo_labels"]:
+        if isinstance(labels, list):
+            all_labels.update(labels)
+    vocab = sorted(all_labels)
+    vocab_index = {lbl: i for i, lbl in enumerate(vocab)}
+    n_vocab = len(vocab)
+
+    max_count = labeled["yolo_count"].max() or 1.0  # for normalisation
+
+    rows = []
+    for _, row in labeled.iterrows():
+        vec = np.zeros(n_vocab + 1, dtype=np.float32)
+        for lbl in (row["yolo_labels"] or []):
+            if lbl in vocab_index:
+                vec[vocab_index[lbl]] = 1.0
+        vec[-1] = float(row["yolo_count"] or 0) / max_count
+        rows.append(vec)
+
+    feat_matrix = np.vstack(rows)
+    print(f"\nYOLO features: {n_vocab} classes detected, {feat_matrix.shape[1]} dims total")
+    print(f"  Classes: {', '.join(vocab[:20])}{'...' if len(vocab) > 20 else ''}")
+    return feat_matrix, vocab
+
+
+# ---------------------------------------------------------------------------
 # Step 3 — Split strategies
 # ---------------------------------------------------------------------------
 def split_random(labeled: pd.DataFrame):
     """Baseline: stratified random 80/20."""
-    X = np.vstack(labeled["vector"].values)
+    X = np.vstack(labeled["features"].values)
     le = LabelEncoder()
     y = le.fit_transform(labeled["phase"])
     X_train, X_test, y_train, y_test = train_test_split(
@@ -220,9 +261,9 @@ def split_temporal(labeled: pd.DataFrame):
     le = LabelEncoder()
     le.fit(labeled["phase"])
 
-    X_train = np.vstack(train_df["vector"].values)
+    X_train = np.vstack(train_df["features"].values)
     y_train = le.transform(train_df["phase"])
-    X_test  = np.vstack(test_df["vector"].values)
+    X_test  = np.vstack(test_df["features"].values)
     y_test  = le.transform(test_df["phase"])
 
     print(f"  [temporal] train={len(X_train):,}  test={len(X_test):,} "
@@ -261,9 +302,9 @@ def split_boundary(labeled: pd.DataFrame):
         print(f"  [boundary] Classes missing from train set: {missing} — falling back to random.")
         return split_random(labeled)
 
-    X_train = np.vstack(train_df["vector"].values)
+    X_train = np.vstack(train_df["features"].values)
     y_train = le.transform(train_df["phase"])
-    X_test  = np.vstack(test_df["vector"].values)
+    X_test  = np.vstack(test_df["features"].values)
     y_test  = le.transform(test_df["phase"])
 
     print(f"  [boundary] train={len(X_train):,}  test={len(X_test):,} "
@@ -297,9 +338,9 @@ def split_camera(labeled: pd.DataFrame):
         print(f"  [camera] DJI has phases not in Pixel training set: {missing} — falling back to random.")
         return split_random(labeled)
 
-    X_train = np.vstack(train_df["vector"].values)
+    X_train = np.vstack(train_df["features"].values)
     y_train = le.transform(train_df["phase"])
-    X_test  = np.vstack(test_df["vector"].values)
+    X_test  = np.vstack(test_df["features"].values)
     y_test  = le.transform(test_df["phase"])
 
     print(f"  [camera] train={len(X_train):,} (Pixel)  test={len(X_test):,} (DJI)")
@@ -352,7 +393,7 @@ def evaluate(clf, le, X_test, y_test, strategy: str, save_artifacts: bool = True
 
     if len(present_labels) < len(le.classes_):
         missing = set(le.classes_) - set(present_names)
-        print(f"  ℹ  Classes absent from this test set (not scored): {sorted(missing)}")
+        print(f"  [i] Classes absent from this test set (not scored): {sorted(missing)}")
 
     if save_artifacts:
         cm = confusion_matrix(y_test, y_pred, labels=present_labels)
@@ -365,7 +406,7 @@ def evaluate(clf, le, X_test, y_test, strategy: str, save_artifacts: bool = True
         cm_path = OUTPUT_DIR / f"phase_classifier_cm_{strategy}.png"
         plt.savefig(cm_path, dpi=150)
         plt.close()
-        print(f"Confusion matrix saved → {cm_path}")
+        print(f"Confusion matrix saved -> {cm_path}")
 
         probs    = clf.predict_proba(X_test)
         max_conf = probs.max(axis=1)
@@ -385,11 +426,11 @@ def save_model(clf, le, report: str, strategy: str):
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     model_path = OUTPUT_DIR / "phase_classifier.joblib"
     joblib.dump({"model": clf, "label_encoder": le}, model_path)
-    print(f"Model saved → {model_path}")
+    print(f"Model saved -> {model_path}")
 
     report_path = OUTPUT_DIR / "phase_classifier_report.txt"
     report_path.write_text(f"Eval strategy: {strategy}\n\n" + report)
-    print(f"Report saved → {report_path}")
+    print(f"Report saved -> {report_path}")
 
 
 # ---------------------------------------------------------------------------
@@ -402,6 +443,11 @@ def main():
         choices=[*SPLIT_STRATEGIES.keys(), "all"],
         default="random",
         help="How to split train/test data (default: random)",
+    )
+    parser.add_argument(
+        "--use-yolo",
+        action="store_true",
+        help="Concatenate YOLO multi-hot features to CLIP embeddings",
     )
     args = parser.parse_args()
 
@@ -427,6 +473,18 @@ def main():
     if labeled["phase"].nunique() < 2:
         print("Need at least 2 phases to train a classifier.")
         sys.exit(1)
+
+    # Build feature matrix — optionally augment CLIP with YOLO multi-hot
+    if args.use_yolo:
+        yolo_matrix, yolo_vocab = build_yolo_features(labeled)
+        clip_matrix = np.vstack(labeled["vector"].values)
+        combined = np.hstack([clip_matrix, yolo_matrix])
+        labeled = labeled.copy()
+        labeled["features"] = list(combined)
+        print(f"  Combined features: {combined.shape[1]} dims (768 CLIP + {yolo_matrix.shape[1]} YOLO)")
+    else:
+        labeled = labeled.copy()
+        labeled["features"] = labeled["vector"]
 
     strategies = list(SPLIT_STRATEGIES.keys()) if args.eval_strategy == "all" else [args.eval_strategy]
     summary: list[tuple[str, float]] = []
