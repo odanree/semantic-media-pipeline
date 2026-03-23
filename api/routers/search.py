@@ -155,6 +155,8 @@ class SearchRequest(BaseModel):
     # --- Segment-level audio filters ---
     audio_segment_type: Optional[str] = None  # speech | non_verbal | music | ambient | event | silence
     audio_event_top: Optional[str] = None     # e.g. "Scream" — AudioSet top label
+    # --- Construction phase filter ---
+    construction_phase: Optional[str] = None  # e.g. "Phase 3: Rough MEP"
     # --- Re-ranker ---
     oversample: Optional[int] = None  # override RERANKER_OVERSAMPLE for this request
 
@@ -396,16 +398,20 @@ async def search_media(request: Request, body: SearchRequest):
 
         # Build optional audio payload filter first so we can decide whether
         # an empty query is valid (filter-only browse is allowed).
-        audio_conditions = []
+        filter_conditions = []
         if body.audio_segment_type is not None:
-            audio_conditions.append(
+            filter_conditions.append(
                 FieldCondition(key="audio_segment_type", match=MatchValue(value=body.audio_segment_type))
             )
         if body.audio_event_top is not None:
-            audio_conditions.append(
+            filter_conditions.append(
                 FieldCondition(key="audio_event_top", match=MatchValue(value=body.audio_event_top))
             )
-        audio_filter = Filter(must=audio_conditions) if audio_conditions else None
+        if body.construction_phase is not None:
+            filter_conditions.append(
+                FieldCondition(key="construction_phase", match=MatchValue(value=body.construction_phase))
+            )
+        audio_filter = Filter(must=filter_conditions) if filter_conditions else None
 
         filter_only = audio_filter is not None and not body.query.strip()
 
@@ -517,6 +523,8 @@ async def search_media(request: Request, body: SearchRequest):
                 "audio_segment_start_sec": payload.get("audio_segment_start_sec"),
                 "audio_segment_end_sec": payload.get("audio_segment_end_sec"),
                 "audio_rms_energy": payload.get("audio_rms_energy"),
+                "construction_phase": payload.get("construction_phase"),
+                "phase_confidence": payload.get("phase_confidence"),
             })
 
         execution_time_ms = (time.time() - start_time) * 1000

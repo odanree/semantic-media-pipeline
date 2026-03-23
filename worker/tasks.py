@@ -295,6 +295,8 @@ def crawl_and_dispatch(self, media_root: str, force_relocate: bool = False):
         media_root: Root directory to crawl
         force_relocate: If True, treat the crawled path as canonical and update
             file_path in DB + Qdrant even when the old file still exists elsewhere.
+            Use this for curated folders (e.g. Construction Timeline) that should
+            override wherever the file was originally indexed from.
     """
     try:
         print(f"Starting crawl of {media_root}")
@@ -419,6 +421,8 @@ def ingest_media(self, file_path: str, file_type: str, force_relocate: bool = Fa
     Args:
         file_path: Full path to media file
         file_type: 'image' or 'video'
+        force_relocate: When True, treat file_path as canonical — update DB + Qdrant
+            even if the old file still exists at its previous path (duplicate_copy case).
     """
     db = SyncSessionLocal()
     try:

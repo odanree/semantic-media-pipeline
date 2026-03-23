@@ -333,7 +333,7 @@ describe('SearchBar', () => {
   it('selecting an audio segment type updates the dropdown value', () => {
     render(<SearchBar onSearch={vi.fn()} />)
     fireEvent.click(screen.getByRole('button', { name: /toggle search filters/i }))
-    const select = screen.getByRole('combobox') as HTMLSelectElement
+    const select = screen.getByLabelText('Audio segment type') as HTMLSelectElement
     fireEvent.change(select, { target: { value: 'speech' } })
     expect(select.value).toBe('speech')
   })
@@ -341,7 +341,7 @@ describe('SearchBar', () => {
   it('audio segment type dropdown contains expected options', () => {
     render(<SearchBar onSearch={vi.fn()} />)
     fireEvent.click(screen.getByRole('button', { name: /toggle search filters/i }))
-    const select = screen.getByRole('combobox') as HTMLSelectElement
+    const select = screen.getByLabelText('Audio segment type') as HTMLSelectElement
     const values = Array.from(select.options).map(o => o.value)
     expect(values).toContain('speech')
     expect(values).toContain('ambient')
@@ -352,7 +352,7 @@ describe('SearchBar', () => {
   it('reset filters clears audio segment type back to Any', () => {
     render(<SearchBar onSearch={vi.fn()} />)
     fireEvent.click(screen.getByRole('button', { name: /toggle search filters/i }))
-    const select = screen.getByRole('combobox') as HTMLSelectElement
+    const select = screen.getByLabelText('Audio segment type') as HTMLSelectElement
     fireEvent.change(select, { target: { value: 'music' } })
     fireEvent.click(screen.getByRole('button', { name: /reset filters/i }))
     expect(select.value).toBe('')
@@ -500,7 +500,7 @@ describe('SearchPage', () => {
       await Promise.resolve()
     })
     fireEvent.click(screen.getByRole('button', { name: /toggle search filters/i }))
-    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'speech' } })
+    fireEvent.change(screen.getByLabelText('Audio segment type'), { target: { value: 'speech' } })
     const input = document.querySelector('input[type="text"]') as HTMLInputElement
     fireEvent.change(input, { target: { value: 'concert footage' } })
     await act(async () => {

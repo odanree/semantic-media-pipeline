@@ -381,9 +381,9 @@ def normalize_image(image_path: str, output_path: str, resolution: int = 224) ->
     try:
         # Handle HEIC files
         if image_path.lower().endswith(".heic"):
-            from pillow_heif import register_heic_opener
+            from pillow_heif import register_heif_opener
 
-            register_heic_opener()
+            register_heif_opener()
 
         img = Image.open(image_path).convert("RGB")
 
