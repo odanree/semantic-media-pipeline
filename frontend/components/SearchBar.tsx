@@ -351,6 +351,7 @@ export default function SearchBar({ onSearch, isLoading = false, suggestions, ex
               <p className="text-xs text-gray-500 mt-0.5">Filter by audio segment classification</p>
             </div>
             <select
+              aria-label="Audio segment type"
               value={filters.audioSegmentType ?? ''}
               onChange={(e) => setFilters({ ...filters, audioSegmentType: e.target.value as SearchFilters['audioSegmentType'] })}
               className="bg-gray-700 text-gray-300 text-sm rounded px-2 py-1 border border-gray-600 focus:outline-none focus:border-blue-500"
