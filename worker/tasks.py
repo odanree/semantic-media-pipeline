@@ -1457,6 +1457,11 @@ def backfill_yolo(self, dry_run: bool = False):
     for pid, fh, idx in assets:
         by_hash[fh].append((pid, idx))
 
+    total_assets = len(assets)
+    processed = 0
+    t0 = time.time()
+    LOG_EVERY = 500
+
     for file_hash, items in by_hash.items():
         point_ids   = [pid for pid, _ in items]
         frame_idxs  = [idx for _, idx in items]
@@ -1470,6 +1475,18 @@ def backfill_yolo(self, dry_run: bool = False):
             )
             updated += u
             skipped += s
+            processed += u + s
+            if processed % LOG_EVERY < GPU_BATCH:
+                elapsed = time.time() - t0
+                rate = processed / elapsed if elapsed > 0 else 0
+                eta = (total_assets - processed) / rate if rate > 0 else 0
+                log.info(
+                    "[YOLO] progress: %d/%d (%.1f%%) — %.1f img/s — ETA %.1f min",
+                    processed, total_assets,
+                    processed / total_assets * 100,
+                    rate,
+                    eta / 60,
+                )
 
     log.info("[YOLO] backfill_yolo done — total=%d updated=%d skipped=%d dry_run=%s",
              total, updated, skipped, dry_run)
