@@ -327,9 +327,9 @@ weighted avg                 0.89        0.89  0.89  1529
 
 ## Phase Classifier: Generalization Stress Test
 
-After getting 89% on a random holdout, I ran three stricter evaluation strategies to find out if the number was real.
+After getting 89% on a random holdout, I ran three stricter evaluation strategies to find out if the number was real. Then iteratively refined phase boundaries using actual inspection approval dates to test whether finer granularity closes the gap.
 
-**Results:**
+**Initial results (5 phases):**
 
 | Strategy | Accuracy | vs random | What it tests |
 |---|---|---|---|
@@ -352,16 +352,23 @@ The random split mixes early and late frames from each phase into both train and
 
 Phase 3 (Rough MEP & Framing) spans Nov 7 → Feb 19 — over three months. Early Phase 3 looks like bare framing and MEP rough-in. Late Phase 3 looks like completed framing starting to close up. These are visually distinct enough that a model trained on the early period doesn't recognize the late period as the same phase.
 
-This means the 89% random accuracy is inflated — not because the model memorized dates, but because the random split accidentally gives it the full visual range of each phase. The model is a good *archive labeler* for footage already in Qdrant, but would struggle to classify new footage taken at the end of a long phase if it was only trained on footage from the beginning.
+**Splitting experiment — diminishing returns:**
 
-**The fix:**
-- Finer phase granularity (sub-phases within Phase 3)
-- Or time-aware cross-validation during training, not just at evaluation time
-- More data at the end of long phases to give the model both ends of the visual range
+I used actual inspection approval dates as ground-truth phase boundaries and split the former monolithic Phase 3 into sub-phases. Temporal accuracy after each split:
+
+| Split | Phases | Random | Temporal | Gap |
+|---|---|---|---|---|
+| Original | 5 | 89.1% | 49.6% | -39.5% |
+| Split at Feb 2 (structural shell complete) | 6 | 88.6% | 54.6% | -34.0% |
+| Split at Jan 6 (shear wall begins) | 7 | 86.7% | 55.4% | -31.3% |
+
+**Diminishing returns after two splits.** Each additional sub-phase gains ~5pp temporal accuracy but costs ~1pp random accuracy (sub-phases 3b and 3c have only 290 and 316 samples — too small). The boundary strategy broke entirely for the 7-phase model: Phase 3b spans 27 days and 3c spans 17 days, both shorter than the 28-day boundary window, so nearly the entire phase is a "boundary zone" and there's nothing left to train on.
+
+**The constraint is data, not granularity.** Visual drift exists within any meaningful phase window. Splitting Phase 3c (Feb 3–19, 17 days) still shows 9% temporal recall — there's drift even within a 2-week window. No number of splits fixes that without more footage from the end of each phase.
 
 **Interview answer:**
 
-> "I ran three holdout strategies to stress-test the 89%. Random and boundary both held. Camera generalization was nearly perfect at 88.7% — CLIP is camera-agnostic. But temporal holdout dropped to 49.6%. That gap isn't temporal artifact overfitting — it's visual drift within long phases. Phase 3 spans three months; early framing looks nothing like late framing. A random split accidentally gives the model both ends of the visual range, which inflates the number. The honest accuracy for classifying new end-of-phase footage is closer to 50%. The right fix is finer phase granularity or sub-phase labels, not more data."
+> "I ran three holdout strategies to stress-test the 89%. Random and boundary both held. Camera generalization was nearly perfect at 88.7% — CLIP is camera-agnostic. But temporal holdout dropped to 49.6%. That gap isn't temporal artifact overfitting — it's visual drift within long phases. Phase 3 spans three months; early framing looks nothing like late framing. A random split accidentally gives the model both ends of the visual range, which inflates the number. I then used actual inspection approval dates as ground-truth boundaries and split Phase 3 twice — temporal improved to 55%, but hit diminishing returns: the sub-phases became too small, and the boundary strategy broke because some phases were shorter than the boundary window itself. The honest accuracy for classifying new end-of-phase footage is ~55%. The right fix is time-aware training — ensuring the model always sees both the beginning and end of each phase during training, not just at eval time."
 
 ---
 
