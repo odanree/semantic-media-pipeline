@@ -7,14 +7,23 @@ Qdrant. Labels are auto-assigned from inspection milestone dates.
 
 Usage:
     pip install qdrant-client numpy pandas scikit-learn matplotlib joblib
-    python scripts/train_phase_classifier.py
+    python scripts/train_phase_classifier.py [--eval-strategy STRATEGY]
+
+Eval strategies:
+    random    — stratified random 80/20 split (baseline, default)
+    temporal  — within each phase, train on early frames, test on late frames
+    boundary  — test only on frames within 14 days of a phase transition
+    camera    — train on Pixel (Construction Timeline), test on DJI (Construction Phase)
+
+    all       — run all four strategies and print a comparison table
 
 Output:
-    models/phase_classifier.joblib   — trained model + label encoder
-    models/phase_classifier_report.txt — classification report
-    models/phase_classifier_cm.png   — confusion matrix heatmap
+    models/phase_classifier.joblib      — trained model + label encoder (from --eval-strategy or random)
+    models/phase_classifier_report.txt  — classification report
+    models/phase_classifier_cm.png      — confusion matrix heatmap
 """
 
+import argparse
 import os
 import re
 import sys
@@ -30,15 +39,15 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import classification_report, confusion_matrix, ConfusionMatrixDisplay
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import LabelEncoder
-from sklearn.svm import SVC
 
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
-QDRANT_HOST       = os.environ.get("QDRANT_HOST", "localhost")
-QDRANT_PORT       = int(os.environ.get("QDRANT_PORT", 6333))
-COLLECTION_NAME   = os.environ.get("QDRANT_COLLECTION_NAME", "media_vectors")
+QDRANT_HOST          = os.environ.get("QDRANT_HOST", "localhost")
+QDRANT_PORT          = int(os.environ.get("QDRANT_PORT", 6333))
+COLLECTION_NAME      = os.environ.get("QDRANT_COLLECTION_NAME", "media_vectors")
 CONFIDENCE_THRESHOLD = 0.85
+BOUNDARY_DAYS        = 14  # days around each phase transition to use as boundary test set
 
 # Phase windows: (label, start_inclusive, end_inclusive)
 # Dates are inspection/completion dates = END of each phase.
@@ -88,7 +97,6 @@ def fetch_vectors(client: QdrantClient) -> pd.DataFrame:
     ])
     rows = []
     offset = None
-    batch = 0
 
     while True:
         records, next_offset = client.scroll(
@@ -118,7 +126,6 @@ def fetch_vectors(client: QdrantClient) -> pd.DataFrame:
                 "file_type":  r.payload.get("file_type"),
             })
 
-        batch += 1
         print(f"  Fetched {len(rows):,} records …", end="\r")
 
         if next_offset is None:
@@ -126,8 +133,7 @@ def fetch_vectors(client: QdrantClient) -> pd.DataFrame:
         offset = next_offset
 
     print(f"\nTotal records fetched: {len(rows):,}")
-    df = pd.DataFrame(rows)
-    return df
+    return pd.DataFrame(rows)
 
 
 # ---------------------------------------------------------------------------
@@ -158,20 +164,144 @@ def label_data(df: pd.DataFrame) -> pd.DataFrame:
 
 
 # ---------------------------------------------------------------------------
-# Step 3 — Train
+# Step 3 — Split strategies
 # ---------------------------------------------------------------------------
-def train(labeled: pd.DataFrame):
-    X = np.vstack(labeled["vector"].values)   # (n_samples, 768)
+def split_random(labeled: pd.DataFrame):
+    """Baseline: stratified random 80/20."""
+    X = np.vstack(labeled["vector"].values)
     le = LabelEncoder()
     y = le.fit_transform(labeled["phase"])
-
-    print(f"\nTraining on {len(X):,} samples, {len(le.classes_)} classes, {X.shape[1]} dims")
-
     X_train, X_test, y_train, y_test = train_test_split(
         X, y, test_size=0.2, random_state=42, stratify=y
     )
+    return X_train, X_test, y_train, y_test, le
 
-    # Random Forest — handles 768-dim well with limited/noisy labels
+
+def split_temporal(labeled: pd.DataFrame):
+    """
+    Within each phase, sort by date and hold out the last 20% of frames.
+    Tests whether the model generalizes across time within a phase — early
+    footage predicts late footage.
+    """
+    train_frames, test_frames = [], []
+    for phase, group in labeled.groupby("phase"):
+        group_sorted = group.sort_values("created_at")
+        split_idx = int(len(group_sorted) * 0.8)
+        if split_idx == 0 or split_idx == len(group_sorted):
+            # Too few samples — fall back to including all in train
+            train_frames.append(group_sorted)
+            continue
+        train_frames.append(group_sorted.iloc[:split_idx])
+        test_frames.append(group_sorted.iloc[split_idx:])
+
+    if not test_frames:
+        print("  [temporal] Not enough samples per phase for temporal split — falling back to random.")
+        return split_random(labeled)
+
+    train_df = pd.concat(train_frames)
+    test_df  = pd.concat(test_frames)
+
+    le = LabelEncoder()
+    le.fit(labeled["phase"])
+
+    X_train = np.vstack(train_df["vector"].values)
+    y_train = le.transform(train_df["phase"])
+    X_test  = np.vstack(test_df["vector"].values)
+    y_test  = le.transform(test_df["phase"])
+
+    print(f"  [temporal] train={len(X_train):,}  test={len(X_test):,} "
+          f"(last 20% of each phase by date)")
+    return X_train, X_test, y_train, y_test, le
+
+
+def split_boundary(labeled: pd.DataFrame):
+    """
+    Test set = frames within BOUNDARY_DAYS of any phase transition.
+    Train set = everything else.
+    Tests the hardest cases: visually ambiguous frames at phase edges.
+    """
+    boundary_mask = pd.Series(False, index=labeled.index)
+    for _, _, end in PHASE_WINDOWS[:-1]:  # no boundary after the last phase
+        end_ts = pd.Timestamp(end, tz="UTC")
+        boundary_mask |= (
+            (labeled["created_at"] >= end_ts - pd.Timedelta(days=BOUNDARY_DAYS)) &
+            (labeled["created_at"] <= end_ts + pd.Timedelta(days=BOUNDARY_DAYS))
+        )
+
+    test_df  = labeled[boundary_mask]
+    train_df = labeled[~boundary_mask]
+
+    if len(test_df) < 10:
+        print(f"  [boundary] Only {len(test_df)} boundary frames found "
+              f"(need ≥10) — falling back to random.")
+        return split_random(labeled)
+
+    le = LabelEncoder()
+    le.fit(labeled["phase"])
+
+    # Ensure all classes are represented in train
+    missing = set(le.classes_) - set(train_df["phase"].unique())
+    if missing:
+        print(f"  [boundary] Classes missing from train set: {missing} — falling back to random.")
+        return split_random(labeled)
+
+    X_train = np.vstack(train_df["vector"].values)
+    y_train = le.transform(train_df["phase"])
+    X_test  = np.vstack(test_df["vector"].values)
+    y_test  = le.transform(test_df["phase"])
+
+    print(f"  [boundary] train={len(X_train):,}  test={len(X_test):,} "
+          f"(frames within ±{BOUNDARY_DAYS}d of phase transitions)")
+    return X_train, X_test, y_train, y_test, le
+
+
+def split_camera(labeled: pd.DataFrame):
+    """
+    Train on Pixel phone footage (Construction Timeline),
+    test on DJI drone footage (Construction Phase).
+    Tests cross-camera generalization — different angle, altitude, lens.
+    """
+    pixel_mask = labeled["file_path"].str.contains("Construction Timeline", na=False)
+    dji_mask   = labeled["file_path"].str.contains("Construction Phase",    na=False)
+
+    train_df = labeled[pixel_mask]
+    test_df  = labeled[dji_mask]
+
+    if len(train_df) < 10 or len(test_df) < 10:
+        print(f"  [camera] Insufficient data — "
+              f"Pixel={len(train_df):,}  DJI={len(test_df):,} — falling back to random.")
+        return split_random(labeled)
+
+    le = LabelEncoder()
+    le.fit(labeled["phase"])
+
+    # Ensure all test classes appear in training
+    missing = set(test_df["phase"].unique()) - set(train_df["phase"].unique())
+    if missing:
+        print(f"  [camera] DJI has phases not in Pixel training set: {missing} — falling back to random.")
+        return split_random(labeled)
+
+    X_train = np.vstack(train_df["vector"].values)
+    y_train = le.transform(train_df["phase"])
+    X_test  = np.vstack(test_df["vector"].values)
+    y_test  = le.transform(test_df["phase"])
+
+    print(f"  [camera] train={len(X_train):,} (Pixel)  test={len(X_test):,} (DJI)")
+    return X_train, X_test, y_train, y_test, le
+
+
+SPLIT_STRATEGIES = {
+    "random":   split_random,
+    "temporal": split_temporal,
+    "boundary": split_boundary,
+    "camera":   split_camera,
+}
+
+
+# ---------------------------------------------------------------------------
+# Step 4 — Train
+# ---------------------------------------------------------------------------
+def train(X_train, y_train):
     clf = RandomForestClassifier(
         n_estimators=200,
         max_depth=12,
@@ -181,54 +311,53 @@ def train(labeled: pd.DataFrame):
     )
     print("Fitting Random Forest …")
     clf.fit(X_train, y_train)
-
-    return clf, le, X_test, y_test
-
-
-# ---------------------------------------------------------------------------
-# Step 4 — Evaluate
-# ---------------------------------------------------------------------------
-def evaluate(clf, le, X_test, y_test) -> str:
-    y_pred = clf.predict(X_test)
-    report = classification_report(y_test, y_pred, target_names=le.classes_)
-    print("\n" + report)
-
-    # Confusion matrix
-    cm = confusion_matrix(y_test, y_pred)
-    fig, ax = plt.subplots(figsize=(9, 7))
-    disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=le.classes_)
-    disp.plot(ax=ax, xticks_rotation=30, colorbar=False)
-    ax.set_title("Construction Phase Classifier — Confusion Matrix")
-    plt.tight_layout()
-
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    cm_path = OUTPUT_DIR / "phase_classifier_cm.png"
-    plt.savefig(cm_path, dpi=150)
-    print(f"Confusion matrix saved → {cm_path}")
-
-    # Confidence distribution
-    probs = clf.predict_proba(X_test)
-    max_conf = probs.max(axis=1)
-    auto = (max_conf >= CONFIDENCE_THRESHOLD).sum()
-    review = (max_conf < CONFIDENCE_THRESHOLD).sum()
-    print(f"\nAt {CONFIDENCE_THRESHOLD:.0%} threshold:")
-    print(f"  Auto-labeled:      {auto:,} ({auto/len(X_test):.1%})")
-    print(f"  Flagged for review: {review:,} ({review/len(X_test):.1%})")
-
-    return report
+    return clf
 
 
 # ---------------------------------------------------------------------------
-# Step 5 — Save
+# Step 5 — Evaluate
 # ---------------------------------------------------------------------------
-def save_model(clf, le, report: str):
+def evaluate(clf, le, X_test, y_test, strategy: str, save_artifacts: bool = True) -> str:
+    y_pred  = clf.predict(X_test)
+    report  = classification_report(y_test, y_pred, target_names=le.classes_)
+    accuracy = (y_pred == y_test).mean()
+    print(f"\n[{strategy}] accuracy={accuracy:.1%}\n" + report)
+
+    if save_artifacts:
+        cm = confusion_matrix(y_test, y_pred)
+        fig, ax = plt.subplots(figsize=(9, 7))
+        disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=le.classes_)
+        disp.plot(ax=ax, xticks_rotation=30, colorbar=False)
+        ax.set_title(f"Construction Phase Classifier — Confusion Matrix ({strategy})")
+        plt.tight_layout()
+        OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+        cm_path = OUTPUT_DIR / f"phase_classifier_cm_{strategy}.png"
+        plt.savefig(cm_path, dpi=150)
+        plt.close()
+        print(f"Confusion matrix saved → {cm_path}")
+
+        probs    = clf.predict_proba(X_test)
+        max_conf = probs.max(axis=1)
+        auto     = (max_conf >= CONFIDENCE_THRESHOLD).sum()
+        review   = (max_conf < CONFIDENCE_THRESHOLD).sum()
+        print(f"\nAt {CONFIDENCE_THRESHOLD:.0%} threshold:")
+        print(f"  Auto-labeled:       {auto:,} ({auto/len(X_test):.1%})")
+        print(f"  Flagged for review: {review:,} ({review/len(X_test):.1%})")
+
+    return report, accuracy
+
+
+# ---------------------------------------------------------------------------
+# Step 6 — Save
+# ---------------------------------------------------------------------------
+def save_model(clf, le, report: str, strategy: str):
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     model_path = OUTPUT_DIR / "phase_classifier.joblib"
     joblib.dump({"model": clf, "label_encoder": le}, model_path)
     print(f"Model saved → {model_path}")
 
     report_path = OUTPUT_DIR / "phase_classifier_report.txt"
-    report_path.write_text(report)
+    report_path.write_text(f"Eval strategy: {strategy}\n\n" + report)
     print(f"Report saved → {report_path}")
 
 
@@ -236,9 +365,17 @@ def save_model(clf, le, report: str):
 # Main
 # ---------------------------------------------------------------------------
 def main():
-    client = QdrantClient(host=QDRANT_HOST, port=QDRANT_PORT)
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--eval-strategy",
+        choices=[*SPLIT_STRATEGIES.keys(), "all"],
+        default="random",
+        help="How to split train/test data (default: random)",
+    )
+    args = parser.parse_args()
 
-    df = fetch_vectors(client)
+    client  = QdrantClient(host=QDRANT_HOST, port=QDRANT_PORT)
+    df      = fetch_vectors(client)
     if df.empty:
         print("No records found in Qdrant. Is the collection populated?")
         sys.exit(1)
@@ -248,10 +385,10 @@ def main():
         print("No records fall within any phase window. Check created_at timestamps.")
         sys.exit(1)
 
-    # Require at least 2 samples per class for stratified split
-    counts = labeled["phase"].value_counts()
+    # Drop phases with too few samples
+    counts       = labeled["phase"].value_counts()
     valid_phases = counts[counts >= 5].index
-    dropped = counts[counts < 5]
+    dropped      = counts[counts < 5]
     if not dropped.empty:
         print(f"\nDropping phases with < 5 samples: {dropped.to_dict()}")
         labeled = labeled[labeled["phase"].isin(valid_phases)]
@@ -260,9 +397,43 @@ def main():
         print("Need at least 2 phases to train a classifier.")
         sys.exit(1)
 
-    clf, le, X_test, y_test = train(labeled)
-    report = evaluate(clf, le, X_test, y_test)
-    save_model(clf, le, report)
+    strategies = list(SPLIT_STRATEGIES.keys()) if args.eval_strategy == "all" else [args.eval_strategy]
+    summary: list[tuple[str, float]] = []
+
+    for strategy in strategies:
+        print(f"\n{'='*60}")
+        print(f"  Strategy: {strategy.upper()}")
+        print(f"{'='*60}")
+
+        X_train, X_test, y_train, y_test, le = SPLIT_STRATEGIES[strategy](labeled)
+        print(f"  Training on {len(X_train):,} samples, {len(le.classes_)} classes, {X_train.shape[1]} dims")
+
+        clf = train(X_train, y_train)
+
+        is_primary = strategy == strategies[-1]  # save artifacts + model for the last strategy
+        report, accuracy = evaluate(clf, le, X_test, y_test, strategy, save_artifacts=is_primary)
+        summary.append((strategy, accuracy))
+
+        if is_primary:
+            save_model(clf, le, report, strategy)
+
+    if len(summary) > 1:
+        print(f"\n{'='*60}")
+        print("  GENERALIZATION SUMMARY")
+        print(f"{'='*60}")
+        print(f"  {'Strategy':<12}  {'Accuracy':>8}  {'vs random':>10}")
+        baseline = next((acc for s, acc in summary if s == "random"), summary[0][1])
+        for strat, acc in summary:
+            delta = acc - baseline
+            sign  = "+" if delta >= 0 else ""
+            print(f"  {strat:<12}  {acc:>7.1%}  {sign}{delta:>8.1%}")
+        print()
+        drop = min(acc for _, acc in summary) - baseline
+        if drop < -0.10:
+            print("  ⚠  Accuracy drops >10% on a stricter strategy — model may be")
+            print("     overfitting to temporal or camera-specific patterns.")
+        else:
+            print("  ✓  Accuracy is stable across strategies — model is generalizing.")
 
     print("\nDone. Next: run predict_phases.py to label your full Qdrant collection.")
 
