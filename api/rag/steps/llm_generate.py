@@ -28,6 +28,11 @@ def _build_context(items: list[RetrievedItem]) -> str:
             parts.append(f"   Timestamp: {item.timestamp:.1f}s")
         if item.rerank_score is not None:
             parts.append(f"   Relevance score: {item.rerank_score:.3f}")
+        if item.construction_phase:
+            conf = f", {item.phase_confidence:.0%} confidence" if item.phase_confidence is not None else ""
+            parts.append(f"   Construction phase: {item.construction_phase}{conf}")
+        if item.yolo_labels:
+            parts.append(f"   Objects detected: {', '.join(item.yolo_labels)}")
         lines.append("\n".join(parts))
     return "\n\n".join(lines)
 
