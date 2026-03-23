@@ -2,15 +2,16 @@
 """
 Batch-enrich all construction-phase frames in Qdrant with YOLO object detections.
 
-Reads file_path + timestamp from each Qdrant record, extracts the frame (image
-or video seek), runs YOLOv8 inference, and writes yolo_labels / yolo_detections /
-yolo_object_count back as payload fields.
+Reads file_hash + frame_index from each Qdrant record, looks up the pre-extracted
+JPEG from the frame cache (J:/frame_cache), runs YOLOv8 inference, and writes
+yolo_labels / yolo_object_count back as payload fields.
 
 Usage:
     python scripts/enrich_yolo.py [--dry-run] [--batch BATCH]
 """
 
 import argparse
+import hashlib
 import os
 os.environ["YOLO_AUTOINSTALL"] = "False"   # suppress ultralytics pip auto-update noise
 os.environ["YOLO_VERBOSE"]     = "False"
@@ -34,50 +35,35 @@ QDRANT_HOST     = os.environ.get("QDRANT_HOST", "localhost")
 QDRANT_PORT     = int(os.environ.get("QDRANT_PORT", 6333))
 COLLECTION_NAME = os.environ.get("QDRANT_COLLECTION_NAME", "media_vectors")
 
-# Docker container paths → local Windows paths
-MOUNT_MAP: list[tuple[str, str]] = [
-    ("/mnt/i-media", "I:/i-media"),
-    ("/mnt/j-media", "J:/j-media"),
-]
+# Frame cache — same defaults as worker/tasks.py
+FRAME_CACHE_DIR = Path(os.environ.get("FRAME_CACHE_DIR", "J:/frame_cache"))
+KEYFRAME_FPS        = float(os.environ.get("KEYFRAME_FPS", "0.5"))
+KEYFRAME_RESOLUTION = int(os.environ.get("KEYFRAME_RESOLUTION", "224"))
 
 # Number of frames to prefetch from disk while GPU processes the current batch
 IO_THREADS = 8
 
-VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".mts", ".m2ts"}
+
+def _cache_dir(file_hash: str) -> Path:
+    """Reproduce the same key as worker/tasks.py _frame_cache_key."""
+    raw = f"{file_hash}:fps={KEYFRAME_FPS}:res={KEYFRAME_RESOLUTION}"
+    key = hashlib.sha256(raw.encode()).hexdigest()[:16]
+    return FRAME_CACHE_DIR / key
 
 
-def _resolve_path(qdrant_path: str) -> str | None:
-    for mnt, local in MOUNT_MAP:
-        if qdrant_path.startswith(mnt):
-            return local + qdrant_path[len(mnt):]
-    return None
-
-
-def _load_frame(args: tuple) -> tuple:
+def _load_cached_frame(args: tuple) -> tuple:
     """
-    Load a single frame from disk.
-    args = (point_id, local_path, timestamp_sec)
+    Load a frame from the pre-extracted JPEG cache.
+    args = (point_id, file_hash, frame_index)
     Returns (point_id, np.ndarray | None)
     """
-    pid, local_path, timestamp = args
+    pid, file_hash, frame_index = args
     try:
-        ext = Path(local_path).suffix.lower()
-        if ext in VIDEO_EXTS:
-            os.environ["OPENCV_FFMPEG_LOGLEVEL"] = "quiet"
-            cap = cv2.VideoCapture(local_path)
-            cap.set(cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 8000)
-            cap.set(cv2.CAP_PROP_READ_TIMEOUT_MSEC, 5000)
-            cap.set(cv2.CAP_PROP_POS_MSEC, timestamp * 1000)
-            ok, frame = cap.read()
-            cap.release()
-            if not ok or frame is None:
-                return pid, None
-            arr = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        else:
-            # Image file — read directly
-            arr = cv2.cvtColor(cv2.imread(local_path), cv2.COLOR_BGR2RGB)
-            if arr is None:
-                return pid, None
+        cache_dir = _cache_dir(file_hash)
+        frames = sorted(cache_dir.glob("frame_*.jpg"))
+        if not frames or frame_index >= len(frames):
+            return pid, None
+        arr = cv2.cvtColor(cv2.imread(str(frames[frame_index])), cv2.COLOR_BGR2RGB)
         return pid, arr
     except Exception:
         return pid, None
@@ -92,11 +78,12 @@ def main(dry_run: bool = False, batch_size: int = 32):
     model = get_yolo_model()
     t_model_ready = time.perf_counter()
     print(f"YOLO model ready.  ({t_model_ready - t_model_start:.1f}s)\n")
+    print(f"Frame cache: {FRAME_CACHE_DIR}\n")
 
-    # Pass 1 — collect construction asset IDs, local paths, and timestamps
-    # file_path has a text index — MatchText filters server-side, no full scan needed
+    # Pass 1 — collect construction asset IDs, file_hash, and frame_index
     print("Pass 1: scanning Qdrant for construction assets …")
-    assets: list[tuple[int | str, str, float]] = []  # (point_id, local_path, timestamp_sec)
+    # (point_id, file_hash, frame_index)
+    assets: list[tuple[int | str, str, int]] = []
     scanned = 0
     construction_filter = Filter(must=[
         FieldCondition(key="file_path", match=MatchText(text="Construction")),
@@ -107,7 +94,7 @@ def main(dry_run: bool = False, batch_size: int = 32):
             collection_name=COLLECTION_NAME,
             scroll_filter=construction_filter,
             with_vectors=False,
-            with_payload=["file_path", "timestamp"],
+            with_payload=["file_hash", "frame_index"],
             limit=1000,
             offset=offset,
         )
@@ -115,12 +102,14 @@ def main(dry_run: bool = False, batch_size: int = 32):
             break
         scanned += len(records)
         for r in records:
-            fp = (r.payload or {}).get("file_path", "")
-            local = _resolve_path(fp)
-            if not local or not Path(local).exists():
+            fh  = (r.payload or {}).get("file_hash")
+            idx = (r.payload or {}).get("frame_index")
+            if fh is None or idx is None:
                 continue
-            timestamp = float((r.payload or {}).get("timestamp", 0.0))
-            assets.append((r.id, local, timestamp))
+            # Verify cache entry exists before queuing
+            if not (_cache_dir(fh) / ".done").exists():
+                continue
+            assets.append((r.id, fh, int(idx)))
         print(f"  found {len(assets):,} …", end="\r")
         if next_offset is None:
             break
@@ -133,9 +122,7 @@ def main(dry_run: bool = False, batch_size: int = 32):
         print("Nothing to process.")
         return
 
-    # Pass 2 — GPU inference + background Qdrant writer
-    # Writer thread consumes a queue of (label_groups, count_groups) dicts
-    # so the GPU never blocks on network I/O.
+    # Pass 2 — read JPEGs from cache in parallel, GPU inference, background Qdrant writer
     print(f"Pass 2: YOLO inference  (batch={batch_size}, io_threads={IO_THREADS}) …")
 
     write_queue: queue.Queue = queue.Queue(maxsize=32)
@@ -149,8 +136,6 @@ def main(dry_run: bool = False, batch_size: int = 32):
                 write_queue.task_done()
                 break
             try:
-                # item = dict: label_key -> list of point ids
-                #         plus "_counts": dict pid -> count
                 counts = item.pop("_counts")
                 for label_key, pids in item.items():
                     labels = label_key.split(",") if label_key else []
@@ -159,7 +144,6 @@ def main(dry_run: bool = False, batch_size: int = 32):
                         payload={"yolo_labels": labels, "yolo_model": yolo_model_name},
                         points=pids,
                     )
-                # Write counts grouped by value to minimise calls
                 count_groups: dict[int, list] = defaultdict(list)
                 for pid, cnt in counts.items():
                     count_groups[cnt].append(pid)
@@ -185,12 +169,12 @@ def main(dry_run: bool = False, batch_size: int = 32):
         for batch_start in range(0, len(assets), batch_size):
             batch = assets[batch_start : batch_start + batch_size]
 
-            futures = {pool.submit(_load_frame, item): item[0] for item in batch}
-            loaded: list[tuple[int | str, np.ndarray]] = []
+            futures = {pool.submit(_load_cached_frame, item): item[0] for item in batch}
             done, pending = futures_wait(futures, timeout=15)
             for future in pending:
                 future.cancel()
                 skipped += 1
+            loaded: list[tuple[int | str, np.ndarray]] = []
             for future in done:
                 pid, arr = future.result()
                 if arr is not None:
@@ -237,7 +221,6 @@ def main(dry_run: bool = False, batch_size: int = 32):
                 )
                 t_last_print = now
 
-    # Signal writer to finish and wait
     write_queue.put(None)
     write_queue.join()
     writer_thread.join()
@@ -252,7 +235,7 @@ def main(dry_run: bool = False, batch_size: int = 32):
     print(f"\n\n{'='*50}")
     print(f"  Done.")
     print(f"  Updated : {updated:,}")
-    print(f"  Skipped : {skipped:,}  (unreadable frame)")
+    print(f"  Skipped : {skipped:,}  (no cache entry)")
     print(f"  Model load : {t_model_ready - t_model_start:.1f}s")
     print(f"  Scan       : {t_scan - t_model_ready:.1f}s  ({scanned:,} records)")
     print(f"  Inference + write: {inference_time:.1f}s  ({rate:.0f} img/s)")
