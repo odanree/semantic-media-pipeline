@@ -50,6 +50,10 @@ app.conf.task_routes = {
     "tasks.ingest_media":        {"queue": "celery"},
     "tasks.process_video":       {"queue": "celery"},
     "tasks.process_image":       {"queue": "celery"},
+    # GPU queue — consumed only by the Windows native worker (CUDA access)
+    # Docker worker does not listen on this queue
+    "tasks.enrich_yolo_frames":  {"queue": "gpu"},
+    "tasks.backfill_yolo":       {"queue": "gpu"},
 }
 
 # Import tasks module to register @app.task decorated functions

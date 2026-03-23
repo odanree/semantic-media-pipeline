@@ -1,11 +1,11 @@
-                              precision    recall  f1-score   support
+Eval strategy: camera
 
-  Phase 1: Site Mobilization       0.92      0.93      0.93       315
-         Phase 2: Foundation       0.92      0.88      0.90       324
-Phase 3: Rough MEP & Framing       0.86      0.93      0.89       560
-           Phase 4: Exterior       0.96      0.65      0.78       115
-   Phase 5: Final Completion       0.87      0.89      0.88       215
+                            precision    recall  f1-score   support
 
-                    accuracy                           0.89      1529
-                   macro avg       0.91      0.86      0.87      1529
-                weighted avg       0.89      0.89      0.89      1529
+Phase 1: Site Mobilization       0.80      1.00      0.89       240
+       Phase 2: Foundation       0.00      0.00      0.00         0
+   Phase 3a: Rough Framing       1.00      0.77      0.87       266
+
+                  accuracy                           0.88       506
+                 macro avg       0.60      0.59      0.59       506
+              weighted avg       0.90      0.88      0.88       506

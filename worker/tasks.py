@@ -21,7 +21,7 @@ from typing import List, Optional
 import numpy as np
 from PIL import Image
 from qdrant_client import QdrantClient
-from qdrant_client.models import Distance, FieldCondition, Filter, MatchValue, PointStruct, VectorParams
+from qdrant_client.models import Distance, FieldCondition, Filter, IsEmptyCondition, MatchText, MatchValue, PayloadField, PointStruct, VectorParams
 from sqlalchemy import select
 
 from celery_app import app
@@ -761,6 +761,15 @@ def process_video(self, file_path: str, media_record_id: str):
                 log.warning("Upserting %d vectors to Qdrant", len(points))
                 qdrant_client.upsert(collection_name=QDRANT_COLLECTION_NAME, points=points)
 
+            # Dispatch YOLO enrichment for construction footage
+            if "Construction Timeline" in file_path:
+                point_ids = [p.id for p in points]
+                enrich_yolo_frames.delay(
+                    point_ids=point_ids,
+                    file_hash=media_record.file_hash,
+                )
+                log.info("[YOLO] Dispatched enrichment for %d frames — %s", len(point_ids), fname)
+
             # Update database record
             if points:
                 media_record.qdrant_point_id = points[0].id
@@ -1276,5 +1285,211 @@ def health_check(self):
             "status": "unhealthy",
             "error": str(e),
         }
+
+
+# ---------------------------------------------------------------------------
+# YOLO enrichment
+# ---------------------------------------------------------------------------
+
+def _yolo_cache_dir(file_hash: str) -> Path:
+    """Reproduce frame cache key from worker/tasks.py _frame_cache_key."""
+    fps        = float(os.getenv("KEYFRAME_FPS", "0.5"))
+    resolution = int(os.getenv("KEYFRAME_RESOLUTION", "224"))
+    raw = f"{file_hash}:fps={fps}:res={resolution}"
+    key = hashlib.sha256(raw.encode()).hexdigest()[:16]
+    return Path(os.getenv("FRAME_CACHE_DIR", "/mnt/frame_cache")) / key
+
+
+def _run_yolo_batch(
+    point_ids: list,
+    file_hash: str,
+    frame_indices: list[int],
+    dry_run: bool = False,
+) -> tuple[int, int]:
+    """
+    Load frames from cache, run YOLO inference, write yolo_labels +
+    yolo_object_count back to Qdrant.  Returns (updated, skipped).
+    """
+    from collections import defaultdict
+    import cv2
+    from ml.yolo_detector import get_yolo_model
+
+    cache_dir = _yolo_cache_dir(file_hash)
+    if not (cache_dir / ".done").exists():
+        return 0, len(point_ids)
+
+    all_frames = sorted(cache_dir.glob("frame_*.jpg"))
+    model = get_yolo_model()
+    yolo_model_name = os.getenv("YOLO_MODEL_NAME", "yolov8n")
+
+    arrs, valid_ids = [], []
+    for pid, idx in zip(point_ids, frame_indices):
+        if idx >= len(all_frames):
+            continue
+        arr = cv2.cvtColor(cv2.imread(str(all_frames[idx])), cv2.COLOR_BGR2RGB)
+        if arr is not None:
+            arrs.append(arr)
+            valid_ids.append(pid)
+
+    if not arrs:
+        return 0, len(point_ids)
+
+    results = model.predict(source=arrs, conf=0.25, verbose=False)
+
+    if dry_run:
+        return len(valid_ids), len(point_ids) - len(valid_ids)
+
+    label_groups: dict[str, list] = defaultdict(list)
+    count_groups: dict[int, list] = defaultdict(list)
+    for pid, result in zip(valid_ids, results):
+        boxes = result.boxes
+        labels = sorted({result.names.get(int(b.cls[0]), str(int(b.cls[0]))) for b in boxes}) if boxes else []
+        label_groups[",".join(labels)].append(pid)
+        count_groups[len(boxes) if boxes else 0].append(pid)
+
+    for label_key, pids in label_groups.items():
+        qdrant_client.set_payload(
+            collection_name=QDRANT_COLLECTION_NAME,
+            payload={"yolo_labels": label_key.split(",") if label_key else [], "yolo_model": yolo_model_name},
+            points=pids,
+        )
+    for cnt, pids in count_groups.items():
+        qdrant_client.set_payload(
+            collection_name=QDRANT_COLLECTION_NAME,
+            payload={"yolo_object_count": cnt},
+            points=pids,
+        )
+
+    return len(valid_ids), len(point_ids) - len(valid_ids)
+
+
+@app.task(
+    bind=True,
+    max_retries=2,
+    default_retry_delay=30,
+    time_limit=300,
+    soft_time_limit=270,
+)
+def enrich_yolo_frames(self, point_ids: list, file_hash: str):
+    """
+    Enrich a set of already-upserted Qdrant points with YOLO object detections.
+    Called automatically by process_video for Construction Timeline footage.
+
+    Fetches frame_index from Qdrant, reads JPEGs from the frame cache, runs
+    YOLOv8 batch inference, and writes yolo_labels + yolo_object_count back.
+    """
+    try:
+        records = qdrant_client.retrieve(
+            collection_name=QDRANT_COLLECTION_NAME,
+            ids=point_ids,
+            with_vectors=False,
+            with_payload=["frame_index"],
+        )
+        frame_indices = [(r.payload or {}).get("frame_index", 0) for r in records]
+        retrieved_ids = [r.id for r in records]
+
+        updated, skipped = _run_yolo_batch(retrieved_ids, file_hash, frame_indices)
+        log.info("[YOLO] enrich_yolo_frames: updated=%d skipped=%d hash=%s", updated, skipped, file_hash[:8])
+        return {"updated": updated, "skipped": skipped}
+    except Exception as exc:
+        log.warning("[YOLO] enrich_yolo_frames failed: %s — retrying", exc)
+        raise self.retry(exc=exc)
+
+
+@app.task(
+    bind=True,
+    max_retries=0,
+    time_limit=86400,
+    soft_time_limit=82800,
+)
+def backfill_yolo(self, dry_run: bool = False):
+    """
+    Backfill YOLO object detections for all construction frames missing yolo_labels.
+
+    - Filters Qdrant for Construction Timeline frames with no yolo_labels payload.
+    - Reads frames from the JPEG frame cache — no video seeking.
+    - Idempotent: frames that already have yolo_labels are excluded by the filter.
+    - Safe to re-run after partial failure.
+    """
+    from collections import defaultdict
+
+    BATCH = 256  # points per Qdrant scroll page
+    GPU_BATCH = int(os.getenv("YOLO_GPU_BATCH", "32"))
+
+    # Only construction frames that haven't been enriched yet
+    enrich_filter = Filter(must=[
+        FieldCondition(key="file_path", match=MatchText(text="Construction")),
+        IsEmptyCondition(is_empty=PayloadField(key="yolo_labels")),
+    ])
+
+    total = updated = skipped = 0
+    offset = None
+
+    log.info("[YOLO] backfill_yolo starting — dry_run=%s", dry_run)
+
+    # Collect all matching (point_id, file_hash, frame_index) tuples
+    assets: list[tuple] = []
+    while True:
+        records, next_offset = qdrant_client.scroll(
+            collection_name=QDRANT_COLLECTION_NAME,
+            scroll_filter=enrich_filter,
+            with_vectors=False,
+            with_payload=["file_hash", "frame_index"],
+            limit=BATCH,
+            offset=offset,
+        )
+        if not records:
+            break
+        for r in records:
+            fh  = (r.payload or {}).get("file_hash")
+            idx = (r.payload or {}).get("frame_index")
+            if fh and idx is not None:
+                assets.append((r.id, fh, int(idx)))
+        total += len(records)
+        offset = next_offset
+        if offset is None:
+            break
+
+    log.info("[YOLO] backfill_yolo: %d frames to enrich", len(assets))
+
+    # Group by file_hash to load cache dir once per video
+    by_hash: dict[str, list] = defaultdict(list)
+    for pid, fh, idx in assets:
+        by_hash[fh].append((pid, idx))
+
+    total_assets = len(assets)
+    processed = 0
+    t0 = time.time()
+    LOG_EVERY = 500
+
+    for file_hash, items in by_hash.items():
+        point_ids   = [pid for pid, _ in items]
+        frame_idxs  = [idx for _, idx in items]
+        # Process in GPU_BATCH-sized chunks
+        for i in range(0, len(point_ids), GPU_BATCH):
+            u, s = _run_yolo_batch(
+                point_ids[i:i + GPU_BATCH],
+                file_hash,
+                frame_idxs[i:i + GPU_BATCH],
+                dry_run=dry_run,
+            )
+            updated += u
+            skipped += s
+            processed += u + s
+            if processed % LOG_EVERY < GPU_BATCH:
+                elapsed = time.time() - t0
+                rate = processed / elapsed if elapsed > 0 else 0
+                eta = (total_assets - processed) / rate if rate > 0 else 0
+                log.info(
+                    "[YOLO] progress: %d/%d (%.1f%%) — %.1f img/s — ETA %.1f min",
+                    processed, total_assets,
+                    processed / total_assets * 100,
+                    rate,
+                    eta / 60,
+                )
+
+    log.info("[YOLO] backfill_yolo done — total=%d updated=%d skipped=%d dry_run=%s",
+             total, updated, skipped, dry_run)
+    return {"total": total, "updated": updated, "skipped": skipped, "dry_run": dry_run}
 
 
