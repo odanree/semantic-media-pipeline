@@ -55,5 +55,5 @@ Set-Location $WORKER_DIR
     --pool=solo `
     -E `
     --prefetch-multiplier=1 `
-    --queues=celery,proxies `
+    --queues=celery,proxies,gpu `
     --hostname=$hostname

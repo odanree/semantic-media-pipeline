@@ -33,6 +33,9 @@ async def search_agent_run(query: str, limit: int = 10, threshold: float = 0.2) 
             "similarity": r.similarity,
             "caption": r.caption,
             "timestamp": r.timestamp,
+            "construction_phase": r.construction_phase,
+            "phase_confidence": r.phase_confidence,
+            "yolo_labels": r.yolo_labels,
         }
         for r in ctx.retrieved
     ]
