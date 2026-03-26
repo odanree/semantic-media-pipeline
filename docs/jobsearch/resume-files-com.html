@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Danh Le — Resume</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: 'Georgia', 'Times New Roman', serif;
+      font-size: 10.5pt;
+      color: #1a1a1a;
+      background: #fff;
+      padding: 0.6in 0.7in;
+      max-width: 8.5in;
+      margin: 0 auto;
+      line-height: 1.45;
+    }
+
+    .header { text-align: center; margin-bottom: 14px; }
+    .header h1 {
+      font-family: 'Arial', sans-serif;
+      font-size: 22pt;
+      font-weight: 700;
+      letter-spacing: 0.03em;
+      color: #111;
+      margin-bottom: 5px;
+    }
+    .contact {
+      font-family: 'Arial', sans-serif;
+      font-size: 9pt;
+      color: #444;
+    }
+    .contact a { color: #1a56a0; text-decoration: none; }
+
+    h2 {
+      font-family: 'Arial', sans-serif;
+      font-size: 10pt;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      color: #1a56a0;
+      border-bottom: 1.5px solid #1a56a0;
+      padding-bottom: 2px;
+      margin-top: 14px;
+      margin-bottom: 7px;
+    }
+
+    .skill-row { margin-bottom: 3px; font-size: 10pt; }
+    .skill-row strong {
+      font-family: 'Arial', sans-serif;
+      font-weight: 700;
+      color: #111;
+    }
+
+    .project { margin-bottom: 10px; }
+    .project-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      flex-wrap: wrap;
+      gap: 4px;
+    }
+    .project-title {
+      font-family: 'Arial', sans-serif;
+      font-size: 10.5pt;
+      font-weight: 700;
+      color: #111;
+    }
+    .project-links {
+      font-family: 'Arial', sans-serif;
+      font-size: 8.5pt;
+      color: #1a56a0;
+    }
+    .project-links a { color: #1a56a0; text-decoration: none; }
+
+    .job { margin-bottom: 10px; }
+    .job-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      flex-wrap: wrap;
+    }
+    .job-title {
+      font-family: 'Arial', sans-serif;
+      font-size: 10.5pt;
+      font-weight: 700;
+      color: #111;
+    }
+    .job-meta {
+      font-family: 'Arial', sans-serif;
+      font-size: 9pt;
+      color: #555;
+      text-align: right;
+    }
+    .company {
+      font-family: 'Arial', sans-serif;
+      font-size: 9.5pt;
+      color: #333;
+      margin-bottom: 3px;
+    }
+
+    ul { margin-left: 16px; margin-top: 3px; }
+    li { margin-bottom: 2px; font-size: 10pt; }
+
+    .education { font-family: 'Arial', sans-serif; font-size: 10pt; }
+
+    @media print {
+      body { padding: 0.5in 0.6in; }
+      @page { size: letter; margin: 0; }
+      a { color: inherit !important; }
+    }
+  </style>
+</head>
+<body>
+
+  <div class="header">
+    <h1>Danh Le</h1>
+    <div class="contact">
+      Orange, CA &nbsp;|&nbsp;
+      714-567-1107 &nbsp;|&nbsp;
+      <a href="mailto:dtle82@gmail.com">dtle82@gmail.com</a> &nbsp;|&nbsp;
+      <a href="https://linkedin.com/in/dtle82">linkedin.com/in/dtle82</a> &nbsp;|&nbsp;
+      <a href="https://github.com/odanree">github.com/odanree</a> &nbsp;|&nbsp;
+      <a href="https://danhle.net">danhle.net</a>
+    </div>
+  </div>
+
+  <h2>Summary</h2>
+  <p>Frontend Engineer with 9+ years of production React and TypeScript experience — building component systems, shipping high-performance interfaces, and owning outcomes across the full stack. Introduced and scaled Storybook component libraries that reduced regressions and raised team velocity. Built a semantic file search engine using vector embeddings and in-browser streaming media previews — the same architecture Files.com is building next. Comfortable in any layer: UI systems, backend APIs, CI/CD pipelines, and open-source tools that ship to real users.</p>
+
+  <h2>Technical Skills</h2>
+  <div class="skill-row"><strong>Frontend:</strong> React, TypeScript, Next.js (SSR, ISR, Edge Middleware), JavaScript ES6+, Storybook, Atomic Design, CSS-in-JS, responsive / accessible UI</div>
+  <div class="skill-row"><strong>Testing:</strong> Cypress E2E, Jest, unit &amp; integration testing, Optimizely A/B, RAGAS evaluation (AI pipelines)</div>
+  <div class="skill-row"><strong>CI/CD &amp; DevOps:</strong> GitHub Actions, Bitbucket Pipelines, Jenkins, Docker, Nginx, Vercel-compatible deployment, AWS Lambda / API Gateway</div>
+  <div class="skill-row"><strong>Backend &amp; APIs:</strong> Node.js, FastAPI (Python), PHP, RESTful APIs, WebSockets, PostgreSQL, Redis</div>
+  <div class="skill-row"><strong>AI / ML:</strong> CLIP (multimodal embeddings), Qdrant (vector DB), Ollama / LLaMA, LangChain, YOLO object detection</div>
+  <div class="skill-row"><strong>Open Source:</strong> VS Code extension (marketplace), public GitHub repos with CI/CD-gated quality checks</div>
+
+  <h2>Projects</h2>
+
+  <div class="project">
+    <div class="project-header">
+      <span class="project-title">Lumen — Semantic File Search Engine (Production)</span>
+      <span class="project-links">
+        <a href="https://github.com/odanree/semantic-media-pipeline">github.com/odanree/semantic-media-pipeline</a> &nbsp;|&nbsp;
+        <a href="https://lumen.danhle.net">lumen.danhle.net</a>
+      </span>
+    </div>
+    <ul>
+      <li>Built a full-stack semantic search platform: CLIP vector embeddings index 500GB+ of files (video, image, audio) into Qdrant; LLaMA 3.2 reasons over retrieved results to answer natural-language queries — the same pattern as Files.com's upcoming AI-Powered Content Discovery feature</li>
+      <li>Engineered in-browser streaming media previews via WebSocket connection between Next.js frontend and FastAPI backend — sub-second time to first frame</li>
+      <li>Built a metadata extraction pipeline that normalizes structured data across three file modalities (video, image, audio) at scale</li>
+      <li>Next.js frontend with real-time result streaming, similarity search panel, and filter UI backed by Qdrant payload indexes (10,500x speedup on 1.88M vectors)</li>
+      <li>MLOps: GitHub Actions CI/CD with RAGAS quality gate, Docker Compose, Nginx reverse proxy</li>
+    </ul>
+  </div>
+
+  <div class="project">
+    <div class="project-header">
+      <span class="project-title">Headless WordPress + Next.js — Production Implementation</span>
+    </div>
+    <ul>
+      <li>Built headless CMS architecture with Next.js Edge Middleware authentication and Incremental Static Regeneration for dynamic content with static-site performance</li>
+      <li>Designed reusable component system and GraphQL data layer connecting Next.js frontend to WordPress backend API</li>
+    </ul>
+  </div>
+
+  <div class="project">
+    <div class="project-header">
+      <span class="project-title">Shopify Headless E-commerce — 100/100 Lighthouse</span>
+    </div>
+    <ul>
+      <li>Custom Stripe payment engine with webhook integration and idempotency-based ghost order prevention; achieved perfect Lighthouse scores across performance, accessibility, best practices, and SEO</li>
+    </ul>
+  </div>
+
+  <div class="project">
+    <div class="project-header">
+      <span class="project-title">LLM Local Assistant — VS Code Extension (v2.13.1, Open Source)</span>
+    </div>
+    <ul>
+      <li>Shipped production VS Code extension with AI-powered code analysis and intelligent safeguards for AI-generated file modifications; designed multi-model routing strategy for different task types</li>
+    </ul>
+  </div>
+
+  <h2>Experience</h2>
+
+  <div class="job">
+    <div class="job-header">
+      <span class="job-title">Software Engineer 2</span>
+      <span class="job-meta">May 2022 – Jan 2026</span>
+    </div>
+    <div class="company">Ultra Mobile (Mint Mobile) &nbsp;·&nbsp; Costa Mesa, CA</div>
+    <ul>
+      <li>Built and maintained React / TypeScript e-commerce interfaces serving millions of subscribers — checkout flows, plan selection, promotional campaign experiences, and account management</li>
+      <li>Designed and shipped the Promotions Manager — configurable rules engine with React admin UI that cut promotional campaign deployment from 3 sprints to 1; marketing self-served without engineering involvement</li>
+      <li>Ran A/B tests (Optimizely) on checkout flows and conversion funnels; used analytics data to prioritize a JavaScript fix that recovered $10,000/month in lost conversions</li>
+      <li>Designed custom CMS architecture (ACF field groups) to decouple content management from code deployments, enabling non-technical teams to ship independently</li>
+      <li>Participated in code reviews, architecture discussions, and sprint planning across a cross-functional team of engineers, designers, and product managers</li>
+    </ul>
+  </div>
+
+  <div class="job">
+    <div class="job-header">
+      <span class="job-title">UX Developer</span>
+      <span class="job-meta">Jan 2020 – May 2022</span>
+    </div>
+    <div class="company">Ultra Mobile &nbsp;·&nbsp; Costa Mesa, CA</div>
+    <ul>
+      <li>Introduced and built out Storybook component library from scratch — established component isolation standard across the team; code reviews anchored to "does this match the Storybook story" reduced regressions and shortened review cycles</li>
+      <li>Built responsive promotional landing pages and subscriber acquisition experiences for Mint Mobile campaigns at scale</li>
+    </ul>
+  </div>
+
+  <div class="job">
+    <div class="job-header">
+      <span class="job-title">Lead Front-end Developer</span>
+      <span class="job-meta">Jan 2018 – Jan 2019</span>
+    </div>
+    <div class="company">Mobovida, LLC</div>
+    <ul>
+      <li>Led frontend development for wireless accessories e-commerce platform; mentored junior developers on component architecture and coding standards</li>
+    </ul>
+  </div>
+
+  <div class="job">
+    <div class="job-header">
+      <span class="job-title">Lead Web Developer</span>
+      <span class="job-meta">Aug 2017 – Jan 2018</span>
+    </div>
+    <div class="company">OneClickSolar.com</div>
+    <ul>
+      <li>Achieved sub-2-second page load performance for solar e-commerce platform; reduced load times by 99.9%</li>
+    </ul>
+  </div>
+
+  <div class="job">
+    <div class="job-header">
+      <span class="job-title">Intermediate Programmer</span>
+      <span class="job-meta">Dec 2016 – Jul 2017</span>
+    </div>
+    <div class="company">Rebar Interactive</div>
+    <ul>
+      <li>Delivered client-facing web applications in a digital agency environment across multiple simultaneous accounts</li>
+    </ul>
+  </div>
+
+  <div class="job">
+    <div class="job-header">
+      <span class="job-title">System Administrator</span>
+      <span class="job-meta">Nov 2013 – Jul 2016</span>
+    </div>
+    <div class="company">e4Hats.com</div>
+    <ul>
+      <li>Managed infrastructure for e-commerce operation; reduced system downtime by 80%</li>
+    </ul>
+  </div>
+
+  <h2>Education</h2>
+  <div class="education">LearningFuze Development Bootcamp &nbsp;·&nbsp; 2016</div>
+
+</body>
+</html>

@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Danh Le — Cover Letter</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: 'Georgia', 'Times New Roman', serif;
+      font-size: 11pt;
+      color: #1a1a1a;
+      background: #fff;
+      padding: 0.75in 0.85in;
+      max-width: 8.5in;
+      margin: 0 auto;
+      line-height: 1.65;
+    }
+
+    .header { margin-bottom: 32px; }
+    .header h1 {
+      font-family: 'Arial', sans-serif;
+      font-size: 18pt;
+      font-weight: 700;
+      color: #111;
+      margin-bottom: 4px;
+    }
+    .contact {
+      font-family: 'Arial', sans-serif;
+      font-size: 9.5pt;
+      color: #555;
+    }
+    .contact a { color: #1a56a0; text-decoration: none; }
+
+    .date {
+      font-family: 'Arial', sans-serif;
+      font-size: 10pt;
+      color: #555;
+      margin-bottom: 24px;
+    }
+
+    .salutation {
+      font-family: 'Arial', sans-serif;
+      font-size: 11pt;
+      margin-bottom: 20px;
+    }
+
+    p {
+      margin-bottom: 18px;
+    }
+
+    .closing {
+      margin-top: 32px;
+      font-family: 'Arial', sans-serif;
+      font-size: 11pt;
+    }
+    .closing .sign-off { margin-bottom: 36px; }
+    .name {
+      font-family: 'Arial', sans-serif;
+      font-size: 12pt;
+      font-weight: 700;
+      color: #111;
+      margin-bottom: 4px;
+    }
+    .sig-contact {
+      font-family: 'Arial', sans-serif;
+      font-size: 9.5pt;
+      color: #555;
+    }
+    .sig-contact a { color: #1a56a0; text-decoration: none; }
+
+    @media print {
+      body { padding: 0.65in 0.75in; }
+      @page { size: letter; margin: 0; }
+      a { color: inherit !important; }
+    }
+  </style>
+</head>
+<body>
+
+  <div class="header">
+    <h1>Danh Le</h1>
+    <div class="contact">
+      Orange, CA &nbsp;·&nbsp;
+      714-567-1107 &nbsp;·&nbsp;
+      <a href="mailto:dtle82@gmail.com">dtle82@gmail.com</a> &nbsp;·&nbsp;
+      <a href="https://linkedin.com/in/dtle82">linkedin.com/in/dtle82</a> &nbsp;·&nbsp;
+      <a href="https://danhle.net">danhle.net</a>
+    </div>
+  </div>
+
+  <div class="date">March 2026</div>
+
+  <div class="salutation">Dear Files.com Engineering Team,</div>
+
+  <p>Your roadmap lists AI-Powered Content Discovery as a priority for the next 6–12 months — semantic file search using vector embeddings for meaning-based discovery. I built that system. Lumen is a production semantic search engine that uses CLIP multimodal embeddings to index 500GB+ of files into a Qdrant vector database, with in-browser streaming media previews over WebSockets and a LLaMA 3.2 reasoning layer on top. It is live at lumen.danhle.net and the source is public on GitHub. I'm not describing a concept I've read about — I'm describing infrastructure I debugged at 2am and shipped to production.</p>
+
+  <p>My core work is frontend: React, TypeScript, Next.js, and the component systems that make teams faster. At Ultra Mobile I introduced Storybook from scratch — built the initial library, ran walkthroughs for the team, and anchored every code review to "does this match the story." Regressions dropped because developers caught visual inconsistencies before they ever hit the main app. I've owned checkout flows and promotional campaign interfaces serving millions of wireless subscribers, run A/B tests that shaped product decisions, and shipped a configurable Promotions Manager that cut campaign deployment from 3 engineering sprints to 1. I know what high-output frontend work looks like at scale, and I know what it looks like when the frontend layer is treated as an afterthought — Files.com's engineering-first culture is exactly the environment where I do my best work.</p>
+
+  <p>What draws me specifically to Files.com is the scope. Engineers here aren't decorators wiring mockups into place — they contribute across web, desktop, mobile, and backend, with the authority to shape architecture. That's how I've always approached the work. The Lumen pipeline spans a Next.js frontend, a FastAPI backend, a distributed Celery task queue, and a vector database with a custom evaluation harness gated in CI. I don't stop at the component boundary. I want to understand — and improve — the full system.</p>
+
+  <p>I'd welcome the chance to talk through how my experience maps to what you're building. I'm happy to walk through the Lumen architecture, share the codebase, or dig into any of the upcoming projects on your roadmap. Thank you for your consideration.</p>
+
+  <div class="closing">
+    <div class="sign-off">Sincerely,</div>
+    <div class="name">Danh Le</div>
+    <div class="sig-contact">
+      <a href="mailto:dtle82@gmail.com">dtle82@gmail.com</a> &nbsp;·&nbsp;
+      714-567-1107 &nbsp;·&nbsp;
+      <a href="https://danhle.net">danhle.net</a>
+    </div>
+  </div>
+
+</body>
+</html>

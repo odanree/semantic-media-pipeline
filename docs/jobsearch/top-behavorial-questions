@@ -1,0 +1,148 @@
+# Top 10 Behavioral Questions — ERI Interview Prep
+
+Each question has two versions:
+- **SHORT** — 1-2 sentence elevator version for quick recall
+- **STAR** — full structured answer for deep follow-up
+
+---
+
+## 1. The Conflict — "Tell me about a time you disagreed with a technical decision made by a lead or manager. How did you handle it?"
+
+**SHORT:**
+I found a JavaScript bug in Google Analytics that was causing IE users to drop off — my lead dismissed it as only 2% of traffic, so I pulled the revenue numbers and showed it was costing over $10,000 a month. The fix got prioritized.
+
+**STAR:**
+- **Situation:** While proactively reviewing our Google Analytics conversion funnels at Ultra Mobile, I noticed IE browsers had a significantly higher drop-off rate than other browsers. I traced it to a JavaScript compatibility bug that was breaking the experience for IE users — a browser that accounted for about 2% of our traffic.
+- **Task:** Make the case to prioritize the fix when my lead's initial read was that 2% of traffic wasn't worth the sprint capacity.
+- **Action:** Rather than argue the technical merits, I went to the revenue numbers. I took our average monthly revenue, isolated the IE traffic segment, and calculated what that drop-off rate was costing in lost conversions — it came out to over $10,000 a month. I brought that number to my lead instead of a traffic percentage. A percentage is easy to dismiss, a dollar figure is not.
+- **Result:** The fix got prioritized and shipped. The lesson I carried from that conversation was that technical decisions land differently when you translate them into business impact first. Data doesn't just help you build things — it helps you get the right things built.
+
+---
+
+## 2. The Failure — "Tell me about a project that failed or a major production bug you were responsible for. What did you learn?"
+
+**SHORT:**
+At Ultra Mobile we replaced our single-page checkout with a modern step-by-step flow — billing, then shipping, then confirmation — ran the A/B test, and the original single-page design won. We reverted and learned that what feels like better UX in a design review doesn't always translate to better conversion in production.
+
+**STAR:**
+- **Situation:** At Ultra Mobile the team redesigned the Mint Mobile checkout flow from a single-page experience into a step-by-step flow — separating billing info, shipping, and order confirmation into distinct steps. The intent was to reduce cognitive load and modernize the feel of the purchase journey.
+- **Task:** Ship the redesign and validate through an A/B test that breaking checkout into steps improved conversion over the existing all-in-one page.
+- **Action:** We ran the A/B test in production with a split of live traffic, tracking conversion rate, drop-off at each step, and overall completion rate. The step-by-step design looked cleaner in Figma and felt more guided — but the data told a different story.
+- **Result:** The original single-page checkout won. Customers converted at a higher rate when everything was in front of them at once — the additional steps created friction instead of reducing it. We reverted, went back to the drawing board, and shifted to an incremental approach — making targeted changes to the existing single-page flow and testing each one independently. The lesson: intuition about UX and actual user behavior under purchase pressure are two different things. Let the data decide, not the design review.
+
+---
+
+## 3. The Ambiguity — "Describe a time you had to work on a project with very vague requirements. How did you proceed?"
+
+**SHORT:**
+At Ultra Mobile I was given a ticket to apply a $30 discount for ACP customers with no technical direction — the obvious answer was a coupon code but the requirement needed something more robust, so I researched alternatives, discovered WooCommerce's cart `add_fee()` method accepts negative values, and used that instead.
+
+**STAR:**
+- **Situation:** I received a ticket at Ultra Mobile to implement a $30 discount for ACP (Affordable Connectivity Program) customers. The requirement was clear on the outcome — $30 off — but completely silent on how it should be implemented technically. The instinct was to reach for coupons since that was how we handled discounts across the platform, but the ACP use case needed to be more programmatic and robust — coupon codes could be shared, expired, or misapplied, which wouldn't work for a government-backed subsidy program.
+- **Task:** Figure out the right implementation approach when the requirements only defined the what, not the how.
+- **Action:** I researched WooCommerce's discount and cart manipulation APIs more deeply than I had before. I discovered that the `add_fee()` method — typically used to add surcharges — accepts a negative value, which applies it as a line-item discount directly on the cart. It was programmatically controlled, not coupon-dependent, couldn't be accidentally shared or misused, and showed up cleanly on the order summary. It was the non-obvious answer but the right one once I understood the constraints.
+- **Result:** The ACP discount shipped using `add_fee()` with a negative value, handled reliably without any of the edge cases a coupon approach would have introduced. The lesson: when requirements are vague on implementation, the first instinct is rarely the best answer — it's worth spending time understanding what constraints the use case actually has before reaching for the familiar tool.
+
+---
+
+## 4. The Priority Shift — "How do you handle a situation where a stakeholder changes a deadline or a priority mid-sprint?"
+
+**SHORT:**
+Legal at Ultra Mobile would routinely request copy and disclaimer changes mid-sprint — after getting caught enough times scrambling to push code for text updates, I made the legal content CMS-able so the team could accommodate last-minute changes without touching code or disrupting the sprint.
+
+**STAR:**
+- **Situation:** At Ultra Mobile the legal team regularly made changes to compliance copy, disclaimers, and terms mid-sprint. These weren't small requests — they were mandatory, couldn't be deferred, and every time it happened the team had to stop what they were doing, make the code change, go through review, and redeploy. It was a recurring sprint disruptor that nobody had solved because it felt like a people problem rather than a technical one.
+- **Task:** Find a way to absorb legal's last-minute changes without derailing the development sprint every time they came in.
+- **Action:** The obvious answer would have been to use WordPress's default content areas, but our pages had unique custom designs where legal disclaimers lived underneath specific sections — not in any standard location WordPress natively handled. I had to build custom ACF field groups tied to each page section so that the legal disclaimers underneath each unique design block were independently editable in the CMS. Legal could then go directly into WordPress, find the right section, and update their disclaimers without understanding the underlying page structure or filing an engineering ticket.
+- **Result:** Mid-sprint disruptions from legal changes dropped significantly. The team reclaimed sprint capacity that had been quietly leaking to one-off copy changes, and legal had the autonomy to move at their own pace without waiting on an engineering queue. The broader lesson: when the same interruption keeps happening, it's not a people problem — it's a systems problem waiting to be solved.
+
+---
+
+## 5. The Mentorship — "Tell me about a time you mentored a junior developer or helped a peer solve a complex problem."
+
+**SHORT:**
+As UX Developer at Ultra Mobile I introduced Storybook to the team — built out the initial component library, ran walkthroughs so junior developers could see components in isolation before touching the main app, and it became the shared reference that reduced UI regressions and shortened code review cycles.
+
+**STAR:**
+- **Situation:** The frontend team at Ultra Mobile was building UI components directly inside the app with no isolated development environment. Junior developers had no reliable way to see how a component should look and behave across its different states, which led to inconsistent implementations, visual regressions, and long code review cycles catching issues that should have been caught earlier.
+- **Task:** Establish a component development standard that would raise the baseline for the whole team without adding friction to the existing workflow.
+- **Action:** I introduced Storybook to the team — set it up, built out the initial component library with stories covering the key states for each shared component, and ran walkthroughs so junior developers understood how to develop and test components in isolation before integrating them into the app. I framed every code review from that point around "does this match the Storybook story" rather than just subjective feedback, which gave juniors a concrete reference instead of moving goalposts.
+- **Result:** UI regressions dropped because developers could catch visual inconsistencies in Storybook before they ever hit the main app. Code review cycles shortened, and junior developers started writing their own stories as part of their normal workflow — the standard became self-sustaining without me having to enforce it.
+
+---
+
+## 6. The Difficult Person — "Describe a time you had to work with someone who was difficult or uncooperative. How did you manage that relationship?"
+
+**SHORT:**
+At Ultra Mobile a contractor kept submitting PRs late in the sprint with solutions that needed refactoring — instead of raising it in standup or escalating, I reached out directly and offered to work through it together if he was stuck, and the pattern improved once he knew he had a resource.
+
+**STAR:**
+- **Situation:** At Ultra Mobile we had a contractor on the team who consistently submitted his PRs late in the sprint. Standup updates were always "working on it" with little visibility into progress, and when the PRs did come in they sometimes required significant refactoring — which created pressure on the rest of the team at the worst possible time in the sprint cycle.
+- **Task:** Address the pattern without creating conflict or making him feel called out in front of the team.
+- **Action:** I didn't bring it up in standup or go to the lead first. I reached out to him directly and kept it simple — told him I noticed he was deep in some of his tickets and asked if there was anything he was stuck on that we could work through together. I framed it as an offer, not a critique. What came out of that conversation was that he was hesitant to ask for help because he didn't want to look like he couldn't handle the work, so he'd keep grinding quietly instead of flagging early.
+- **Result:** Once he knew he had a resource without judgment, he started reaching out earlier when he hit blockers. The late PRs became less frequent and the refactor requests dropped because we were catching issues in conversation before they made it into code. The lesson: "difficult" behavior usually has a reason behind it — and a direct, private, non-judgmental conversation gets to that reason faster than anything else.
+
+---
+
+## 7. The Trade-off — "Tell me about a time you had to choose between 'shipping fast' and 'shipping perfect code'."
+
+**SHORT:**
+At Ultra Mobile every new promotion meant hardcoding pricing values like `data-promotion-price` and `data-savings-amount` directly into the campaign markup to hit the launch date — we shipped fast each time and tracked the debt, and eventually that accumulated cost justified building the Promotions Manager to pay it off permanently.
+
+**STAR:**
+- **Situation:** Each Ultra Mobile promotional campaign had a hard launch date tied to paid media. The fastest path was hardcoding the promotional values — discount amounts, savings figures, add-a-line pricing — directly into the HTML as data attributes, like `data-promotion-price="12"` and `data-savings-amount="37"`. The JavaScript would read those values and render the correct pricing. It worked, it shipped on time, and it was unambiguously technical debt.
+- **Task:** Make a conscious decision each sprint about whether to take the hardcoded shortcut or invest in a more dynamic solution, knowing campaigns couldn't slip.
+- **Action:** We shipped fast deliberately — each promotion met its launch window. But I tracked the pattern: every campaign was the same shortcut repeated. I documented what a proper dynamic pricing engine would look like and made the case that the accumulated cost of hardcoding — engineering time per campaign, QA overhead, risk of human error in the markup — justified building a configurable system. That became the Promotions Manager.
+- **Result:** The short-term trade-off bought us on-time campaign launches across multiple sprints. The long-term payoff was a Promotions Manager that cut promotion deployment from 3 sprints to 1 and let marketing self-serve without touching code. The lesson: shipping fast is a legitimate choice when you treat the debt as real, track it honestly, and eventually close it — not when you pretend it isn't there.
+
+---
+
+## 8. The Innovation — "Describe a time you introduced a new technology or process that improved the team's efficiency."
+
+**SHORT:**
+At Ultra Mobile I built the Promotions Manager — a self-serve tool that let marketing configure and launch promotional campaigns without engineering involvement — cutting promotion deployment from 3 sprints down to 1 and freeing the team to focus on platform work instead of one-off campaign builds.
+
+**STAR:**
+- **Situation:** Every new Mint Mobile promotion required engineering to hardcode campaign logic — discount types, eligibility rules, time windows — which meant each promotion took roughly 3 sprints to design, build, test, and ship. Marketing was constantly blocked waiting on engineering bandwidth.
+- **Task:** Remove engineering from the critical path for routine promotion launches without sacrificing reliability on a platform serving millions of subscribers.
+- **Action:** I built the Promotions Manager — a configurable rules engine with an admin UI that let marketing define and schedule promotions themselves. I designed it around the patterns I'd already seen repeat across campaigns: discount types, plan eligibility, stacking rules, and activation windows. During sprint planning we would review the Figma designs upfront and identify any visual elements the existing CMS fields couldn't cover — those gaps became the only custom development work scoped into that sprint. Everything the Promotions Manager already handled shipped without engineering touching it. Engineering's remaining role was a final validation pass ensuring the promotion message was consistent across the entire customer journey: homepage, plans page, product page, cart, and checkout, all matching the Figma designs before launch.
+- **Result:** Promotion deployment dropped from 3 sprints to 1. Marketing could configure and launch campaigns independently, engineering was reduced to a quality gate rather than a bottleneck, and Ultra Mobile was no longer limited to the typical Fall/Black Friday window — they could launch promotions throughout the year without competing for engineering sprint capacity.
+
+---
+
+## 9. The Pressure — "Tell me about the most high-pressure technical situation you've been in. How did you stay focused?"
+
+**SHORT:**
+During a release call at Ultra Mobile we discovered the CTA button on the plans page was routing to a 404 instead of the product page — my teammate was digging into it, so I opened a parallel track, traced the broken route, wrote a quick fix PR, and our lead used it to unblock the release on the spot.
+
+**STAR:**
+- **Situation:** We were on a live release call at Ultra Mobile when someone flagged that the CTA button on the plans page — the button that drives customers from plan selection into the product page — was hitting a 404. The whole team was on the line with a one-hour window to resolve it or pull the release entirely. For a ecomm platform where that button is one of the highest-traffic actions on the site, a 404 on release day was not an option.
+- **Task:** Get the release unblocked within the window without crowding the teammate who was already on it.
+- **Action:** I watched for a moment, saw my teammate was deep in the root cause investigation but hadn't landed on a fix yet. I opened a parallel track and started tracing the issue myself. The slug was being resolved by a hook that pulled a product ID from a data-attribute — in QA the IDs matched the expected values so the hook returned the correct slug and everything passed. In production the IDs were different, so the hook fed the wrong value, the slug resolved incorrectly, and the button routed to a 404. Classic environment parity gap — it was invisible in QA because QA data matched the assumption baked into the code. Once I identified the mismatch I wrote a targeted PR that passed the correct production ID through the data-attribute, kept the scope tight to avoid touching anything else, and dropped it in the channel when it was ready.
+- **Result:** Our lead picked up my PR and used it to fix the issue on the spot. The release went out within the window. The lesson: under pressure the worst thing you can do is wait for someone else to finish. You read the room, find the lane that isn't covered, and move into it quietly. Collaboration under pressure isn't about who solves it — it's about making sure it gets solved.
+
+---
+
+## 11. The Cross-Functional Ask — "Tell me about a time your manager asked you to do something outside your job description. How did you handle it?"
+
+**SHORT:**
+At Ultra Mobile I was the only person on the team with an iPhone SE, which meant I was also the only one who could catch layout breaks at 320px — so QA on that viewport became mine by default, and I treated it as part of the job rather than a distraction from it.
+
+**STAR:**
+- **Situation:** At Ultra Mobile the team was shipping responsive designs across a range of devices, but nobody else on the engineering or design team had an iPhone SE — the smallest mainstream form factor at 320px wide. Layout bugs that were invisible at 375px and above would break completely at 320px, and they were impossible to catch without the physical device.
+- **Task:** When my lead asked me to handle mobile QA on that viewport specifically, it wasn't in my job description as a frontend developer — it was closer to QA engineer territory. But I was the only person who could actually do it.
+- **Action:** I treated it as an extension of my frontend ownership rather than a separate assignment. If I was shipping a component, I was also validating it at 320px before it left my hands. I documented the most common failure patterns — text overflow, fixed-width elements breaking fluid layouts, touch targets collapsing below usable size — so that even when I wasn't around, the team had a reference for what to look for on narrow viewports.
+- **Result:** We caught several layout regressions before they reached QA or production that would have been invisible to anyone testing on a standard-sized device. The broader lesson: when someone asks you to step outside your lane, the right question isn't "is this my job" — it's "am I the right person to do this well." If the answer is yes, you own it.
+
+---
+
+## 10. The Why Us — "With your background in e-commerce and scaling systems, why do you want to move into AI and labor economics at ERI?"
+
+**SHORT:**
+I've spent years building systems where data has to be right because money depends on it — payments, subscriptions, subscriptions at scale. ERI's mission of defensible compensation data is the same standard applied to a domain with even broader real-world impact, and Lumen showed me I'm ready for the intelligence layer.
+
+**STAR:**
+- **Situation:** After years in e-commerce and payments I wanted to apply my reliability standards somewhere the intelligence layer was the core product, not an afterthought.
+- **Task:** Find a role where deep system knowledge and ML curiosity intersect.
+- **Action:** Built Lumen — not as a portfolio checkbox, but to prove to myself I could ship a full ML pipeline end to end. When I looked at ERI the mission mapped directly: employer-reported compensation data has to be right because real hiring and salary decisions depend on it. Same standard I held payments to.
+- **Result:** I'm not switching industries, I'm applying the same reliability instincts to a more interesting problem. The 90-day ramp Jonas mentioned doesn't scare me — Lumen is proof I pick up new stacks fast and ship before most people finish planning.

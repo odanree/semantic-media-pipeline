@@ -1,0 +1,289 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Danh Le — Resume</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: 'Georgia', 'Times New Roman', serif;
+      font-size: 10.5pt;
+      color: #1a1a1a;
+      background: #fff;
+      padding: 0.6in 0.7in;
+      max-width: 8.5in;
+      margin: 0 auto;
+      line-height: 1.45;
+    }
+
+    /* ── Header ── */
+    .header { text-align: center; margin-bottom: 14px; }
+    .header h1 {
+      font-family: 'Arial', sans-serif;
+      font-size: 22pt;
+      font-weight: 700;
+      letter-spacing: 0.03em;
+      color: #111;
+      margin-bottom: 5px;
+    }
+    .contact {
+      font-family: 'Arial', sans-serif;
+      font-size: 9pt;
+      color: #444;
+    }
+    .contact a { color: #1a56a0; text-decoration: none; }
+
+    /* ── Section headings ── */
+    h2 {
+      font-family: 'Arial', sans-serif;
+      font-size: 10pt;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      color: #1a56a0;
+      border-bottom: 1.5px solid #1a56a0;
+      padding-bottom: 2px;
+      margin-top: 14px;
+      margin-bottom: 7px;
+    }
+
+    /* ── Summary ── */
+    .summary { margin-bottom: 2px; }
+
+    /* ── Skills ── */
+    .skills { margin-bottom: 2px; }
+    .skill-row { margin-bottom: 3px; font-size: 10pt; }
+    .skill-row strong {
+      font-family: 'Arial', sans-serif;
+      font-weight: 700;
+      color: #111;
+    }
+
+    /* ── Projects ── */
+    .project { margin-bottom: 10px; }
+    .project-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      flex-wrap: wrap;
+      gap: 4px;
+    }
+    .project-title {
+      font-family: 'Arial', sans-serif;
+      font-size: 10.5pt;
+      font-weight: 700;
+      color: #111;
+    }
+    .project-links {
+      font-family: 'Arial', sans-serif;
+      font-size: 8.5pt;
+      color: #1a56a0;
+    }
+    .project-links a { color: #1a56a0; text-decoration: none; }
+
+    /* ── Experience ── */
+    .job { margin-bottom: 10px; }
+    .job-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      flex-wrap: wrap;
+    }
+    .job-title {
+      font-family: 'Arial', sans-serif;
+      font-size: 10.5pt;
+      font-weight: 700;
+      color: #111;
+    }
+    .job-meta {
+      font-family: 'Arial', sans-serif;
+      font-size: 9pt;
+      color: #555;
+      text-align: right;
+    }
+    .company {
+      font-family: 'Arial', sans-serif;
+      font-size: 9.5pt;
+      color: #333;
+      margin-bottom: 3px;
+    }
+
+    /* ── Bullet lists ── */
+    ul {
+      margin-left: 16px;
+      margin-top: 3px;
+    }
+    li {
+      margin-bottom: 2px;
+      font-size: 10pt;
+    }
+
+    /* ── Education ── */
+    .education {
+      font-family: 'Arial', sans-serif;
+      font-size: 10pt;
+    }
+
+    /* ── Print settings ── */
+    @media print {
+      body { padding: 0.5in 0.6in; }
+      @page { size: letter; margin: 0; }
+      a { color: inherit !important; }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- HEADER -->
+  <div class="header">
+    <h1>Danh Le</h1>
+    <div class="contact">
+      Orange, CA &nbsp;|&nbsp;
+      714-567-1107 &nbsp;|&nbsp;
+      <a href="mailto:dtle82@gmail.com">dtle82@gmail.com</a> &nbsp;|&nbsp;
+      <a href="https://linkedin.com/in/dtle82">linkedin.com/in/dtle82</a> &nbsp;|&nbsp;
+      <a href="https://github.com/odanree">github.com/odanree</a> &nbsp;|&nbsp;
+      <a href="https://danhle.net">danhle.net</a>
+    </div>
+  </div>
+
+  <!-- SUMMARY -->
+  <h2>Summary</h2>
+  <div class="summary">
+    <p>AI Engineer with production ML experience across computer vision, NLP, and semantic search — designed and shipped a full end-to-end pipeline from raw data ingestion through vector retrieval and LLM reasoning. Five years in wireless telecom at Ultra Mobile (Mint Mobile) with hands-on understanding of the subscriber lifecycle, promotional campaign performance, and customer conversion metrics that drive wireless retail decisions. Applies the same data rigor that powered e-commerce systems serving millions of subscribers to building AI models that work in the real world.</p>
+  </div>
+
+  <!-- TECHNICAL SKILLS -->
+  <h2>Technical Skills</h2>
+  <div class="skills">
+    <div class="skill-row"><strong>AI / ML:</strong> CLIP (multimodal embeddings), YOLO (object detection), Ollama / LLaMA 3.2, LangChain, RAGAS (evaluation), Transformer architectures, NLP, computer vision</div>
+    <div class="skill-row"><strong>Languages:</strong> Python, JavaScript / TypeScript, SQL, PHP</div>
+    <div class="skill-row"><strong>Frameworks:</strong> FastAPI, Celery, Next.js, React</div>
+    <div class="skill-row"><strong>Databases:</strong> PostgreSQL, Qdrant (vector DB), Redis</div>
+    <div class="skill-row"><strong>MLOps:</strong> Docker, GitHub Actions CI/CD, Nginx, Hetzner Cloud, AWS Lambda / API Gateway</div>
+    <div class="skill-row"><strong>Data &amp; APIs:</strong> REST APIs, WebSockets, OpenAI API, Pandas, NumPy</div>
+    <div class="skill-row"><strong>Testing &amp; Evaluation:</strong> RAGAS (faithfulness, answer relevancy, context precision/recall), Cypress E2E, Optimizely A/B</div>
+  </div>
+
+  <!-- PROJECTS -->
+  <h2>Projects</h2>
+
+  <div class="project">
+    <div class="project-header">
+      <span class="project-title">Lumen — Semantic Media Search Pipeline</span>
+      <span class="project-links">
+        <a href="https://github.com/odanree/semantic-media-pipeline">github.com/odanree/semantic-media-pipeline</a> &nbsp;|&nbsp;
+        <a href="https://lumen.danhle.net">lumen.danhle.net</a>
+      </span>
+    </div>
+    <ul>
+      <li>Built a full AI pipeline: CLIP multimodal embeddings generate vector representations for 500GB+ of unstructured media (video, images, audio) ingested into Qdrant vector DB; Ollama LLaMA 3.2 reasons over retrieved frames to answer natural-language queries</li>
+      <li>Implemented YOLO object detection for automated visual enrichment and an audio processing layer for speech detection and segment classification — covering all three modalities (text, image, voice)</li>
+      <li>Deployed RAGAS evaluation harness with GitHub Actions CI/CD gate; pipeline fails build if faithfulness or answer relevancy metrics drop below defined thresholds</li>
+      <li>Achieved sub-second search latency on CPU-only ARM cloud server; optimized Qdrant payload indexes for 10,500x filtering speedup on 1.88M vectors</li>
+      <li>MLOps: Docker Compose, automated deployment pipeline, Nginx reverse proxy, Hetzner Cloud VPS</li>
+    </ul>
+  </div>
+
+  <div class="project">
+    <div class="project-header">
+      <span class="project-title">LLM Local Assistant — VS Code Extension (v2.13.1)</span>
+    </div>
+    <ul>
+      <li>Shipped production VS Code extension with AI-powered code analysis; built intelligent safeguards for AI-generated file modifications</li>
+      <li>Designed and implemented multi-model routing strategy for different analysis tasks</li>
+    </ul>
+  </div>
+
+  <div class="project">
+    <div class="project-header">
+      <span class="project-title">AI Chatbot</span>
+    </div>
+    <ul>
+      <li>Dual-personality chatbot using Strategy Pattern; demonstrates prompt engineering and LLM integration fundamentals</li>
+    </ul>
+  </div>
+
+  <!-- EXPERIENCE -->
+  <h2>Experience</h2>
+
+  <div class="job">
+    <div class="job-header">
+      <span class="job-title">Software Engineer 2</span>
+      <span class="job-meta">May 2022 – Jan 2026</span>
+    </div>
+    <div class="company">Ultra Mobile (Mint Mobile) &nbsp;·&nbsp; Costa Mesa, CA</div>
+    <ul>
+      <li>Built and maintained e-commerce systems serving millions of wireless subscribers on Mint Mobile and Ultra Mobile platforms — deep familiarity with wireless retail KPIs, subscriber acquisition, and churn dynamics</li>
+      <li>Identified a JavaScript compatibility bug using Google Analytics funnel analysis; quantified $10,000/month revenue impact from conversion drop-off data to prioritize the fix with stakeholders</li>
+      <li>Built Promotions Manager — configurable rules engine that cut campaign deployment from 3 sprints to 1 and enabled marketing to self-serve promotions year-round without engineering involvement</li>
+      <li>Ran A/B tests (Optimizely) on checkout flows and promotional experiences; used conversion data and revenue analysis to drive product decisions</li>
+      <li>Designed custom CMS architecture enabling non-technical teams to manage content independently; reduced mid-sprint engineering interruptions from legal and marketing</li>
+    </ul>
+  </div>
+
+  <div class="job">
+    <div class="job-header">
+      <span class="job-title">UX Developer</span>
+      <span class="job-meta">Jan 2020 – May 2022</span>
+    </div>
+    <div class="company">Ultra Mobile &nbsp;·&nbsp; Costa Mesa, CA</div>
+    <ul>
+      <li>Introduced Storybook component library; established component isolation standard that reduced UI regressions and shortened code review cycles across the team</li>
+      <li>Built responsive subscriber acquisition landing pages and promotional experiences for Mint Mobile campaigns, including Ryan Reynolds celebrity marketing partnerships</li>
+    </ul>
+  </div>
+
+  <div class="job">
+    <div class="job-header">
+      <span class="job-title">Lead Front-end Developer</span>
+      <span class="job-meta">Jan 2018 – Jan 2019</span>
+    </div>
+    <div class="company">Mobovida, LLC</div>
+    <ul>
+      <li>Led front-end development for wireless accessories e-commerce platform with large SKU catalog</li>
+      <li>Mentored junior developers on coding standards and architecture best practices</li>
+    </ul>
+  </div>
+
+  <div class="job">
+    <div class="job-header">
+      <span class="job-title">Lead Web Developer</span>
+      <span class="job-meta">Aug 2017 – Jan 2018</span>
+    </div>
+    <div class="company">OneClickSolar.com</div>
+    <ul>
+      <li>Achieved sub-2-second page load performance for solar e-commerce platform through systematic performance optimization</li>
+    </ul>
+  </div>
+
+  <div class="job">
+    <div class="job-header">
+      <span class="job-title">Intermediate Programmer</span>
+      <span class="job-meta">Dec 2016 – Jul 2017</span>
+    </div>
+    <div class="company">Rebar Interactive</div>
+    <ul>
+      <li>Delivered client-facing web applications in a digital agency environment across multiple simultaneous accounts</li>
+    </ul>
+  </div>
+
+  <div class="job">
+    <div class="job-header">
+      <span class="job-title">System Administrator</span>
+      <span class="job-meta">Nov 2013 – Jul 2016</span>
+    </div>
+    <div class="company">e4Hats.com</div>
+    <ul>
+      <li>Managed infrastructure for e-commerce operation; reduced system downtime by 80% through proactive monitoring and process improvements</li>
+    </ul>
+  </div>
+
+  <!-- EDUCATION -->
+  <h2>Education</h2>
+  <div class="education">LearningFuze Development Bootcamp &nbsp;·&nbsp; 2016</div>
+
+</body>
+</html>
