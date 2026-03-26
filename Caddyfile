@@ -36,3 +36,11 @@ adu.danhle.net {
 		Referrer-Policy strict-origin-when-cross-origin
 	}
 }
+
+grafana.danhle.net {
+	reverse_proxy localhost:3001
+}
+
+grafana-lumen.danhle.net {
+	reverse_proxy localhost:3004
+}
