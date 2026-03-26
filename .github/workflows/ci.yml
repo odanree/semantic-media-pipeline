@@ -186,10 +186,11 @@ jobs:
         run: pip install pip-audit
 
       - name: Audit api/requirements.txt
-        run: pip-audit -r api/requirements.txt --ignore-vuln CVE-2025-69872 --ignore-vuln CVE-2026-28500
+        run: pip-audit -r api/requirements.txt --ignore-vuln CVE-2025-69872 --ignore-vuln CVE-2026-28500 --ignore-vuln CVE-2026-4539
         # CVE-2025-69872 affects diskcache (transitive dep via mlflow). No fix version
         # available upstream as of 2026-03-11. Re-evaluate when diskcache >5.6.3 ships.
         # CVE-2026-28500 affects onnx 1.20.1. No fix version available as of 2026-03-16.
+        # CVE-2026-4539 affects pygments (transitive dep). No fix version available as of 2026-03-26.
 
   # -------------------------------------------------------------------------
   # Secret scanning (trufflehog — detects leaked credentials in git history)
