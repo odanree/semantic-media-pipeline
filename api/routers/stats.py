@@ -606,6 +606,40 @@ def collection_info():
         except Exception:
             pass  # degrade gracefully — phase filter is non-critical
 
+        # Distinct label values present in Qdrant
+        labels: list[str] = []
+        try:
+            from qdrant_client.http import models as qmodels
+            qdrant = _get_qdrant()
+            collection_name = os.getenv("QDRANT_COLLECTION_NAME", "media_vectors")
+            label_filter = qmodels.Filter(
+                must_not=[
+                    qmodels.IsEmptyCondition(
+                        is_empty=qmodels.PayloadField(key="label")
+                    )
+                ]
+            )
+            seen_labels: set[str] = set()
+            offset = None
+            while True:
+                records, offset = qdrant.scroll(
+                    collection_name=collection_name,
+                    scroll_filter=label_filter,
+                    with_payload=["label"],
+                    with_vectors=False,
+                    limit=1000,
+                    offset=offset,
+                )
+                for r in records:
+                    val = r.payload.get("label")
+                    if val:
+                        seen_labels.add(val)
+                if offset is None:
+                    break
+            labels = sorted(seen_labels)
+        except Exception:
+            pass  # degrade gracefully — label filter is non-critical
+
         # Semantic topic tags: CLIP-based vocabulary probe (see _compute_topic_tags)
         try:
             top_topics = _compute_topic_tags(k=10)
@@ -622,6 +656,7 @@ def collection_info():
             "captioned_count": captioned_count,
             "caption_pct": caption_pct,
             "construction_phases": construction_phases,
+            "labels": labels,
         }
     finally:
         db.close()

@@ -157,6 +157,8 @@ class SearchRequest(BaseModel):
     audio_event_top: Optional[str] = None     # e.g. "Scream" — AudioSet top label
     # --- Construction phase filter ---
     construction_phase: Optional[str] = None  # e.g. "Phase 3: Rough MEP"
+    # --- Custom label filter ---
+    label: Optional[str] = None              # e.g. "UNC" — custom drive/collection label
     # --- Re-ranker ---
     oversample: Optional[int] = None  # override RERANKER_OVERSAMPLE for this request
 
@@ -411,6 +413,10 @@ async def search_media(request: Request, body: SearchRequest):
             filter_conditions.append(
                 FieldCondition(key="construction_phase", match=MatchValue(value=body.construction_phase))
             )
+        if body.label is not None:
+            filter_conditions.append(
+                FieldCondition(key="label", match=MatchValue(value=body.label))
+            )
         audio_filter = Filter(must=filter_conditions) if filter_conditions else None
 
         filter_only = audio_filter is not None and not body.query.strip()
@@ -525,6 +531,7 @@ async def search_media(request: Request, body: SearchRequest):
                 "audio_rms_energy": payload.get("audio_rms_energy"),
                 "construction_phase": payload.get("construction_phase"),
                 "phase_confidence": payload.get("phase_confidence"),
+                "label": payload.get("label"),
             })
 
         execution_time_ms = (time.time() - start_time) * 1000
