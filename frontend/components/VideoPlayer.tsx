@@ -18,9 +18,20 @@ export default function VideoPlayer({ result, onClose }: VideoPlayerProps) {
   const videoRef = useRef<HTMLVideoElement>(null)
   const [videoError, setVideoError] = useState<string | null>(null)
   const [quality, setQuality] = useState<'proxy' | 'original'>('proxy')
+  const [isPaused, setIsPaused] = useState(true)
+  const [copied, setCopied] = useState(false)
   // Saved playback position — restored after src swap so the toggle feels
   // seamless rather than jumping back to 0.
   const savedTimeRef = useRef<number>(0)
+
+  function copyShortcut() {
+    const t = videoRef.current?.currentTime
+    const shortcut = `>${result.file_path}` + (t != null ? `@${t.toFixed(1)}` : '')
+    navigator.clipboard.writeText(shortcut).then(() => {
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1500)
+    })
+  }
 
   // Reset quality to proxy whenever a new result is opened
   useEffect(() => {
@@ -72,7 +83,15 @@ export default function VideoPlayer({ result, onClose }: VideoPlayerProps) {
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex justify-between items-center p-4 border-b border-gray-700">
-          <h3 id="video-title" className="font-semibold truncate text-sm">{result.file_path.split('/').pop()}</h3>
+          <button
+            id="video-title"
+            onClick={isPaused ? copyShortcut : undefined}
+            title={isPaused ? 'Copy > shortcut to clipboard' : 'Pause to copy shortcut'}
+            className={`font-semibold truncate text-sm text-left ${isPaused ? 'hover:text-blue-400 cursor-copy' : 'cursor-default'}`}
+          >
+            {result.file_path.split('/').pop()}
+            {copied && <span className="ml-2 text-xs text-green-400 font-normal">copied!</span>}
+          </button>
           <div className="flex items-center gap-3 shrink-0">
             {/* Quality badge + toggle */}
             <span className={`text-xs font-mono px-2 py-0.5 rounded ${
@@ -120,6 +139,8 @@ export default function VideoPlayer({ result, onClose }: VideoPlayerProps) {
                   videoRef.current.currentTime = savedTimeRef.current
                 }
               }}
+              onPlay={() => setIsPaused(false)}
+              onPause={() => setIsPaused(true)}
               onError={(e) => {
                 const target = e.target as HTMLVideoElement
                 setVideoError(target.error?.message || 'Unknown error')

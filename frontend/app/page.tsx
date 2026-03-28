@@ -55,6 +55,30 @@ export default function SearchPage() {
     setLoading(true)
     setError(null)
 
+    // > shortcut: direct frame lookup — >/path/to/file.mp4@timestamp
+    if (searchQuery.startsWith('>')) {
+      try {
+        const raw = searchQuery.slice(1).trim()
+        const atIdx = raw.lastIndexOf('@')
+        const file_path = atIdx !== -1 ? raw.slice(0, atIdx) : raw
+        const timestamp = atIdx !== -1 ? parseFloat(raw.slice(atIdx + 1)) : undefined
+        const response = await fetch('/api/lookup', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ file_path, timestamp }),
+        })
+        if (!response.ok) throw new Error('Frame not found in index')
+        const data = await response.json()
+        setResults(data.results || [])
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Lookup failed')
+        setResults([])
+      } finally {
+        setLoading(false)
+      }
+      return
+    }
+
     try {
       const payload: Record<string, unknown> = {
         query: searchQuery,
@@ -243,7 +267,7 @@ export default function SearchPage() {
               </div>
             )}
           </div>
-          <ResultGrid results={results} />
+          <ResultGrid results={results} label={appliedFilters.label} />
         </div>
       )}
 

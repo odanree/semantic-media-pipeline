@@ -26,6 +26,7 @@ interface ReelState {
 
 interface ResultGridProps {
   results: SearchResult[]
+  label?: string
 }
 
 type ViewMode = 'grid' | 'list'
@@ -34,7 +35,7 @@ type SortKey = 'similarity_desc' | 'similarity_asc' | 'rms_desc' | 'rms_asc'
 // Stream directly from FastAPI - bypasses Next.js proxy, no Node.js buffering
 const STREAM_BASE = process.env.NEXT_PUBLIC_STREAM_URL || 'http://localhost:8000'
 
-export default function ResultGrid({ results }: ResultGridProps) {
+export default function ResultGrid({ results, label }: ResultGridProps) {
   const [selectedVideo, setSelectedVideo] = useState<SearchResult | null>(null)
   const [selectedImage, setSelectedImage] = useState<SearchResult | null>(null)
   const [similarSource, setSimilarSource] = useState<SearchResult | null>(null)
@@ -304,6 +305,7 @@ export default function ResultGrid({ results }: ResultGridProps) {
             timestamp: similarSource.timestamp,
           }}
           onClose={() => setSimilarSource(null)}
+          label={label}
         />
       )}
 

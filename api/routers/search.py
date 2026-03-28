@@ -557,11 +557,95 @@ async def search_media(request: Request, body: SearchRequest):
         raise HTTPException(status_code=500, detail=f"Search failed: {str(e)}")
 
 
+class LookupRequest(BaseModel):
+    file_path: str
+    timestamp: Optional[float] = None  # None for images
+
+
+@router.post("/lookup")
+@limiter.limit(LIMIT_SEARCH)
+async def lookup_frame(request: Request, body: LookupRequest):
+    """
+    Direct frame lookup by file_path + timestamp.
+
+    Skips CLIP inference entirely — scrolls Qdrant for the exact stored point
+    matching the given file and timestamp, returns it as a single search result.
+    Used by the > shortcut in the frontend.
+    """
+    source_conditions = [FieldCondition(key="file_path", match=MatchValue(value=body.file_path))]
+
+    if body.timestamp is not None:
+        windowed_conditions = source_conditions + [
+            FieldCondition(
+                key="timestamp",
+                range=Range(gte=body.timestamp - 5.0, lte=body.timestamp + 5.0),
+            )
+        ]
+        windowed_result, _ = qdrant_client.scroll(
+            collection_name=QDRANT_COLLECTION_NAME,
+            scroll_filter=Filter(must=windowed_conditions),
+            limit=10,
+            with_payload=True,
+            with_vectors=False,
+        )
+    else:
+        windowed_result = []
+
+    if windowed_result:
+        candidates = windowed_result
+    else:
+        candidates, _ = qdrant_client.scroll(
+            collection_name=QDRANT_COLLECTION_NAME,
+            scroll_filter=Filter(must=source_conditions),
+            limit=20,
+            with_payload=True,
+            with_vectors=False,
+        )
+
+    if not candidates:
+        raise HTTPException(status_code=404, detail="File not found in index")
+
+    if body.timestamp is not None and len(candidates) > 1:
+        point = min(candidates, key=lambda p: abs((p.payload.get("timestamp") or 0) - body.timestamp))
+    else:
+        point = candidates[0]
+
+    payload = point.payload
+    ts = payload.get("timestamp")
+    result = {
+        "id": str(point.id),
+        "file_path": payload.get("file_path"),
+        "file_type": payload.get("file_type"),
+        "similarity": 1.0,
+        "frame_index": payload.get("frame_index"),
+        "timestamp": ts,
+        "scene_window_start": None,
+        "scene_window_end": None,
+        "updated_at": payload.get("updated_at"),
+        "audio_segment_start_sec": payload.get("audio_segment_start_sec"),
+        "audio_segment_end_sec": payload.get("audio_segment_end_sec"),
+        "audio_rms_energy": payload.get("audio_rms_energy"),
+        "construction_phase": payload.get("construction_phase"),
+        "phase_confidence": payload.get("phase_confidence"),
+        "label": payload.get("label"),
+    }
+
+    return {
+        "query": f">{body.file_path}" + (f"@{body.timestamp}" if body.timestamp is not None else ""),
+        "results": [result],
+        "count": 1,
+        "execution_time_ms": 0,
+        "scenes_collapsed": 0,
+        "raw_frame_count": 1,
+    }
+
+
 class SimilarRequest(BaseModel):
     file_path: str
     timestamp: Optional[float] = None   # None for images
     limit: int = 10                     # distinct files to return
     threshold: float = 0.5             # higher default — want genuinely similar
+    label: Optional[str] = None        # restrict results to this label
 
 
 @router.post("/similar")
@@ -627,9 +711,14 @@ async def find_similar(request: Request, body: SimilarRequest):
 
     # 2. Search using point ID as query — Qdrant resolves the vector server-side,
     # no client-side vector transfer needed.
-    exclude_source = Filter(must_not=[
-        FieldCondition(key="file_path", match=MatchValue(value=body.file_path))
-    ])
+    must_not_conditions = [FieldCondition(key="file_path", match=MatchValue(value=body.file_path))]
+    must_conditions = []
+    if body.label is not None:
+        must_conditions.append(FieldCondition(key="label", match=MatchValue(value=body.label)))
+    exclude_source = Filter(
+        must=must_conditions if must_conditions else None,
+        must_not=must_not_conditions,
+    )
 
     # Oversample so per-file grouping still yields `limit` distinct files.
     # 5× is enough — no re-ranking needed here (scores come directly from Qdrant).

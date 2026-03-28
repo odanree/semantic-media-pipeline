@@ -630,3 +630,83 @@ def test_search_audio_event_top_filter_accepted(client, mock_qdrant):
     mock_qdrant.query_points.return_value = MagicMock(points=[])
     resp = client.post("/api/search", json={"query": "scary moment", "audio_event_top": "Scream"})
     assert resp.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# /api/lookup — direct frame lookup by file_path + timestamp
+# ---------------------------------------------------------------------------
+
+def _make_point(file_path, timestamp=None, file_type="video"):
+    p = MagicMock()
+    p.id = "abc123"
+    p.payload = {
+        "file_path": file_path,
+        "file_type": file_type,
+        "timestamp": timestamp,
+        "frame_index": 42,
+        "label": None,
+        "construction_phase": None,
+        "phase_confidence": None,
+        "audio_rms_energy": None,
+        "audio_segment_start_sec": None,
+        "audio_segment_end_sec": None,
+        "updated_at": None,
+    }
+    return p
+
+
+def test_lookup_missing_file_path_returns_422(client):
+    resp = client.post("/api/lookup", json={})
+    assert resp.status_code == 422
+
+
+def test_lookup_file_not_found_returns_404(client, mock_qdrant):
+    mock_qdrant.scroll.return_value = ([], None)
+    resp = client.post("/api/lookup", json={"file_path": "/mnt/source/missing.mp4"})
+    assert resp.status_code == 404
+
+
+def test_lookup_returns_200_when_found(client, mock_qdrant):
+    point = _make_point("/mnt/source/clip.mp4", timestamp=10.0)
+    mock_qdrant.scroll.return_value = ([point], None)
+    resp = client.post("/api/lookup", json={"file_path": "/mnt/source/clip.mp4", "timestamp": 10.0})
+    assert resp.status_code == 200
+
+
+def test_lookup_result_has_correct_file_path(client, mock_qdrant):
+    point = _make_point("/mnt/source/clip.mp4", timestamp=10.0)
+    mock_qdrant.scroll.return_value = ([point], None)
+    data = client.post("/api/lookup", json={"file_path": "/mnt/source/clip.mp4", "timestamp": 10.0}).json()
+    assert data["results"][0]["file_path"] == "/mnt/source/clip.mp4"
+
+
+def test_lookup_similarity_is_1(client, mock_qdrant):
+    point = _make_point("/mnt/source/clip.mp4", timestamp=10.0)
+    mock_qdrant.scroll.return_value = ([point], None)
+    data = client.post("/api/lookup", json={"file_path": "/mnt/source/clip.mp4", "timestamp": 10.0}).json()
+    assert data["results"][0]["similarity"] == 1.0
+
+
+def test_lookup_count_is_1(client, mock_qdrant):
+    point = _make_point("/mnt/source/clip.mp4", timestamp=10.0)
+    mock_qdrant.scroll.return_value = ([point], None)
+    data = client.post("/api/lookup", json={"file_path": "/mnt/source/clip.mp4", "timestamp": 10.0}).json()
+    assert data["count"] == 1
+
+
+def test_lookup_without_timestamp_returns_first_point(client, mock_qdrant):
+    point = _make_point("/mnt/source/photo.jpg", file_type="image")
+    mock_qdrant.scroll.return_value = ([point], None)
+    data = client.post("/api/lookup", json={"file_path": "/mnt/source/photo.jpg"}).json()
+    assert data["results"][0]["file_type"] == "image"
+
+
+def test_lookup_picks_closest_timestamp(client, mock_qdrant):
+    """When multiple candidates exist, pick the one closest to the requested timestamp."""
+    p1 = _make_point("/mnt/source/clip.mp4", timestamp=5.0)
+    p2 = _make_point("/mnt/source/clip.mp4", timestamp=10.0)
+    # windowed scroll returns nothing, fallback scroll returns both
+    mock_qdrant.scroll.side_effect = [([], None), ([p1, p2], None)]
+    data = client.post("/api/lookup", json={"file_path": "/mnt/source/clip.mp4", "timestamp": 9.5}).json()
+    assert data["results"][0]["timestamp"] == 10.0
+    mock_qdrant.scroll.side_effect = None

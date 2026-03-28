@@ -31,9 +31,10 @@ interface ReelState {
 interface SimilarPanelProps {
   source: SourceResult
   onClose: () => void
+  label?: string
 }
 
-export default function SimilarPanel({ source, onClose }: SimilarPanelProps) {
+export default function SimilarPanel({ source, onClose, label }: SimilarPanelProps) {
   const [results, setResults] = useState<SimilarResult[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -62,6 +63,7 @@ export default function SimilarPanel({ source, onClose }: SimilarPanelProps) {
         timestamp: source.timestamp,
         limit,
         threshold: 0.5,
+        ...(label !== undefined && { label }),
       }),
     })
       .then((r) => {
