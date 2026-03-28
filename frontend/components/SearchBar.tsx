@@ -12,6 +12,7 @@ export interface SearchFilters {
   dedup?: boolean
   audioSegmentType?: 'speech' | 'non_verbal' | 'music' | 'ambient' | 'event' | 'silence' | ''
   constructionPhase?: string
+  label?: string
 }
 
 interface SearchBarProps {
@@ -20,9 +21,10 @@ interface SearchBarProps {
   suggestions?: string[]
   externalQuery?: string
   constructionPhases?: string[]
+  labels?: string[]
 }
 
-export default function SearchBar({ onSearch, isLoading = false, suggestions, externalQuery, constructionPhases = [] }: SearchBarProps) {
+export default function SearchBar({ onSearch, isLoading = false, suggestions, externalQuery, constructionPhases = [], labels = [] }: SearchBarProps) {
   const [query, setQuery] = useState('')
   const [showFilters, setShowFilters] = useState(false)
   const [showHistory, setShowHistory] = useState(false)
@@ -387,6 +389,27 @@ export default function SearchBar({ onSearch, isLoading = false, suggestions, ex
             </div>
           )}
 
+          {/* Label Filter — only shown when labels exist in the collection */}
+          {labels.length > 0 && (
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm font-semibold text-gray-300">🏷️ Label</p>
+                <p className="text-xs text-gray-500 mt-0.5">Filter by custom label</p>
+              </div>
+              <select
+                aria-label="Label filter"
+                value={filters.label ?? ''}
+                onChange={(e) => setFilters({ ...filters, label: e.target.value || undefined })}
+                className="bg-gray-700 text-gray-300 text-sm rounded px-2 py-1 border border-gray-600 focus:outline-none focus:border-blue-500"
+              >
+                <option value="">Any</option>
+                {labels.map((l) => (
+                  <option key={l} value={l}>{l}</option>
+                ))}
+              </select>
+            </div>
+          )}
+
           {/* Reset Filters */}
           <button
             type="button"
@@ -398,6 +421,7 @@ export default function SearchBar({ onSearch, isLoading = false, suggestions, ex
                 dedup: true,
                 audioSegmentType: '',
                 constructionPhase: undefined,
+                label: undefined,
               })
             }
             className="w-full px-4 py-2 bg-gray-700 hover:bg-gray-600 text-gray-300 hover:text-white rounded transition text-sm font-semibold"

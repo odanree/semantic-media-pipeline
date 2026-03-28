@@ -16,6 +16,7 @@ interface CollectionInfo {
   captioned_count: number | null
   caption_pct: number | null
   construction_phases: string[]
+  labels: string[]
 }
 
 export default function SearchPage() {
@@ -82,6 +83,9 @@ export default function SearchPage() {
       }
       if (filters.constructionPhase) {
         payload.construction_phase = filters.constructionPhase
+      }
+      if (filters.label) {
+        payload.label = filters.label
       }
 
       const response = await fetch('/api/search', {
@@ -188,7 +192,7 @@ export default function SearchPage() {
         <AskPanel />
       ) : (
         <>
-      <SearchBar onSearch={handleSearch} isLoading={loading} suggestions={collectionInfo?.topic_tags} externalQuery={tagQuery} constructionPhases={collectionInfo?.construction_phases ?? []} />
+      <SearchBar onSearch={handleSearch} isLoading={loading} suggestions={collectionInfo?.topic_tags} externalQuery={tagQuery} constructionPhases={collectionInfo?.construction_phases ?? []} labels={collectionInfo?.labels ?? []} />
 
       {error && (
         <div className="mt-6 p-4 bg-red-900 border border-red-700 rounded-lg text-red-100 flex justify-between items-center" role="alert">

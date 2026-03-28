@@ -7,9 +7,9 @@ export async function POST(request: NextRequest) {
   try {
     const body = await request.json()
     const { query, limit = 20, threshold, min_similarity, dedup,
-            audio_segment_type, audio_event_top, construction_phase } = body
+            audio_segment_type, audio_event_top, construction_phase, label } = body
 
-    if (!query && !audio_segment_type && !audio_event_top && !construction_phase) {
+    if (!query && !audio_segment_type && !audio_event_top && !construction_phase && !label) {
       return NextResponse.json({ error: 'Query is required' }, { status: 400 })
     }
 
@@ -32,6 +32,7 @@ export async function POST(request: NextRequest) {
         ...(audio_segment_type && { audio_segment_type }),
         ...(audio_event_top && { audio_event_top }),
         ...(construction_phase && { construction_phase }),
+        ...(label && { label }),
       }),
     })
 
