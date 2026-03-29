@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import VideoPlayer from './VideoPlayer'
 import HighlightReelPlayer from './HighlightReelPlayer'
 
@@ -31,10 +31,10 @@ interface ReelState {
 interface SimilarPanelProps {
   source: SourceResult
   onClose: () => void
-  label?: string
+  availableLabels?: string[]
 }
 
-export default function SimilarPanel({ source, onClose, label }: SimilarPanelProps) {
+export default function SimilarPanel({ source, onClose, availableLabels }: SimilarPanelProps) {
   const [results, setResults] = useState<SimilarResult[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -46,6 +46,8 @@ export default function SimilarPanel({ source, onClose, label }: SimilarPanelPro
   const [limit, setLimit] = useState(20)
   const [sortKey, setSortKey] = useState<SortKey>('similarity')
   const [clipPadding, setClipPadding] = useState(3)
+  const [labelFilter, setLabelFilter] = useState<string | undefined>(undefined)
+  const [votes, setVotes] = useState<Record<string, 1 | -1>>({})
   const panelRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -55,6 +57,7 @@ export default function SimilarPanel({ source, onClose, label }: SimilarPanelPro
     setReel(null)
     setReelError(null)
     setClipPadding(3)
+    setVotes({})
     fetch('/api/similar', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -63,7 +66,7 @@ export default function SimilarPanel({ source, onClose, label }: SimilarPanelPro
         timestamp: source.timestamp,
         limit,
         threshold: 0.5,
-        ...(label !== undefined && { label }),
+        ...(labelFilter !== undefined && { label: labelFilter }),
       }),
     })
       .then((r) => {
@@ -73,7 +76,7 @@ export default function SimilarPanel({ source, onClose, label }: SimilarPanelPro
       .then((data) => setResults(data.results ?? []))
       .catch((e) => setError(typeof e === 'string' ? e : 'Could not load similar videos'))
       .finally(() => setLoading(false))
-  }, [source.file_path, source.timestamp, limit])
+  }, [source.file_path, source.timestamp, limit, labelFilter])
 
   // Close on Escape
   useEffect(() => {
@@ -82,8 +85,28 @@ export default function SimilarPanel({ source, onClose, label }: SimilarPanelPro
     return () => document.removeEventListener('keydown', handler)
   }, [onClose])
 
+  const sortedResults = useMemo(() => [...results].sort((a, b) => {
+    const va = votes[a.file_path] ?? 0
+    const vb = votes[b.file_path] ?? 0
+    if (vb !== va) return vb - va
+    if (sortKey === 'energy') return (b.audio_rms_energy ?? -1) - (a.audio_rms_energy ?? -1)
+    return b.best_similarity - a.best_similarity
+  }), [results, sortKey, votes])
+
+  function vote(filePath: string, dir: 1 | -1) {
+    setVotes(prev => {
+      if (prev[filePath] === dir) {
+        const next = { ...prev }
+        delete next[filePath]
+        return next
+      }
+      return { ...prev, [filePath]: dir }
+    })
+    setReel(null)
+  }
+
   async function playReel() {
-    const videoResults = results.filter((r) => r.file_type === 'video')
+    const videoResults = sortedResults.filter((r) => r.file_type === 'video')
     if (videoResults.length === 0) return
     if (reel) { setReelOpen(true); return }
 
@@ -119,7 +142,7 @@ export default function SimilarPanel({ source, onClose, label }: SimilarPanelPro
   }
 
   const filename = source.file_path.split('/').pop() ?? source.file_path
-  const videoCount = results.filter((r) => r.file_type === 'video').length
+  const videoCount = sortedResults.filter((r) => r.file_type === 'video').length
 
   return (
     <>
@@ -203,9 +226,23 @@ export default function SimilarPanel({ source, onClose, label }: SimilarPanelPro
                   <option value="similarity">Similarity ↑</option>
                   <option value="energy">Energy ↑</option>
                 </select>
+                {/* Label filter */}
+                {availableLabels && availableLabels.length > 0 && (
+                  <select
+                    value={labelFilter ?? ''}
+                    onChange={(e) => { setLabelFilter(e.target.value || undefined); setReel(null) }}
+                    className="px-2 py-1 rounded text-xs bg-gray-700 text-gray-300 border border-gray-600 focus:outline-none cursor-pointer"
+                    aria-label="Filter by label"
+                  >
+                    <option value="">Any label</option>
+                    {availableLabels.map((l) => (
+                      <option key={l} value={l}>{l}</option>
+                    ))}
+                  </select>
+                )}
                 {/* Limit */}
                 <div className="flex rounded overflow-hidden border border-gray-600">
-                  {[20, 30, 50].map((n) => (
+                  {[20, 30, 50, 75].map((n) => (
                     <button
                       key={n}
                       onClick={() => setLimit(n)}
@@ -244,47 +281,92 @@ export default function SimilarPanel({ source, onClose, label }: SimilarPanelPro
               </div>
               {reelError && <p className="text-xs text-red-400 mb-2">{reelError}</p>}
               <div className="grid grid-cols-2 gap-3">
-                {[...results].sort((a, b) =>
-                  sortKey === 'energy'
-                    ? (b.audio_rms_energy ?? -1) - (a.audio_rms_energy ?? -1)
-                    : b.best_similarity - a.best_similarity
-                ).map((r) => (
-                  <button
+                {sortedResults.map((r) => (
+                  <div
                     key={r.file_path}
-                    onClick={() => r.file_type === 'video' && setSelectedVideo(r)}
-                    className="group text-left bg-gray-800 rounded-lg overflow-hidden hover:ring-2 hover:ring-blue-500 transition focus:outline-none focus:ring-2 focus:ring-blue-500"
-                    aria-label={`${r.file_path.split('/').pop()} — ${(r.best_similarity * 100).toFixed(1)}% similar`}
+                    className={`group relative text-left rounded-lg overflow-hidden transition ring-2 ${
+                      votes[r.file_path] === 1 ? 'ring-green-500 bg-gray-800' :
+                      votes[r.file_path] === -1 ? 'ring-red-900 bg-gray-900 opacity-60' :
+                      'ring-transparent bg-gray-800 hover:ring-blue-500'
+                    }`}
                   >
-                    <div className="relative aspect-video bg-gray-700 overflow-hidden">
-                      {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img
-                        src={
-                          r.file_type === 'video'
-                            ? `${STREAM_BASE}/api/thumbnail?path=${encodeURIComponent(r.file_path)}&t=${r.best_timestamp ?? 0}`
-                            : `${STREAM_BASE}/api/stream?path=${encodeURIComponent(r.file_path)}`
-                        }
-                        alt={r.file_path.split('/').pop()}
-                        className="w-full h-full object-cover"
-                        loading="lazy"
-                      />
-                      {r.file_type === 'video' && (
-                        <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity bg-black bg-opacity-30">
-                          <div className="w-8 h-8 rounded-full bg-black bg-opacity-60 flex items-center justify-center">
-                            <span className="text-white text-sm pl-0.5">▶</span>
+                    {/* Thumbnail — clickable to play */}
+                    <button
+                      className="w-full text-left focus:outline-none"
+                      onClick={() => r.file_type === 'video' && setSelectedVideo(r)}
+                      aria-label={`${r.file_path.split('/').pop()} — ${(r.best_similarity * 100).toFixed(1)}% similar`}
+                    >
+                      <div className="relative aspect-video bg-gray-700 overflow-hidden">
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img
+                          src={
+                            r.file_type === 'video'
+                              ? `${STREAM_BASE}/api/thumbnail?path=${encodeURIComponent(r.file_path)}&t=${r.best_timestamp ?? 0}`
+                              : `${STREAM_BASE}/api/stream?path=${encodeURIComponent(r.file_path)}`
+                          }
+                          alt={r.file_path.split('/').pop()}
+                          className="w-full h-full object-cover"
+                          loading="lazy"
+                        />
+                        {r.file_type === 'video' && (
+                          <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity bg-black bg-opacity-30">
+                            <div className="w-8 h-8 rounded-full bg-black bg-opacity-60 flex items-center justify-center">
+                              <span className="text-white text-sm pl-0.5">▶</span>
+                            </div>
                           </div>
+                        )}
+                        <div className="absolute bottom-1 right-1 px-1.5 py-0.5 bg-black bg-opacity-70 rounded text-xs font-semibold text-white">
+                          {(r.best_similarity * 100).toFixed(1)}%
                         </div>
-                      )}
-                      <div className="absolute bottom-1 right-1 px-1.5 py-0.5 bg-black bg-opacity-70 rounded text-xs font-semibold text-white">
-                        {(r.best_similarity * 100).toFixed(1)}%
                       </div>
-                    </div>
+                    </button>
                     <div className="p-2">
                       <p className="text-xs text-gray-300 truncate">{r.file_path.split('/').pop()}</p>
                       {r.best_timestamp != null && (
                         <p className="text-xs text-gray-500 mt-0.5">@ {r.best_timestamp.toFixed(1)}s</p>
                       )}
+                      {r.audio_rms_energy != null && (
+                        <div className="mt-1.5 flex items-center gap-1.5">
+                          <div className="flex-1 h-1 bg-gray-700 rounded-full overflow-hidden">
+                            <div
+                              className="h-full bg-green-500 rounded-full"
+                              style={{ width: `${Math.min(100, r.audio_rms_energy * 1000)}%` }}
+                            />
+                          </div>
+                          <span className="text-xs text-gray-500 shrink-0">
+                            {r.audio_rms_energy < 0.01 ? 'quiet' : r.audio_rms_energy < 0.04 ? 'low' : r.audio_rms_energy < 0.08 ? 'mid' : 'loud'}
+                          </span>
+                        </div>
+                      )}
+                      {/* Vote buttons */}
+                      <div className="mt-1.5 flex gap-1">
+                        <button
+                          onClick={() => vote(r.file_path, 1)}
+                          className={`flex-1 py-0.5 rounded text-xs font-semibold transition ${
+                            votes[r.file_path] === 1
+                              ? 'bg-green-700 text-white'
+                              : 'bg-gray-700 text-gray-400 hover:bg-green-900 hover:text-green-300'
+                          }`}
+                          aria-label="Thumbs up — promote in reel"
+                          title="Promote in reel"
+                        >
+                          👍
+                        </button>
+                        <button
+                          onClick={() => vote(r.file_path, -1)}
+                          className={`flex-1 py-0.5 rounded text-xs font-semibold transition ${
+                            votes[r.file_path] === -1
+                              ? 'bg-red-900 text-white'
+                              : 'bg-gray-700 text-gray-400 hover:bg-red-900 hover:text-red-300'
+                          }`}
+                          aria-label="Thumbs down — demote in reel"
+                          title="Demote in reel"
+                        >
+                          👎
+                        </button>
+                      </div>
                     </div>
-                  </button>
+                  </div>
                 ))}
               </div>
             </>

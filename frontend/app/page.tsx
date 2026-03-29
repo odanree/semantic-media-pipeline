@@ -267,7 +267,7 @@ export default function SearchPage() {
               </div>
             )}
           </div>
-          <ResultGrid results={results} label={appliedFilters.label} />
+          <ResultGrid results={results} availableLabels={collectionInfo?.labels ?? []} />
         </div>
       )}
 

@@ -53,8 +53,8 @@ export async function POST(req: NextRequest) {
       })
     })
 
-    // 8-minute socket timeout — covers 20-clip reel with 4-concurrent semaphore @ 90s each
-    r.setTimeout(8 * 60 * 1000, () => {
+    // 20-minute socket timeout — covers 75-clip reel with 4-concurrent semaphore @ 90s each
+    r.setTimeout(20 * 60 * 1000, () => {
       r.destroy()
       resolve(NextResponse.json({ error: 'Playlist generation timed out' }, { status: 504 }))
     })

@@ -622,7 +622,7 @@ async def get_thumbnail(request: Request, path: str, t: float = 0.0):
 
 PLAYLIST_DIR = "/tmp/lumen_playlists"
 PLAYLIST_TTL_SECS = 3600
-_MAX_CONCURRENT_SEGMENTS = 2
+_MAX_CONCURRENT_SEGMENTS = 4
 
 # Detect NVENC availability once at startup.
 # h264_nvenc offloads encode to the GPU's fixed-function encoder, leaving CPU
