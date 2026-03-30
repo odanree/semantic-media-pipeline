@@ -2,22 +2,33 @@
 Search endpoint - Vector similarity search in Qdrant
 """
 
+import asyncio
 import hashlib
 import os
 import time
+import uuid
 from collections import defaultdict
+from datetime import datetime
 from typing import List, Optional
 
 import numpy as np
 import redis
 import torch
+from celery import Celery
 from fastapi import APIRouter, HTTPException, Request
 from rate_limit import limiter, LIMIT_SEARCH, LIMIT_SEARCH_VEC
 from pydantic import BaseModel
 from qdrant_client import QdrantClient
-from qdrant_client.models import Filter, FieldCondition, MatchValue, ScrollRequest, Range
+from qdrant_client.models import Filter, FieldCondition, MatchValue, ScrollRequest, Range, PointIdsList
+from sqlalchemy import insert
+
+from db.models import VoteEvent, get_async_engine
 
 router = APIRouter()
+
+# Celery client for dispatching background tasks
+_celery_broker = os.getenv("CELERY_BROKER_URL", "redis://redis:6379/0")
+celery_app = Celery(broker=_celery_broker, backend=_celery_broker)
 
 # Initialize Qdrant client
 QDRANT_HOST = os.getenv("QDRANT_HOST", "qdrant")
@@ -353,6 +364,76 @@ def _cosine_rerank(points: list, query_vector: list) -> list:
     return points
 
 
+# ---------------------------------------------------------------------------
+# Vote re-ranking helper
+# ---------------------------------------------------------------------------
+VOTE_BOOST = 0.08      # thumbs up   → up to +0.08 (scaled by vote_label similarity)
+VOTE_PENALTY = 0.12    # thumbs down → -0.12 (asymmetric: penalty > boost)
+
+
+def _apply_vote_adjustment(points: list, query: Optional[str] = None) -> list:
+    """
+    Apply soft re-ranking based on user votes.
+
+    Boost is proportional to the similarity score stored in vote_label[query]:
+    - Exact query match:  +VOTE_BOOST * vote_label[query]  (e.g. 0.08 * 0.95 = 0.076)
+    - Liked for different query or no label: +VOTE_BOOST * 0.5 (half boost)
+    - vote == -1: -VOTE_PENALTY (flat)
+    - vote == 0 or absent: no adjustment
+
+    Clamps adjusted scores to [0, 1] to preserve cosine range.
+    Points are re-sorted by adjusted score.
+    """
+    for p in points:
+        vote = p.payload.get("user_vote")
+        if vote == 1:
+            vote_label = p.payload.get("vote_label") or {}
+            if query and query in vote_label:
+                boost = VOTE_BOOST * float(vote_label[query])
+            else:
+                boost = VOTE_BOOST * 0.5
+            p.score = min(1.0, float(p.score) + boost)
+        elif vote == -1:
+            p.score = max(0.0, float(p.score) - VOTE_PENALTY)
+
+    points.sort(key=lambda p: p.score, reverse=True)
+    return points
+
+
+async def _log_vote_event(
+    batch_id: str,
+    file_path: str,
+    audio_segment_index: Optional[int],
+    vote: int,
+    search_query: Optional[str],
+    vote_source: str,
+    patched_count: int,
+) -> None:
+    """
+    Log vote event to PostgreSQL for observability.
+    Runs async and non-blocking (fire-and-forget).
+    """
+    try:
+        engine = await get_async_engine()
+        async with engine.begin() as conn:
+            # Insert one row per vote source/action
+            await conn.execute(
+                insert(VoteEvent).values(
+                    batch_id=uuid.UUID(batch_id),
+                    file_path=file_path,
+                    audio_segment_index=audio_segment_index,
+                    vote=vote,
+                    search_query=search_query,
+                    vote_source=vote_source,
+                    timestamp=datetime.utcnow(),
+                    cascaded_count=0,  # Will be updated if this is a seed vote
+                )
+            )
+    except Exception as e:
+        # Log observability errors but don't fail the vote endpoint
+        print(f"Failed to log vote event: {e}")
+
+
 @router.get("/search-status")
 async def search_status():
     """
@@ -489,6 +570,8 @@ async def search_media(request: Request, body: SearchRequest):
             # ------------------------------------------------------------------
             t_p2 = time.time()
             raw_points = _cosine_rerank(raw_points, query_vector)
+            # Apply vote-based soft re-ranking (additive boost/penalty)
+            raw_points = _apply_vote_adjustment(raw_points, query=body.query)
             pass2_ms = (time.time() - t_p2) * 1000
 
             if body.dedup:
@@ -526,12 +609,15 @@ async def search_media(request: Request, body: SearchRequest):
                 "scene_window_end": window_end,
                 "updated_at": payload.get("updated_at"),
                 # Clip boundary fields — None for legacy media ingested before audio analysis
+                "audio_segment_index": payload.get("audio_segment_index"),
                 "audio_segment_start_sec": payload.get("audio_segment_start_sec"),
                 "audio_segment_end_sec": payload.get("audio_segment_end_sec"),
                 "audio_rms_energy": payload.get("audio_rms_energy"),
                 "construction_phase": payload.get("construction_phase"),
                 "phase_confidence": payload.get("phase_confidence"),
                 "label": payload.get("label"),
+                "user_vote": payload.get("user_vote"),
+                "vote_label": payload.get("vote_label"),
             })
 
         execution_time_ms = (time.time() - start_time) * 1000
@@ -622,12 +708,15 @@ async def lookup_frame(request: Request, body: LookupRequest):
         "scene_window_start": None,
         "scene_window_end": None,
         "updated_at": payload.get("updated_at"),
+        "audio_segment_index": payload.get("audio_segment_index"),
         "audio_segment_start_sec": payload.get("audio_segment_start_sec"),
         "audio_segment_end_sec": payload.get("audio_segment_end_sec"),
         "audio_rms_energy": payload.get("audio_rms_energy"),
         "construction_phase": payload.get("construction_phase"),
         "phase_confidence": payload.get("phase_confidence"),
         "label": payload.get("label"),
+        "user_vote": payload.get("user_vote"),
+        "vote_label": payload.get("vote_label"),
     }
 
     return {
@@ -646,6 +735,14 @@ class SimilarRequest(BaseModel):
     limit: int = 10                     # distinct files to return
     threshold: float = 0.5             # higher default — want genuinely similar
     label: Optional[str] = None        # restrict results to this label
+
+
+class VoteRequest(BaseModel):
+    file_path: str
+    audio_segment_index: Optional[int] = None  # None for images or unsegmented videos
+    vote: int  # 1 (thumbs up), -1 (thumbs down), or 0 (clear)
+    search_query: Optional[str] = None  # Context: what query led to this vote
+    batch_id: Optional[str] = None  # For bulk votes: inherit from seed vote
 
 
 @router.post("/similar")
@@ -747,7 +844,19 @@ async def find_similar(request: Request, body: SimilarRequest):
                 "best_timestamp": point.payload.get("timestamp"),
                 "best_frame_index": point.payload.get("frame_index"),
                 "audio_rms_energy": point.payload.get("audio_rms_energy"),
+                "user_vote": point.payload.get("user_vote"),
+                "vote_label": point.payload.get("vote_label"),
             }
+
+    # Apply vote-based soft re-ranking after grouping by file
+    for result in file_best.values():
+        vote = result.get("user_vote")
+        if vote == 1:
+            vote_label = result.get("vote_label") or {}
+            weight = max(vote_label.values(), default=1.0)
+            result["best_similarity"] = min(1.0, float(result["best_similarity"]) + VOTE_BOOST * weight)
+        elif vote == -1:
+            result["best_similarity"] = max(0.0, float(result["best_similarity"]) - VOTE_PENALTY)
 
     results = sorted(file_best.values(), key=lambda x: x["best_similarity"], reverse=True)[:body.limit]
 
@@ -758,6 +867,355 @@ async def find_similar(request: Request, body: SimilarRequest):
         "count": len(results),
         "execution_time_ms": round((time.time() - start_time) * 1000, 2),
     }
+
+
+@router.post("/vote")
+@limiter.limit(LIMIT_SEARCH)
+async def set_vote(request: Request, body: VoteRequest):
+    """
+    Set or clear a user vote (thumbs up/down) on a file_path + audio segment.
+
+    Vote is stored as a payload field (user_vote: 1 | -1) in Qdrant points
+    matching the file_path and optionally audio_segment_index. A vote of 0 clears
+    the vote. Votes persist across sessions and influence ranking in both /search
+    and /similar endpoints.
+
+    Observability: Each vote is logged to vote_events table with lineage tracking
+    (batch_id links seed upvote to bulk cascade). Enables queries like:
+    - "How many frames were labeled from this upvote?"
+    - "What search queries generated labels?"
+    """
+    try:
+        # Generate or inherit batch_id for lineage tracking
+        batch_id = body.batch_id or str(uuid.uuid4())
+
+        # Build filter for file_path + audio_segment_index (if provided)
+        conditions = [FieldCondition(key="file_path", match=MatchValue(value=body.file_path))]
+        if body.audio_segment_index is not None:
+            conditions.append(
+                FieldCondition(key="audio_segment_index", match=MatchValue(value=body.audio_segment_index))
+            )
+
+        # Scroll all points matching the criteria
+        scroll_result, _ = qdrant_client.scroll(
+            collection_name=QDRANT_COLLECTION_NAME,
+            scroll_filter=Filter(must=conditions),
+            limit=10000,
+            with_payload=True,
+            with_vectors=False,
+        )
+
+        if not scroll_result:
+            raise HTTPException(status_code=404, detail="Scene not found in index")
+
+        point_ids = [point.id for point in scroll_result]
+        points_selector = PointIdsList(points=point_ids)
+
+        if body.vote == 0:
+            # Clear active vote signal only; vote_label history is permanent
+            qdrant_client.delete_payload(
+                collection_name=QDRANT_COLLECTION_NAME,
+                keys=["user_vote"],
+                points=points_selector,
+            )
+        else:
+            # Build updated vote_label dict: {query: score} — append, don't overwrite
+            current_label_dict = {}
+            if scroll_result[0].payload:
+                current_label_dict = scroll_result[0].payload.get("vote_label") or {}
+            vote_payload: dict = {"user_vote": body.vote}
+            if body.vote == 1 and body.search_query:
+                updated_labels = dict(current_label_dict)
+                updated_labels[body.search_query] = 1.0  # manual vote = perfect match
+                vote_payload["vote_label"] = updated_labels
+            qdrant_client.set_payload(
+                collection_name=QDRANT_COLLECTION_NAME,
+                payload=vote_payload,
+                points=points_selector,
+            )
+
+        # Log vote event for observability (async, non-blocking)
+        asyncio.create_task(
+            _log_vote_event(
+                batch_id=batch_id,
+                file_path=body.file_path,
+                audio_segment_index=body.audio_segment_index,
+                vote=body.vote,
+                search_query=body.search_query,
+                vote_source="bulk_upvote" if body.batch_id else "manual",
+                patched_count=len(point_ids),
+            )
+        )
+
+        # Auto-cascade upvote to visually similar frames (≥90% similarity)
+        if body.vote == 1 and not body.batch_id:
+            celery_app.send_task(
+                "tasks.cascade_votes",
+                args=[body.file_path, batch_id, 0.9, body.search_query],
+            )
+
+        return {
+            "patched": len(point_ids),
+            "file_path": body.file_path,
+            "audio_segment_index": body.audio_segment_index,
+            "vote": body.vote,
+            "batch_id": batch_id,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Vote error: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Vote failed: {str(e)}")
+
+
+class BulkVoteRequest(BaseModel):
+    """Bulk upvote results from similar search (seed vote → cascade)"""
+    file_paths: List[str]
+    audio_segment_indices: List[Optional[int]]
+    vote: int  # 1, -1, 0
+    search_query: str  # Inherited from seed upvote
+    batch_id: str  # Same batch as seed vote (links cascade)
+
+
+@router.post("/vote/bulk")
+@limiter.limit(LIMIT_SEARCH)
+async def bulk_set_vote(request: Request, body: BulkVoteRequest):
+    """
+    Bulk upvote multiple results from similar search with lineage tracking.
+
+    Workflow:
+    1. User searches "labubu" → finds frame F
+    2. User upvotes F (creates batch_id_seed)
+    3. User runs similar(F) → gets 20 results at 90%+ similarity
+    4. User calls bulk_vote(all 20 results, batch_id=batch_id_seed, search_query="labubu")
+    5. All 20 get auto-labeled "labubu" via query_label field
+
+    This endpoint logs all votes with the same batch_id, enabling queries:
+    - "How many frames did this 1 upvote generate?" (count votes with batch_id)
+    - "What queries are being auto-labeled?" (group by search_query)
+
+    Args:
+        file_paths: List of file paths to upvote
+        audio_segment_indices: List of audio segment indices (parallel to file_paths)
+        vote: 1 (up), -1 (down), 0 (clear)
+        search_query: Query that led to this cascade (e.g., "labubu")
+        batch_id: Seed vote's batch_id (links to original upvote)
+
+    Returns:
+        Total frames patched + breakdown per file
+    """
+    try:
+        if len(body.file_paths) != len(body.audio_segment_indices):
+            raise HTTPException(
+                status_code=400,
+                detail="file_paths and audio_segment_indices must have same length"
+            )
+
+        total_patched = 0
+        file_breakdown = {}
+
+        for file_path, audio_segment_index in zip(body.file_paths, body.audio_segment_indices):
+            # Call set_vote directly (avoid HTTP roundtrip)
+            try:
+                conditions = [FieldCondition(key="file_path", match=MatchValue(value=file_path))]
+                if audio_segment_index is not None:
+                    conditions.append(
+                        FieldCondition(key="audio_segment_index", match=MatchValue(value=audio_segment_index))
+                    )
+
+                scroll_result, _ = qdrant_client.scroll(
+                    collection_name=QDRANT_COLLECTION_NAME,
+                    scroll_filter=Filter(must=conditions),
+                    limit=10000,
+                    with_payload=True,
+                    with_vectors=False,
+                )
+
+                if scroll_result:
+                    point_ids = [point.id for point in scroll_result]
+                    points_selector = PointIdsList(points=point_ids)
+
+                    if body.vote == 0:
+                        qdrant_client.delete_payload(
+                            collection_name=QDRANT_COLLECTION_NAME,
+                            keys=["user_vote"],
+                            points=points_selector,
+                        )
+                    else:
+                        qdrant_client.set_payload(
+                            collection_name=QDRANT_COLLECTION_NAME,
+                            payload={"user_vote": body.vote},
+                            points=points_selector,
+                        )
+
+                    patched = len(point_ids)
+                    total_patched += patched
+                    file_breakdown[file_path] = patched
+
+                    # Log bulk vote event
+                    asyncio.create_task(
+                        _log_vote_event(
+                            batch_id=body.batch_id,
+                            file_path=file_path,
+                            audio_segment_index=audio_segment_index,
+                            vote=body.vote,
+                            search_query=body.search_query,
+                            vote_source="bulk_upvote",
+                            patched_count=patched,
+                        )
+                    )
+
+            except Exception as e:
+                print(f"Bulk vote error for {file_path}: {e}")
+                # Continue with next file instead of failing entire batch
+                continue
+
+        return {
+            "batch_id": body.batch_id,
+            "total_patched": total_patched,
+            "breakdown": file_breakdown,
+            "search_query": body.search_query,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Bulk vote error: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Bulk vote failed: {str(e)}")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Observability Endpoints: Query vote lineage and stats
+# ─────────────────────────────────────────────────────────────────────────────
+
+@router.get("/votes/batch/{batch_id}")
+async def get_vote_batch_stats(batch_id: str):
+    """
+    Get statistics for a vote batch.
+    Shows: total votes in batch, breakdown by search_query, cascaded count.
+
+    Example:
+      GET /api/votes/batch/550e8400-e29b-41d4-a716-446655440000
+      → {
+          "batch_id": "550e8400-...",
+          "total_votes": 21,
+          "seed_vote": {"vote": 1, "search_query": "labubu", "timestamp": "2026-03-29..."},
+          "cascaded_votes": 20,
+          "breakdown_by_query": {"labubu": 21},
+          "created_at": "2026-03-29..."
+        }
+    """
+    try:
+        engine = await get_async_engine()
+        async with engine.begin() as conn:
+            from sqlalchemy import select, func
+
+            # Get all votes in batch
+            result = await conn.execute(
+                select(
+                    func.count().label("total_votes"),
+                    VoteEvent.vote,
+                    VoteEvent.search_query,
+                    VoteEvent.timestamp,
+                    VoteEvent.vote_source,
+                ).where(
+                    VoteEvent.batch_id == uuid.UUID(batch_id)
+                ).group_by(VoteEvent.vote, VoteEvent.search_query, VoteEvent.timestamp, VoteEvent.vote_source)
+            )
+
+            rows = result.fetchall()
+            if not rows:
+                return {"batch_id": batch_id, "votes": 0, "error": "Batch not found"}
+
+            total_votes = sum(row[0] for row in rows)
+            cascaded_count = sum(row[0] for row in rows if row[4] == "bulk_upvote")
+
+            return {
+                "batch_id": batch_id,
+                "total_votes": total_votes,
+                "seed_votes": sum(1 for row in rows if row[4] == "manual"),
+                "cascaded_votes": cascaded_count,
+                "breakdown": {
+                    "by_query": dict((row[2], row[0]) for row in rows if row[2]),
+                    "by_source": dict((row[4], sum(r[0] for r in rows if r[4] == row[4])) for row in rows),
+                }
+            }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get batch stats: {str(e)}")
+
+
+@router.get("/votes/stats")
+async def get_vote_stats(
+    query: Optional[str] = None,
+    days: int = 7,
+):
+    """
+    Get vote statistics across all batches.
+
+    Query parameters:
+      - query: Filter by search_query (e.g., "labubu")
+      - days: Look back N days (default: 7)
+
+    Returns:
+      {
+        "total_votes": 500,
+        "total_batches": 50,
+        "avg_cascade_ratio": 19.5,  # avg votes per seed
+        "top_queries": [
+          {"query": "labubu", "votes": 150, "batches": 8, "avg_cascade": 18.75},
+          {"query": "toy", "votes": 100, "batches": 5, "avg_cascade": 20}
+        ]
+      }
+    """
+    try:
+        engine = await get_async_engine()
+        async with engine.begin() as conn:
+            from sqlalchemy import select, func
+            from datetime import timedelta
+
+            cutoff = datetime.utcnow() - timedelta(days=days)
+
+            # Get total and per-query stats
+            result = await conn.execute(
+                select(
+                    VoteEvent.search_query,
+                    func.count(VoteEvent.batch_id).label("batch_count"),
+                    func.count(VoteEvent.id).label("vote_count"),
+                ).where(
+                    VoteEvent.timestamp >= cutoff
+                ).group_by(VoteEvent.search_query).order_by(
+                    func.count(VoteEvent.id).desc()
+                ).limit(20)
+            )
+
+            rows = result.fetchall()
+            total_votes = sum(row[2] for row in rows)
+            total_batches = sum(row[1] for row in rows)
+
+            return {
+                "period_days": days,
+                "total_votes": total_votes,
+                "total_batches": total_batches,
+                "avg_cascade_ratio": total_votes / max(total_batches, 1),
+                "top_queries": [
+                    {
+                        "query": row[0] or "(no query)",
+                        "batches": row[1],
+                        "votes": row[2],
+                        "avg_cascade": row[2] / row[1] if row[1] > 0 else 0,
+                    }
+                    for row in rows
+                ]
+            }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get stats: {str(e)}")
 
 
 @router.post("/search-vector")
@@ -808,6 +1266,8 @@ async def search_by_vector(
                 "similarity": float(point.score),
                 "frame_index": payload.get("frame_index"),
                 "timestamp": payload.get("timestamp"),
+                "audio_segment_index": payload.get("audio_segment_index"),
+                "user_vote": payload.get("user_vote"),
             }
             results.append(result)
 

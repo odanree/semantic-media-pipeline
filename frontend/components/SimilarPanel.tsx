@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { useVotes, getVoteKey } from '@/hooks/useVotes'
 import VideoPlayer from './VideoPlayer'
 import HighlightReelPlayer from './HighlightReelPlayer'
 
@@ -14,6 +15,10 @@ interface SimilarResult {
   best_similarity: number
   best_timestamp?: number
   audio_rms_energy?: number | null
+  user_vote?: 1 | -1 | null
+  vote_label?: Record<string, number> | null
+  best_frame_index?: number
+  audio_segment_index?: number
 }
 
 interface SourceResult {
@@ -47,8 +52,9 @@ export default function SimilarPanel({ source, onClose, availableLabels }: Simil
   const [sortKey, setSortKey] = useState<SortKey>('similarity')
   const [clipPadding, setClipPadding] = useState(3)
   const [labelFilter, setLabelFilter] = useState<string | undefined>(undefined)
-  const [votes, setVotes] = useState<Record<string, 1 | -1>>({})
+  const [initialVotes, setInitialVotes] = useState<Record<string, 1 | -1>>({})
   const panelRef = useRef<HTMLDivElement>(null)
+  const { votes, vote, getVoteKey } = useVotes({ initialVotes })
 
   useEffect(() => {
     setLoading(true)
@@ -57,7 +63,6 @@ export default function SimilarPanel({ source, onClose, availableLabels }: Simil
     setReel(null)
     setReelError(null)
     setClipPadding(3)
-    setVotes({})
     fetch('/api/similar', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -73,7 +78,19 @@ export default function SimilarPanel({ source, onClose, availableLabels }: Simil
         if (!r.ok) return r.json().then((e) => Promise.reject(e.error || 'Failed'))
         return r.json()
       })
-      .then((data) => setResults(data.results ?? []))
+      .then((data) => {
+        const newResults = data.results ?? []
+        setResults(newResults)
+        // Extract votes from results to seed useVotes hook using composite key
+        const votes: Record<string, 1 | -1> = {}
+        newResults.forEach((r: SimilarResult) => {
+          if (r.user_vote === 1 || r.user_vote === -1) {
+            const key = getVoteKey(r.file_path, r.audio_segment_index ?? undefined)
+            votes[key] = r.user_vote
+          }
+        })
+        setInitialVotes(votes)
+      })
       .catch((e) => setError(typeof e === 'string' ? e : 'Could not load similar videos'))
       .finally(() => setLoading(false))
   }, [source.file_path, source.timestamp, limit, labelFilter])
@@ -86,22 +103,17 @@ export default function SimilarPanel({ source, onClose, availableLabels }: Simil
   }, [onClose])
 
   const sortedResults = useMemo(() => [...results].sort((a, b) => {
-    const va = votes[a.file_path] ?? 0
-    const vb = votes[b.file_path] ?? 0
+    const keyA = a.audio_segment_index !== undefined ? `${a.file_path}#${a.audio_segment_index}` : a.file_path
+    const keyB = b.audio_segment_index !== undefined ? `${b.file_path}#${b.audio_segment_index}` : b.file_path
+    const va = votes[keyA] ?? 0
+    const vb = votes[keyB] ?? 0
     if (vb !== va) return vb - va
     if (sortKey === 'energy') return (b.audio_rms_energy ?? -1) - (a.audio_rms_energy ?? -1)
     return b.best_similarity - a.best_similarity
   }), [results, sortKey, votes])
 
-  function vote(filePath: string, dir: 1 | -1) {
-    setVotes(prev => {
-      if (prev[filePath] === dir) {
-        const next = { ...prev }
-        delete next[filePath]
-        return next
-      }
-      return { ...prev, [filePath]: dir }
-    })
+  function onVote(filePath: string, audioSegmentIndex: number | undefined, dir: 1 | -1) {
+    vote(filePath, audioSegmentIndex, dir)
     setReel(null)
   }
 
@@ -285,9 +297,10 @@ export default function SimilarPanel({ source, onClose, availableLabels }: Simil
                   <div
                     key={r.file_path}
                     className={`group relative text-left rounded-lg overflow-hidden transition ring-2 ${
-                      votes[r.file_path] === 1 ? 'ring-green-500 bg-gray-800' :
-                      votes[r.file_path] === -1 ? 'ring-red-900 bg-gray-900 opacity-60' :
-                      'ring-transparent bg-gray-800 hover:ring-blue-500'
+                      votes[getVoteKey(r.file_path, r.audio_segment_index)] === 1
+                        ? (r.vote_label && Object.values(r.vote_label).every(v => v < 1) ? 'ring-teal-600 bg-gray-800' : 'ring-green-500 bg-gray-800')
+                        : votes[getVoteKey(r.file_path, r.audio_segment_index)] === -1 ? 'ring-red-900 bg-gray-900 opacity-60'
+                        : 'ring-transparent bg-gray-800 hover:ring-blue-500'
                     }`}
                   >
                     {/* Thumbnail — clickable to play */}
@@ -339,32 +352,43 @@ export default function SimilarPanel({ source, onClose, availableLabels }: Simil
                         </div>
                       )}
                       {/* Vote buttons */}
-                      <div className="mt-1.5 flex gap-1">
-                        <button
-                          onClick={() => vote(r.file_path, 1)}
-                          className={`flex-1 py-0.5 rounded text-xs font-semibold transition ${
-                            votes[r.file_path] === 1
-                              ? 'bg-green-700 text-white'
-                              : 'bg-gray-700 text-gray-400 hover:bg-green-900 hover:text-green-300'
-                          }`}
-                          aria-label="Thumbs up — promote in reel"
-                          title="Promote in reel"
-                        >
-                          👍
-                        </button>
-                        <button
-                          onClick={() => vote(r.file_path, -1)}
-                          className={`flex-1 py-0.5 rounded text-xs font-semibold transition ${
-                            votes[r.file_path] === -1
-                              ? 'bg-red-900 text-white'
-                              : 'bg-gray-700 text-gray-400 hover:bg-red-900 hover:text-red-300'
-                          }`}
-                          aria-label="Thumbs down — demote in reel"
-                          title="Demote in reel"
-                        >
-                          👎
-                        </button>
-                      </div>
+                      {(() => {
+                        const isUpvoted = votes[getVoteKey(r.file_path, r.audio_segment_index)] === 1
+                        const isDownvoted = votes[getVoteKey(r.file_path, r.audio_segment_index)] === -1
+                        const labelValues = r.vote_label ? Object.values(r.vote_label) : []
+                        const isCascade = isUpvoted && labelValues.length > 0 && labelValues.every(v => v < 1)
+                        const isManual = isUpvoted && !isCascade
+                        const topScore = isCascade ? Math.round(Math.max(...labelValues) * 100) : null
+                        const upvoteCls = isManual
+                          ? 'bg-green-700 text-white'
+                          : isCascade
+                          ? 'bg-teal-900 text-teal-300 border border-teal-700'
+                          : 'bg-gray-700 text-gray-400 hover:bg-green-900 hover:text-green-300'
+                        return (
+                          <div className="mt-1.5 flex gap-1">
+                            <button
+                              onClick={() => onVote(r.file_path, r.audio_segment_index, 1)}
+                              className={`flex-1 py-0.5 rounded text-xs font-semibold transition ${upvoteCls}`}
+                              aria-label="Thumbs up"
+                              title={isManual ? 'Manually upvoted' : isCascade ? `Auto-cascaded (top ${topScore}% similarity)` : 'Promote in reel'}
+                            >
+                              {isCascade ? `👍 ${topScore}%` : '👍'}
+                            </button>
+                            <button
+                              onClick={() => onVote(r.file_path, r.audio_segment_index, -1)}
+                              className={`flex-1 py-0.5 rounded text-xs font-semibold transition ${
+                                isDownvoted
+                                  ? 'bg-red-900 text-white'
+                                  : 'bg-gray-700 text-gray-400 hover:bg-red-900 hover:text-red-300'
+                              }`}
+                              aria-label="Thumbs down — demote in reel"
+                              title="Demote in reel"
+                            >
+                              👎
+                            </button>
+                          </div>
+                        )
+                      })()}
                     </div>
                   </div>
                 ))}

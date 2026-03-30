@@ -21,11 +21,11 @@ from typing import List, Optional
 import numpy as np
 from PIL import Image
 from qdrant_client import QdrantClient
-from qdrant_client.models import Distance, FieldCondition, Filter, IsEmptyCondition, MatchText, MatchValue, PayloadField, PointStruct, VectorParams
-from sqlalchemy import select
+from qdrant_client.models import Distance, FieldCondition, Filter, IsEmptyCondition, MatchText, MatchValue, PayloadField, PointIdsList, PointStruct, VectorParams
+from sqlalchemy import select, text, update
 
 from celery_app import app
-from db.models import MediaFile
+from db.models import MediaFile, VoteEvent
 from db.session import SyncSessionLocal
 from ingest.audio_segmenter import (
     extract_audio_segments,
@@ -33,7 +33,6 @@ from ingest.audio_segmenter import (
     segment_to_payload,
 )
 from ingest.crawler import crawl_media, crawl_s3
-from ingest.google_photos import GooglePhotosClient
 from ingest.ffmpeg import (
     FFmpegError,
     apply_faststart,
@@ -327,82 +326,6 @@ def crawl_and_dispatch(self, media_root: str, force_relocate: bool = False):
     except Exception as e:
         print(f"Crawl failed: {str(e)}")
         raise
-
-
-@app.task(
-    bind=True,
-    autoretry_for=(Exception,),
-    retry_backoff=True,
-    retry_backoff_max=600,
-    retry_jitter=True,
-    max_retries=3,
-)
-def crawl_google_photos(self, start_date: str, end_date: str):
-    """
-    Fetch media from Google Photos for the given date range, download to the
-    local mount, and dispatch ingest tasks for each file.
-
-    Downloaded files are saved under /mnt/source/google-photos/YYYY/MM/ so
-    they persist and are served by the same file path as locally-ingested media.
-    File mtime is set to the photo's original creationTime so that created_at
-    in Qdrant reflects the actual capture date, not the download date.
-
-    Args:
-        start_date: ISO date string, e.g. "2025-10-08"
-        end_date:   ISO date string, e.g. "2026-03-21"
-    """
-    start = datetime.fromisoformat(start_date)
-    end   = datetime.fromisoformat(end_date)
-
-    client = GooglePhotosClient()
-    dispatched = 0
-    skipped    = 0
-
-    for item in client.search_media_items(start, end):
-        creation_time_str = item.get("mediaMetadata", {}).get("creationTime", "")
-        try:
-            creation_dt = datetime.fromisoformat(creation_time_str.replace("Z", "+00:00"))
-        except (ValueError, AttributeError):
-            creation_dt = start
-
-        # Store under /mnt/source/google-photos/YYYY/MM/<gphoto_id>
-        # Using the Google Photos item ID as the filename keeps it idempotent
-        # and avoids collisions when multiple photos share the same filename.
-        # GOOGLE_PHOTOS_DOWNLOAD_ROOT should be a /mnt/source/... Linux path so
-        # that _translate_path() maps it to the correct Windows drive (e.g. J:)
-        # via LUMEN_PATH_MAP.  Example .env entry:
-        #   GOOGLE_PHOTOS_DOWNLOAD_ROOT=/mnt/source/google-photos
-        download_root = os.environ.get(
-            "GOOGLE_PHOTOS_DOWNLOAD_ROOT", "/mnt/source/google-photos"
-        ).rstrip("/")
-        year_month = creation_dt.strftime("%Y/%m")
-        filename   = item.get("filename", item["id"])
-        linux_path = f"{download_root}/{year_month}/{item['id']}_{filename}"
-        dest_path  = _translate_path(linux_path)
-
-        result = client.download_item(item, dest_path)
-        if result is None:
-            skipped += 1
-            continue
-
-        final_path, file_type = result
-
-        # linux_path already has the correct /mnt/source/... form — use it
-        # directly rather than reverse-translating the native Windows path.
-        # download_item may have appended a file extension, so sync the suffix.
-        suffix = Path(final_path).suffix
-        if not linux_path.endswith(suffix):
-            linux_path += suffix
-        rel_path = _to_relative_path(linux_path)
-
-        ingest_media.delay(rel_path, file_type)
-        dispatched += 1
-
-    log.info(
-        "Google Photos crawl complete: dispatched=%d skipped=%d range=[%s, %s]",
-        dispatched, skipped, start_date, end_date,
-    )
-    return {"status": "dispatched", "dispatched": dispatched, "skipped": skipped}
 
 
 @app.task(
@@ -1570,3 +1493,113 @@ def backfill_yolo(self, dry_run: bool = False):
     return {"total": total, "updated": updated, "skipped": skipped, "dry_run": dry_run}
 
 
+@app.task(bind=True, max_retries=3, default_retry_delay=10)
+def cascade_votes(self, file_path: str, batch_id: str, threshold: float = 0.9, search_query: Optional[str] = None):
+    """
+    Auto-cascade an upvote to all visually similar frames (>= threshold similarity).
+
+    Steps:
+      1. Find the source Qdrant point for file_path
+      2. Query similar points via server-side vector lookup (no CLIP re-inference)
+      3. Set user_vote=1 (+ vote_label=search_query if provided) on all similar points
+      4. Log VoteEvent rows + update cascaded_count on the seed vote in Postgres
+    """
+    try:
+        # 1. Find source point ID
+        scroll_result, _ = qdrant_client.scroll(
+            collection_name=QDRANT_COLLECTION_NAME,
+            scroll_filter=Filter(must=[
+                FieldCondition(key="file_path", match=MatchValue(value=file_path))
+            ]),
+            limit=1,
+            with_payload=False,
+            with_vectors=False,
+        )
+        if not scroll_result:
+            log.warning("[cascade_votes] source not found: %s", file_path)
+            return {"cascaded": 0, "reason": "source not found"}
+
+        source_id = scroll_result[0].id
+
+        # 2. Find similar points via server-side vector lookup
+        similar = qdrant_client.query_points(
+            collection_name=QDRANT_COLLECTION_NAME,
+            query=source_id,
+            score_threshold=threshold,
+            limit=500,
+            with_payload=True,
+            with_vectors=False,
+            query_filter=Filter(must_not=[
+                FieldCondition(key="file_path", match=MatchValue(value=file_path))
+            ]),
+        )
+
+        if not similar.points:
+            log.info("[cascade_votes] no similar frames above %.2f for %s", threshold, file_path)
+            db = SyncSessionLocal()
+            try:
+                db.execute(
+                    update(VoteEvent)
+                    .where(VoteEvent.batch_id == uuid.UUID(batch_id))
+                    .where(VoteEvent.triggered_by_batch_id.is_(None))
+                    .values(cascaded_count=0, cascade_threshold=threshold)
+                )
+                db.commit()
+            finally:
+                db.close()
+            return {"cascaded": 0, "batch_id": batch_id}
+
+        # 3. Per-point patch: append query→score to vote_label dict (preserve existing labels)
+        for r in similar.points:
+            current_labels: dict = (r.payload or {}).get("vote_label") or {}
+            point_payload: dict = {"user_vote": 1}
+            if search_query:
+                updated_labels = dict(current_labels)
+                # Keep the highest score if this query has been applied before
+                updated_labels[search_query] = max(
+                    float(updated_labels.get(search_query, 0.0)),
+                    float(r.score),
+                )
+                point_payload["vote_label"] = updated_labels
+            qdrant_client.set_payload(
+                collection_name=QDRANT_COLLECTION_NAME,
+                payload=point_payload,
+                points=PointIdsList(points=[r.id]),
+            )
+
+        # 4. Log VoteEvents + update cascaded_count on seed
+        now = datetime.utcnow()
+        batch_uuid = uuid.UUID(batch_id)
+        db = SyncSessionLocal()
+        try:
+            for r in similar.points:
+                db.add(VoteEvent(
+                    id=uuid.uuid4(),
+                    batch_id=batch_uuid,
+                    triggered_by_batch_id=batch_uuid,
+                    file_path=(r.payload or {}).get("file_path", ""),
+                    audio_segment_index=(r.payload or {}).get("audio_segment_index"),
+                    vote=1,
+                    vote_source="cascade",
+                    search_query=search_query,
+                    similarity_score=r.score,
+                    timestamp=now,
+                    cascaded_count=0,
+                    cascade_threshold=threshold,
+                ))
+            db.execute(
+                update(VoteEvent)
+                .where(VoteEvent.batch_id == batch_uuid)
+                .where(VoteEvent.triggered_by_batch_id.is_(None))
+                .values(cascaded_count=len(similar.points), cascade_threshold=threshold)
+            )
+            db.commit()
+        finally:
+            db.close()
+
+        log.info("[cascade_votes] cascaded upvote to %d frames (batch=%s)", len(similar.points), batch_id)
+        return {"cascaded": len(similar.points), "batch_id": batch_id}
+
+    except Exception as exc:
+        log.error("[cascade_votes] error: %s", exc)
+        raise self.retry(exc=exc)

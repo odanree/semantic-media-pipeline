@@ -5,6 +5,7 @@ import SearchBar, { SearchFilters } from '@/components/SearchBar'
 import ResultGrid from '@/components/ResultGrid'
 import StatusPanel from '@/components/StatusPanel'
 import AskPanel from '@/components/AskPanel'
+import { SearchProvider } from '@/context/SearchContext'
 
 interface CollectionInfo {
   total: number
@@ -133,6 +134,7 @@ export default function SearchPage() {
   }
 
   return (
+    <SearchProvider value={query}>
     <div className="max-w-7xl mx-auto px-4 py-8">
       <div className="mb-8">
         <h2 className="text-3xl font-bold mb-2">Find Media by Intent</h2>
@@ -285,5 +287,6 @@ export default function SearchPage() {
         </>
       )}
     </div>
+    </SearchProvider>
   )
 }

@@ -429,7 +429,7 @@ def test_topic_tags_qdrant_empty_falls_back_to_vocab(mock_db_session, mock_qdran
     mock_qdrant.retrieve.return_value = []
 
     with patch("routers.stats._get_session", return_value=db_for_ids), \
-         patch("routers.search.get_clip_model", return_value=mock_clip):
+         patch("api.routers.search.get_clip_model", return_value=mock_clip):
         result = stats_mod._compute_topic_tags(k=5)
 
     assert result == stats_mod._TOPIC_VOCABULARY[:5]

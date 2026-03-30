@@ -1,10 +1,11 @@
 'use client'
 
-import Image from 'next/image'
 import VideoPlayer from './VideoPlayer'
 import HighlightReelPlayer from './HighlightReelPlayer'
 import SimilarPanel from './SimilarPanel'
 import { useState, useEffect, useRef, useMemo } from 'react'
+import { useVotes } from '@/hooks/useVotes'
+import { useSearchQuery } from '@/context/SearchContext'
 
 interface SearchResult {
   id: string
@@ -15,7 +16,10 @@ interface SearchResult {
   timestamp?: number
   audio_segment_start_sec?: number | null
   audio_segment_end_sec?: number | null
+  audio_segment_index?: number
   audio_rms_energy?: number | null
+  user_vote?: 1 | -1 | null
+  vote_label?: Record<string, number> | null
 }
 
 interface ReelState {
@@ -36,6 +40,7 @@ type SortKey = 'similarity_desc' | 'similarity_asc' | 'rms_desc' | 'rms_asc'
 const STREAM_BASE = process.env.NEXT_PUBLIC_STREAM_URL || 'http://localhost:8000'
 
 export default function ResultGrid({ results, availableLabels }: ResultGridProps) {
+  const searchQuery = useSearchQuery()
   const [selectedVideo, setSelectedVideo] = useState<SearchResult | null>(null)
   const [selectedImage, setSelectedImage] = useState<SearchResult | null>(null)
   const [similarSource, setSimilarSource] = useState<SearchResult | null>(null)
@@ -49,7 +54,31 @@ export default function ResultGrid({ results, availableLabels }: ResultGridProps
   const [clipPadding, setClipPadding] = useState(3)
   const itemsPerPage = 20
 
+  // Seed initial votes from results
+  const initialVotes = useMemo(() => {
+    const votes: Record<string, 1 | -1> = {}
+    results.forEach((r) => {
+      if (r.user_vote === 1 || r.user_vote === -1) {
+        const key = (r.audio_segment_index !== undefined && r.audio_segment_index !== null)
+          ? `${r.file_path}#${r.audio_segment_index}`
+          : r.file_path
+        votes[key] = r.user_vote
+      }
+    })
+    return votes
+  }, [results])
+
+  const { votes, vote, getVoteKey } = useVotes({ initialVotes })
+
   const sortedResults = useMemo(() => [...results].sort((a, b) => {
+    // Primary sort: votes (upvotes > neutral > downvotes)
+    const keyA = a.audio_segment_index !== undefined ? `${a.file_path}#${a.audio_segment_index}` : a.file_path
+    const keyB = b.audio_segment_index !== undefined ? `${b.file_path}#${b.audio_segment_index}` : b.file_path
+    const va = votes[keyA] ?? 0
+    const vb = votes[keyB] ?? 0
+    if (vb !== va) return vb - va
+
+    // Secondary sort: selected sort key
     switch (sortKey) {
       case 'similarity_asc': return a.similarity - b.similarity
       // ↑ = highest first, ↓ = lowest first
@@ -57,7 +86,7 @@ export default function ResultGrid({ results, availableLabels }: ResultGridProps
       case 'rms_asc':  return (a.audio_rms_energy ?? Infinity) - (b.audio_rms_energy ?? Infinity)
       default: return b.similarity - a.similarity
     }
-  }), [results, sortKey])
+  }), [results, sortKey, votes])
 
   const totalPages = Math.ceil(sortedResults.length / itemsPerPage)
 
@@ -110,7 +139,7 @@ export default function ResultGrid({ results, availableLabels }: ResultGridProps
         totalDurationSec: data.total_duration_sec,
       })
       setReelOpen(true)
-    } catch (e) {
+    } catch {
       setReelError('Network error — could not generate reel')
     } finally {
       setReelLoading(false)
@@ -220,6 +249,10 @@ export default function ResultGrid({ results, availableLabels }: ResultGridProps
             result={result}
             viewMode={viewMode}
             clipPadding={clipPadding}
+            votes={votes}
+            getVoteKey={getVoteKey}
+            onVote={vote}
+            searchQuery={searchQuery}
             onSelect={() => {
               if (result.file_type === 'video') setSelectedVideo(result)
               else setSelectedImage(result)
@@ -376,16 +409,40 @@ function ResultItem({
   result,
   viewMode,
   clipPadding,
+  votes,
+  getVoteKey,
+  onVote,
   onSelect,
   onFindSimilar,
+  searchQuery,
 }: {
   result: SearchResult
   viewMode: ViewMode
   clipPadding: number
+  votes: Record<string, 1 | -1>
+  getVoteKey: (filePath: string, audioSegmentIndex?: number) => string
+  onVote: (filePath: string, audioSegmentIndex: number | undefined, direction: 1 | -1) => void
   onSelect: () => void
   onFindSimilar: () => void
+  searchQuery: string
 }) {
   const [isVisible, setIsVisible] = useState(false)
+
+  const voteKey = getVoteKey(result.file_path, result.audio_segment_index)
+  const isUpvoted = votes[voteKey] === 1
+  const isDownvoted = votes[voteKey] === -1
+  const labelScore = result.vote_label && searchQuery ? result.vote_label[searchQuery] : null
+  const isCascade = isUpvoted && labelScore != null && labelScore < 1
+  const isManual = isUpvoted && !isCascade
+  const cascadePct = isCascade ? Math.round(labelScore * 100) : null
+
+  const upvoteCls = isManual
+    ? 'bg-green-700 text-white'
+    : isCascade
+    ? 'bg-teal-900 text-teal-300 border border-teal-700'
+    : 'bg-gray-700 text-gray-400 hover:bg-green-900 hover:text-green-300'
+  const upvoteLabel = isCascade ? `👍 ${cascadePct}%` : '👍'
+  const upvoteTitle = isManual ? 'Manually upvoted' : isCascade ? `Auto-cascaded at ${cascadePct}% visual similarity` : 'Promote this result'
   const ref = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -504,6 +561,29 @@ function ResultItem({
               </span>
             </div>
           )}
+          {/* Vote buttons */}
+          <div className="mt-1.5 flex gap-1">
+            <button
+              onClick={(e) => { e.stopPropagation(); onVote(result.file_path, result.audio_segment_index, 1) }}
+              className={`flex-1 py-0.5 rounded text-xs font-semibold transition ${upvoteCls}`}
+              aria-label="Thumbs up"
+              title={upvoteTitle}
+            >
+              {upvoteLabel}
+            </button>
+            <button
+              onClick={(e) => { e.stopPropagation(); onVote(result.file_path, result.audio_segment_index, -1) }}
+              className={`flex-1 py-0.5 rounded text-xs font-semibold transition ${
+                isDownvoted
+                  ? 'bg-red-900 text-white'
+                  : 'bg-gray-700 text-gray-400 hover:bg-red-900 hover:text-red-300'
+              }`}
+              aria-label="Thumbs down"
+              title="Demote this result"
+            >
+              👎
+            </button>
+          </div>
         </div>
       </div>
     )
@@ -611,6 +691,28 @@ function ResultItem({
           >
             ≈ Similar
           </button>
+          <div className="flex gap-1">
+            <button
+              onClick={(e) => { e.stopPropagation(); onVote(result.file_path, result.audio_segment_index, 1) }}
+              className={`px-2 py-1 rounded text-xs font-semibold transition ${upvoteCls}`}
+              aria-label="Thumbs up"
+              title={upvoteTitle}
+            >
+              {upvoteLabel}
+            </button>
+            <button
+              onClick={(e) => { e.stopPropagation(); onVote(result.file_path, result.audio_segment_index, -1) }}
+              className={`px-2 py-1 rounded text-xs font-semibold transition ${
+                isDownvoted
+                  ? 'bg-red-900 text-white'
+                  : 'bg-gray-700 text-gray-400 hover:bg-red-900 hover:text-red-300'
+              }`}
+              aria-label="Thumbs down"
+              title="Demote this result"
+            >
+              👎
+            </button>
+          </div>
         </div>
       </div>
     )

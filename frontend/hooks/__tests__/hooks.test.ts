@@ -2,6 +2,7 @@
  * Custom hook tests — runs in jsdom (configured via environmentMatchGlobs).
  *
  * Covers: useSearchHistory, useStatusUpdates, useMediaUpdates
+ * (useVotes is in its own test file to avoid memory issues with WebSocket mocks)
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
