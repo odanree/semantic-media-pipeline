@@ -10,6 +10,7 @@ export interface SearchFilters {
   minSimilarity?: number
   maxResults?: number
   dedup?: boolean
+  excludeVoted?: boolean
   audioSegmentType?: 'speech' | 'non_verbal' | 'music' | 'ambient' | 'event' | 'silence' | ''
   constructionPhase?: string
   label?: string
@@ -342,6 +343,31 @@ export default function SearchBar({ onSearch, isLoading = false, suggestions, ex
               <span
                 className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
                   (filters.dedup ?? true) ? 'translate-x-6' : 'translate-x-1'
+                }`}
+              />
+            </button>
+          </div>
+
+          {/* Unvoted filter */}
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm font-semibold text-gray-300">Unvoted Only</p>
+              <p className="text-xs text-gray-500 mt-0.5">
+                Only show frames with no vote yet
+              </p>
+            </div>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={filters.excludeVoted ?? false}
+              onClick={() => setFilters({ ...filters, excludeVoted: !(filters.excludeVoted ?? false) })}
+              className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
+                (filters.excludeVoted ?? false) ? 'bg-blue-600' : 'bg-gray-600'
+              }`}
+            >
+              <span
+                className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                  (filters.excludeVoted ?? false) ? 'translate-x-6' : 'translate-x-1'
                 }`}
               />
             </button>

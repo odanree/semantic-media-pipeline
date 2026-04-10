@@ -35,7 +35,13 @@ export default function HighlightReelPlayer({
         setVideoError('HLS is not supported in this browser')
         return
       }
-      hls = new Hls({ maxBufferLength: 30, maxMaxBufferLength: 60 })
+      hls = new Hls({
+        maxBufferLength: 30,
+        maxMaxBufferLength: 60,
+        manifestLoadingTimeOut: 30000,
+        manifestLoadingMaxRetry: 4,
+        manifestLoadingRetryDelay: 1000,
+      })
       hlsManagedRef.current = true
       hls.loadSource(playlistUrl)
       hls.attachMedia(video)

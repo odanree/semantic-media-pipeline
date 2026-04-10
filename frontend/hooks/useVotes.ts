@@ -123,5 +123,19 @@ export function useVotes(options: UseVotesOptions = {}) {
     [votes, api, searchQuery]
   )
 
-  return { votes, vote, getVoteKey }
+  // Tag with an explicit keyword — always upvotes, ignores current searchQuery.
+  const tagVote = useCallback(
+    async (filePath: string, audioSegmentIndex: number | undefined, keyword: string) => {
+      const key = getVoteKey(filePath, audioSegmentIndex)
+      setVotes(prev => ({ ...prev, [key]: 1 }))
+      try {
+        await api.persist(filePath, audioSegmentIndex, 1, keyword)
+      } catch (err) {
+        console.error('Tag vote persistence failed:', err)
+      }
+    },
+    [api]
+  )
+
+  return { votes, vote, tagVote, getVoteKey }
 }

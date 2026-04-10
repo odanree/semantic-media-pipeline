@@ -143,6 +143,26 @@ async def startup_event():
     except Exception as exc:
         print(f"WARNING: could not create audit_logs table: {exc}")
 
+    # Ensure required Qdrant payload indexes exist (idempotent — safe on every restart).
+    # Range filters on user_vote require an integer index — see LEARNINGS C5.
+    try:
+        from qdrant_client import QdrantClient
+        from qdrant_client.models import PayloadSchemaType
+        _qhost = os.getenv("QDRANT_HOST", "qdrant")
+        _qport = int(os.getenv("QDRANT_PORT", 6333))
+        _qcoll = os.getenv("QDRANT_COLLECTION_NAME", "media_vectors")
+        _qc = QdrantClient(host=_qhost, port=_qport, timeout=5)
+        info = _qc.get_collection(_qcoll)
+        existing = set((info.payload_schema or {}).keys())
+        for field, schema in [("user_vote", PayloadSchemaType.INTEGER)]:
+            if field not in existing:
+                _qc.create_payload_index(collection_name=_qcoll, field_name=field, field_schema=schema, wait=False)
+                print(f"[Startup] Created Qdrant payload index: {field}")
+            else:
+                print(f"[Startup] Qdrant payload index already exists: {field}")
+    except Exception as exc:
+        print(f"WARNING: could not ensure Qdrant payload indexes: {exc}")
+
     # Preload CLIP model so first search request is instant
     import asyncio
     from routers.search import get_clip_model

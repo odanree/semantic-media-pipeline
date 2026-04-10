@@ -30,6 +30,17 @@ export default function SearchPage() {
   const [tagQuery, setTagQuery] = useState<string | undefined>(undefined)
   const [collectionInfo, setCollectionInfo] = useState<CollectionInfo | null>(null)
 
+  // Auto-search when landing with ?q= (e.g. from training page)
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search)
+    const q = params.get('q')
+    if (q) {
+      setTagQuery(q)
+      handleSearch(q, {})
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
   useEffect(() => {
     fetch('/api/collection')
       .then(r => {
@@ -111,6 +122,9 @@ export default function SearchPage() {
       }
       if (filters.label) {
         payload.label = filters.label
+      }
+      if (filters.excludeVoted) {
+        payload.exclude_voted = true
       }
 
       const response = await fetch('/api/search', {
@@ -269,7 +283,16 @@ export default function SearchPage() {
               </div>
             )}
           </div>
-          <ResultGrid results={results} availableLabels={collectionInfo?.labels ?? []} />
+          <ResultGrid
+            results={results}
+            availableLabels={collectionInfo?.labels ?? []}
+            excludeVoted={appliedFilters.excludeVoted ?? false}
+            onExcludeVotedChange={(val) => {
+              const updated = { ...appliedFilters, excludeVoted: val }
+              setAppliedFilters(updated)
+              handleSearch(query, updated)
+            }}
+          />
         </div>
       )}
 

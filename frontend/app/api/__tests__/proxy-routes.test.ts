@@ -872,3 +872,57 @@ describe('GET /api/playlist/serve/[...path]', () => {
     expect(res.status).toBe(500)
   })
 })
+
+// ---------------------------------------------------------------------------
+// POST /api/scene-bounds
+// ---------------------------------------------------------------------------
+
+describe('POST /api/scene-bounds', () => {
+  it('proxies a successful response from the backend', async () => {
+    const payload = { start_sec: 5.0, end_sec: 15.0, anchor_sec: 10.0, frames_scanned: 3 }
+    vi.mocked(fetch).mockResolvedValueOnce(mockResponse(payload, 200))
+    const { POST } = await import('../scene-bounds/route')
+    const req = new NextRequest('http://localhost/api/scene-bounds', {
+      method: 'POST',
+      body: JSON.stringify({ file_path: 'video.mp4', timestamp: 10.0 }),
+    })
+    const res = await POST(req)
+    expect(res.status).toBe(200)
+    const data = await res.json()
+    expect(data.start_sec).toBe(5.0)
+    expect(data.end_sec).toBe(15.0)
+  })
+
+  it('returns 400 for invalid JSON body', async () => {
+    const { POST } = await import('../scene-bounds/route')
+    const req = new NextRequest('http://localhost/api/scene-bounds', {
+      method: 'POST',
+      body: 'not-json',
+      headers: { 'content-type': 'text/plain' },
+    })
+    const res = await POST(req)
+    expect(res.status).toBe(400)
+  })
+
+  it('returns 502 when fetch throws', async () => {
+    vi.mocked(fetch).mockRejectedValueOnce(new Error('ECONNREFUSED'))
+    const { POST } = await import('../scene-bounds/route')
+    const req = new NextRequest('http://localhost/api/scene-bounds', {
+      method: 'POST',
+      body: JSON.stringify({ file_path: 'video.mp4', timestamp: 10.0 }),
+    })
+    const res = await POST(req)
+    expect(res.status).toBe(502)
+  })
+
+  it('forwards upstream error status', async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(mockResponse({ detail: 'Not found' }, 404))
+    const { POST } = await import('../scene-bounds/route')
+    const req = new NextRequest('http://localhost/api/scene-bounds', {
+      method: 'POST',
+      body: JSON.stringify({ file_path: 'missing.mp4', timestamp: 10.0 }),
+    })
+    const res = await POST(req)
+    expect(res.status).toBe(404)
+  })
+})

@@ -31,6 +31,8 @@ interface ReelState {
 interface ResultGridProps {
   results: SearchResult[]
   availableLabels?: string[]
+  excludeVoted?: boolean
+  onExcludeVotedChange?: (val: boolean) => void
 }
 
 type ViewMode = 'grid' | 'list'
@@ -39,7 +41,7 @@ type SortKey = 'similarity_desc' | 'similarity_asc' | 'rms_desc' | 'rms_asc'
 // Stream directly from FastAPI - bypasses Next.js proxy, no Node.js buffering
 const STREAM_BASE = process.env.NEXT_PUBLIC_STREAM_URL || 'http://localhost:8000'
 
-export default function ResultGrid({ results, availableLabels }: ResultGridProps) {
+export default function ResultGrid({ results, availableLabels, excludeVoted = false, onExcludeVotedChange }: ResultGridProps) {
   const searchQuery = useSearchQuery()
   const [selectedVideo, setSelectedVideo] = useState<SearchResult | null>(null)
   const [selectedImage, setSelectedImage] = useState<SearchResult | null>(null)
@@ -52,7 +54,12 @@ export default function ResultGrid({ results, availableLabels }: ResultGridProps
   const [reelLoading, setReelLoading] = useState(false)
   const [reelError, setReelError] = useState<string | null>(null)
   const [clipPadding, setClipPadding] = useState(3)
-  const itemsPerPage = 20
+  const [sceneMode, setSceneMode] = useState(false)
+  const [sceneThreshold, setSceneThreshold] = useState(0.75)
+  const [sceneBoundsCache, setSceneBoundsCache] = useState<Record<string, { start_sec: number; end_sec: number }>>({})
+  const [sceneBoundsLoading, setSceneBoundsLoading] = useState(false)
+  const [voteLabelsOverride, setVoteLabelsOverride] = useState<Record<string, Record<string, number>>>({})
+  const itemsPerPage = 40
 
   // Seed initial votes from results
   const initialVotes = useMemo(() => {
@@ -68,14 +75,17 @@ export default function ResultGrid({ results, availableLabels }: ResultGridProps
     return votes
   }, [results])
 
-  const { votes, vote, getVoteKey } = useVotes({ initialVotes })
+  const { votes, vote, tagVote, getVoteKey } = useVotes({ initialVotes })
 
   const sortedResults = useMemo(() => [...results].sort((a, b) => {
-    // Primary sort: votes (upvotes > neutral > downvotes)
+    // Primary sort: fully query-scoped via vote_label[searchQuery].
+    // +1 = boost, -1 = sink, absent = neutral. Cross-query votes don't affect ranking.
     const keyA = a.audio_segment_index !== undefined ? `${a.file_path}#${a.audio_segment_index}` : a.file_path
     const keyB = b.audio_segment_index !== undefined ? `${b.file_path}#${b.audio_segment_index}` : b.file_path
-    const va = votes[keyA] ?? 0
-    const vb = votes[keyB] ?? 0
+    const labelA = searchQuery ? ({ ...(a.vote_label ?? {}), ...(voteLabelsOverride[keyA] ?? {}) })[searchQuery] ?? 0 : 0
+    const labelB = searchQuery ? ({ ...(b.vote_label ?? {}), ...(voteLabelsOverride[keyB] ?? {}) })[searchQuery] ?? 0 : 0
+    const va = Math.sign(labelA)
+    const vb = Math.sign(labelB)
     if (vb !== va) return vb - va
 
     // Secondary sort: selected sort key
@@ -103,9 +113,38 @@ export default function ResultGrid({ results, availableLabels }: ResultGridProps
     setReelOpen(false)
     setReelError(null)
     setClipPadding(3)
+    setSceneMode(false)
+    setSceneBoundsCache({})
   }, [results])
 
   const currentVideoResults = currentResults.filter((r) => r.file_type === 'video')
+
+  async function detectSceneBounds() {
+    if (currentVideoResults.length === 0) return
+    setSceneBoundsLoading(true)
+    const settled = await Promise.allSettled(
+      currentVideoResults.map(async (r) => {
+        const res = await fetch('/api/scene-bounds', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ file_path: r.file_path, timestamp: r.timestamp ?? 0, threshold: sceneThreshold }),
+        })
+        if (!res.ok) throw new Error(`${res.status}`)
+        const data = await res.json()
+        return { key: `${r.file_path}:::${r.timestamp ?? 0}`, bounds: { start_sec: data.start_sec, end_sec: data.end_sec } }
+      })
+    )
+    const cache: Record<string, { start_sec: number; end_sec: number }> = {}
+    for (const result of settled) {
+      if (result.status === 'fulfilled') {
+        cache[result.value.key] = result.value.bounds
+      }
+    }
+    setSceneBoundsCache(prev => ({ ...prev, ...cache }))
+    setSceneMode(true)
+    setSceneBoundsLoading(false)
+    setReel(null)  // invalidate cached reel — bounds changed
+  }
 
   async function playHighlightReel() {
     if (currentVideoResults.length === 0) return
@@ -116,9 +155,10 @@ export default function ResultGrid({ results, availableLabels }: ResultGridProps
     }
     setReelLoading(true)
     setReelError(null)
+    const activeCache = sceneMode ? sceneBoundsCache : undefined
     const clips = currentVideoResults.map((r) => ({
       file_path: r.file_path,
-      ...clipBounds(r, clipPadding),
+      ...clipBounds(r, clipPadding, activeCache),
     }))
     try {
       const res = await fetch('/api/playlist', {
@@ -195,6 +235,31 @@ export default function ResultGrid({ results, availableLabels }: ResultGridProps
                 <option value={5}>±5s</option>
                 <option value={10}>±10s</option>
               </select>
+              <select
+                value={sceneThreshold}
+                onChange={(e) => { setSceneThreshold(Number(e.target.value)); setSceneMode(false); setSceneBoundsCache({}); setReel(null) }}
+                className="px-2 py-2 rounded text-sm bg-gray-700 text-gray-300 border border-gray-600 hover:border-gray-500 focus:outline-none cursor-pointer"
+                title="Scene similarity threshold — lower = wider scenes"
+              >
+                <option value={0.65}>sim 0.65</option>
+                <option value={0.70}>sim 0.70</option>
+                <option value={0.75}>sim 0.75</option>
+                <option value={0.80}>sim 0.80</option>
+                <option value={0.85}>sim 0.85</option>
+                <option value={0.90}>sim 0.90</option>
+              </select>
+              <button
+                onClick={sceneMode ? () => { setSceneMode(false); setReel(null) } : detectSceneBounds}
+                disabled={sceneBoundsLoading}
+                className={`px-3 py-2 rounded text-sm font-semibold transition disabled:opacity-50 disabled:cursor-wait ${
+                  sceneMode
+                    ? 'bg-cyan-700 hover:bg-cyan-600 text-white'
+                    : 'bg-gray-700 hover:bg-gray-600 text-gray-300'
+                }`}
+                title={sceneMode ? 'Scene mode ON — click to revert to ±padding' : 'Detect scene boundaries from frame similarity'}
+              >
+                {sceneBoundsLoading ? '⏳ Detecting…' : sceneMode ? '≈ Scene ON' : '≈ Scene'}
+              </button>
               <button
                 onClick={playHighlightReel}
                 disabled={reelLoading}
@@ -204,6 +269,19 @@ export default function ResultGrid({ results, availableLabels }: ResultGridProps
                 {reelLoading ? '⏳ Compiling…' : `▶ Reel (${currentVideoResults.length})`}
               </button>
             </>
+          )}
+          {onExcludeVotedChange && (
+            <button
+              onClick={() => onExcludeVotedChange(!excludeVoted)}
+              className={`px-3 py-2 rounded text-sm font-semibold transition ${
+                excludeVoted
+                  ? 'bg-yellow-600 text-white'
+                  : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+              }`}
+              title={excludeVoted ? 'Showing unvoted only — click to show all' : 'Show unvoted only'}
+            >
+              {excludeVoted ? '○ Unvoted' : '○ All'}
+            </button>
           )}
           <button
             onClick={() => setViewMode('grid')}
@@ -249,10 +327,24 @@ export default function ResultGrid({ results, availableLabels }: ResultGridProps
             result={result}
             viewMode={viewMode}
             clipPadding={clipPadding}
+            sceneBoundsCache={sceneMode ? sceneBoundsCache : undefined}
             votes={votes}
             getVoteKey={getVoteKey}
             onVote={vote}
             searchQuery={searchQuery}
+            voteLabelsOverride={voteLabelsOverride}
+            onVoteLabelChange={(key, query, score) => setVoteLabelsOverride(prev => ({
+              ...prev,
+              [key]: { ...(prev[key] ?? {}), [query]: score },
+            }))}
+            onTagVote={(filePath, audioSegmentIndex, keyword) => {
+              tagVote(filePath, audioSegmentIndex, keyword)
+              const key = getVoteKey(filePath, audioSegmentIndex)
+              setVoteLabelsOverride(prev => ({
+                ...prev,
+                [key]: { ...(prev[key] ?? {}), [keyword]: 1 },
+              }))
+            }}
             onSelect={() => {
               if (result.file_type === 'video') setSelectedVideo(result)
               else setSelectedImage(result)
@@ -383,7 +475,15 @@ export default function ResultGrid({ results, availableLabels }: ResultGridProps
   )
 }
 
-function clipBounds(r: SearchResult, padding = 3): { start_sec: number; end_sec: number } {
+function clipBounds(
+  r: SearchResult,
+  padding = 3,
+  cache?: Record<string, { start_sec: number; end_sec: number }>,
+): { start_sec: number; end_sec: number } {
+  if (cache) {
+    const cached = cache[`${r.file_path}:::${r.timestamp ?? 0}`]
+    if (cached) return cached
+  }
   const ts = r.timestamp ?? 0
   // Only use audio segment if it actually contains the matched timestamp.
   // The nearest VAD segment can be thousands of seconds away from the visual match.
@@ -397,9 +497,13 @@ function clipBounds(r: SearchResult, padding = 3): { start_sec: number; end_sec:
     : { start_sec: Math.max(0, ts - padding), end_sec: ts + padding }
 }
 
-function segmentDuration(result: SearchResult, padding: number): string | null {
+function segmentDuration(
+  result: SearchResult,
+  padding: number,
+  cache?: Record<string, { start_sec: number; end_sec: number }>,
+): string | null {
   if (result.file_type !== 'video') return null
-  const { start_sec, end_sec } = clipBounds(result, padding)
+  const { start_sec, end_sec } = clipBounds(result, padding, cache)
   const secs = Math.round(end_sec - start_sec)
   if (secs < 60) return `${secs}s clip`
   return `${Math.floor(secs / 60)}m ${secs % 60}s clip`
@@ -409,40 +513,110 @@ function ResultItem({
   result,
   viewMode,
   clipPadding,
+  sceneBoundsCache,
   votes,
   getVoteKey,
   onVote,
   onSelect,
   onFindSimilar,
   searchQuery,
+  voteLabelsOverride,
+  onVoteLabelChange,
+  onTagVote,
 }: {
   result: SearchResult
   viewMode: ViewMode
   clipPadding: number
+  sceneBoundsCache?: Record<string, { start_sec: number; end_sec: number }>
   votes: Record<string, 1 | -1>
   getVoteKey: (filePath: string, audioSegmentIndex?: number) => string
   onVote: (filePath: string, audioSegmentIndex: number | undefined, direction: 1 | -1) => void
   onSelect: () => void
   onFindSimilar: () => void
   searchQuery: string
+  voteLabelsOverride: Record<string, Record<string, number>>
+  onVoteLabelChange: (key: string, query: string, score: number) => void
+  onTagVote: (filePath: string, audioSegmentIndex: number | undefined, keyword: string) => void
 }) {
   const [isVisible, setIsVisible] = useState(false)
+  const [tagOpen, setTagOpen] = useState(false)
+  const [tagValue, setTagValue] = useState('')
+  const [hovered, setHovered] = useState(false)
+  const [previewError, setPreviewError] = useState(false)
+  const [vlcState, setVlcState] = useState<'idle' | 'loading' | 'ok' | 'error'>('idle')
+  const tagInputRef = useRef<HTMLInputElement>(null)
+  const previewRef = useRef<HTMLVideoElement>(null)
+  const hoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  function openInVlc(e: React.MouseEvent) {
+    e.stopPropagation()
+    if (vlcState === 'loading') return
+    setVlcState('loading')
+    const t = result.timestamp ?? 0
+    const url = `http://localhost:9876/open?path=${encodeURIComponent(result.file_path)}&t=${t.toFixed(3)}&sw=${window.screen.width}&sh=${window.screen.height}&ox=${window.screenX}&oy=${window.screenY}`
+    fetch(url)
+      .then(r => {
+        setVlcState(r.ok ? 'ok' : 'error')
+        setTimeout(() => setVlcState('idle'), r.ok ? 2000 : 3000)
+      })
+      .catch(() => {
+        setVlcState('error')
+        setTimeout(() => setVlcState('idle'), 3000)
+      })
+  }
+
+  useEffect(() => {
+    if (tagOpen && tagInputRef.current) tagInputRef.current.focus()
+  }, [tagOpen])
+
+  function openTag() {
+    setTagValue(searchQuery || '')
+    setTagOpen(true)
+  }
+
+  function submitTag() {
+    const kw = tagValue.trim()
+    if (!kw) return
+    onTagVote(result.file_path, result.audio_segment_index, kw)
+    setTagOpen(false)
+  }
 
   const voteKey = getVoteKey(result.file_path, result.audio_segment_index)
   const isUpvoted = votes[voteKey] === 1
   const isDownvoted = votes[voteKey] === -1
-  const labelScore = result.vote_label && searchQuery ? result.vote_label[searchQuery] : null
+  const effectiveVoteLabel = { ...(result.vote_label ?? {}), ...(voteLabelsOverride[voteKey] ?? {}) }
+  const labelScore = searchQuery ? (effectiveVoteLabel[searchQuery] ?? null) : null
   const isCascade = isUpvoted && labelScore != null && labelScore < 1
-  const isManual = isUpvoted && !isCascade
+  const isUnlabeled = isUpvoted && !isCascade && Object.keys(effectiveVoteLabel).length === 0
+  const isManual = isUpvoted && !isCascade && !isUnlabeled
+
+  // Badge priority:
+  // 1. Any keyword set THIS session via voteLabelsOverride (includes # tags + upvotes)
+  // 2. Current search query if it has score=1 in server-side vote_label
+  // Cross-query server-side labels (from previous sessions) are intentionally hidden.
+  const overrideLabel = voteLabelsOverride[voteKey] ?? {}
+  const overrideKeyword = Object.entries(overrideLabel).find(([, v]) => v === 1)?.[0] ?? null
+  const upvoteKeyword = isManual
+    ? (overrideKeyword ?? (searchQuery && effectiveVoteLabel[searchQuery] === 1 ? searchQuery : null))
+    : null
+
+  function handleVote(dir: 1 | -1) {
+    if (searchQuery) {
+      onVoteLabelChange(voteKey, searchQuery, dir)
+    }
+    onVote(result.file_path, result.audio_segment_index, dir)
+  }
   const cascadePct = isCascade ? Math.round(labelScore * 100) : null
 
   const upvoteCls = isManual
     ? 'bg-green-700 text-white'
+    : isUnlabeled
+    ? 'bg-lime-700 text-white'
     : isCascade
     ? 'bg-teal-900 text-teal-300 border border-teal-700'
     : 'bg-gray-700 text-gray-400 hover:bg-green-900 hover:text-green-300'
   const upvoteLabel = isCascade ? `👍 ${cascadePct}%` : '👍'
-  const upvoteTitle = isManual ? 'Manually upvoted' : isCascade ? `Auto-cascaded at ${cascadePct}% visual similarity` : 'Promote this result'
+  const upvoteTitle = isManual ? 'Manually upvoted' : isUnlabeled ? 'Upvoted — no label attached' : isCascade ? `Auto-cascaded at ${cascadePct}% visual similarity` : 'Promote this result'
   const ref = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -467,7 +641,9 @@ function ResultItem({
     return (
       <div
         ref={ref}
-        className="group cursor-pointer bg-gray-800 rounded-lg overflow-hidden hover:ring-2 hover:ring-blue-500 transition"
+        className={`group cursor-pointer bg-gray-800 rounded-lg overflow-hidden transition ring-2 ${
+          isManual ? 'ring-green-500' : isUnlabeled ? 'ring-lime-400' : isCascade ? 'ring-teal-600' : isDownvoted ? 'ring-red-900' : 'ring-transparent hover:ring-blue-500'
+        }`}
         role="listitem"
         onClick={onSelect}
         onKeyDown={(e) => {
@@ -476,7 +652,11 @@ function ResultItem({
         tabIndex={0}
         aria-label={`${result.file_type} with ${(result.similarity * 100).toFixed(1)}% similarity`}
       >
-        <div className="relative aspect-square bg-gray-700 overflow-hidden">
+        <div
+          className="relative aspect-square bg-gray-700 overflow-hidden"
+          onMouseEnter={() => { hoverTimerRef.current = setTimeout(() => setHovered(true), 500) }}
+          onMouseLeave={() => { if (hoverTimerRef.current) { clearTimeout(hoverTimerRef.current); hoverTimerRef.current = null } setHovered(false); if (previewRef.current) previewRef.current.pause() }}
+        >
           <div className="absolute inset-0 bg-gradient-to-b from-transparent to-gray-900 opacity-60 z-10"></div>
 
           {isVisible ? (
@@ -489,15 +669,39 @@ function ResultItem({
                 <img
                   src={`${STREAM_BASE}/api/thumbnail?path=${encodeURIComponent(result.file_path)}&t=${result.timestamp ?? 0}`}
                   alt={result.file_path.split('/').pop()}
-                  className="w-full h-full object-cover"
+                  className={`w-full h-full object-cover transition-opacity duration-150 ${hovered ? 'opacity-0' : 'opacity-100'}`}
                   loading="lazy"
                 />
-                {/* Play overlay */}
-                <div className="absolute inset-0 z-20 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
-                  <div className="w-12 h-12 rounded-full bg-black bg-opacity-60 flex items-center justify-center">
-                    <span className="text-white text-xl pl-0.5">▶</span>
+                {hovered && !previewError && (
+                  <video
+                    ref={previewRef}
+                    src={`${STREAM_BASE}/api/stream?path=${encodeURIComponent(result.file_path)}`}
+                    muted
+                    playsInline
+                    className="absolute inset-0 w-full h-full object-cover"
+                    onLoadedMetadata={() => {
+                      const v = previewRef.current
+                      if (!v) return
+                      v.currentTime = result.timestamp ?? 0
+                      v.play()
+                    }}
+                    onTimeUpdate={() => {
+                      const v = previewRef.current
+                      if (!v) return
+                      const start = result.timestamp ?? 0
+                      if (v.currentTime >= start + 5) v.currentTime = start
+                    }}
+                    onError={() => setPreviewError(true)}
+                  />
+                )}
+                {/* Play overlay — hidden while previewing */}
+                {!hovered && (
+                  <div className="absolute inset-0 z-20 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
+                    <div className="w-12 h-12 rounded-full bg-black bg-opacity-60 flex items-center justify-center">
+                      <span className="text-white text-xl pl-0.5">▶</span>
+                    </div>
                   </div>
-                </div>
+                )}
               </>
             ) : (
               // eslint-disable-next-line @next/next/no-img-element
@@ -522,6 +726,27 @@ function ResultItem({
             ≈ Similar
           </button>
 
+          {/* VLC button — top-right, shown when preview fails (e.g. HEVC) */}
+          {previewError && (
+            <button
+              className={`absolute top-2 right-2 z-30 px-2 py-1 rounded text-xs font-semibold transition ${
+                vlcState === 'error'   ? 'bg-red-900 text-red-300' :
+                vlcState === 'loading' ? 'bg-orange-900 text-orange-300 cursor-wait' :
+                vlcState === 'ok'      ? 'bg-green-900 text-green-300' :
+                'bg-black bg-opacity-70 hover:bg-orange-700 text-gray-200'
+              }`}
+              onClick={openInVlc}
+              title={
+                vlcState === 'error'   ? 'vlc-opener not running — start scripts/vlc-opener.py' :
+                vlcState === 'loading' ? 'Opening…' :
+                vlcState === 'ok'      ? 'Opened!' :
+                'Open in VLC (codec unsupported)'
+              }
+            >
+              {vlcState === 'loading' ? '⏳ VLC' : vlcState === 'ok' ? '✓ VLC' : vlcState === 'error' ? '✕ VLC' : 'VLC'}
+            </button>
+          )}
+
           <div className="absolute bottom-2 right-2 px-2 py-1 bg-black bg-opacity-70 rounded text-xs font-semibold z-20">
             {(result.similarity * 100).toFixed(1)}%
           </div>
@@ -531,23 +756,39 @@ function ResultItem({
           <p className="text-xs text-gray-400 truncate">{result.file_path.split('/').pop()}</p>
           <p className="text-xs text-gray-500 mt-1">
             {result.file_type === 'video' && result.frame_index !== undefined
-              ? `Frame ${result.frame_index} @ ${(result.timestamp || 0).toFixed(1)}s${segmentDuration(result, clipPadding) ? ` · ${segmentDuration(result, clipPadding)}` : ''}`
+              ? `Frame ${result.frame_index} @ ${(result.timestamp || 0).toFixed(1)}s${segmentDuration(result, clipPadding, sceneBoundsCache) ? ` · ${segmentDuration(result, clipPadding, sceneBoundsCache)}` : ''}`
               : result.file_type === 'video'
               ? 'Video'
               : 'Image'}
           </p>
           {result.file_type === 'video' && (() => {
-            const bounds = clipBounds(result, clipPadding)
-            const aligned = result.audio_segment_start_sec != null && bounds.start_sec === result.audio_segment_start_sec
+            const bounds = clipBounds(result, clipPadding, sceneBoundsCache)
+            const isScene = sceneBoundsCache != null && `${result.file_path}:::${result.timestamp ?? 0}` in sceneBoundsCache
+            const aligned = !isScene && result.audio_segment_start_sec != null && bounds.start_sec === result.audio_segment_start_sec
             return (
-              <p className={`text-xs mt-0.5 ${aligned ? 'text-blue-400' : 'text-yellow-500'}`}>
+              <p className={`text-xs mt-0.5 ${isScene ? 'text-cyan-400' : aligned ? 'text-blue-400' : 'text-yellow-500'}`}>
                 reel: {bounds.start_sec.toFixed(1)}s – {bounds.end_sec.toFixed(1)}s
-                {result.audio_segment_start_sec != null && !aligned && (
+                {isScene && <span className="text-cyan-600 ml-1">≈scene</span>}
+                {!isScene && result.audio_segment_start_sec != null && !aligned && (
                   <span className="text-gray-600 ml-1">(seg {result.audio_segment_start_sec.toFixed(1)}–{result.audio_segment_end_sec!.toFixed(1)})</span>
                 )}
               </p>
             )
           })()}
+          {upvoteKeyword && (
+            <div className="mt-1">
+              <span className="inline-block text-xs px-1.5 py-0.5 bg-green-900 text-green-400 rounded truncate max-w-full" title={upvoteKeyword}>
+                {upvoteKeyword}
+              </span>
+            </div>
+          )}
+          {isUnlabeled && (
+            <div className="mt-1">
+              <span className="inline-block text-xs px-1.5 py-0.5 bg-lime-900 text-lime-400 rounded">
+                no label
+              </span>
+            </div>
+          )}
           {result.audio_rms_energy != null && (
             <div className="mt-1.5 flex items-center gap-1.5">
               <div className="flex-1 h-1 bg-gray-700 rounded-full overflow-hidden">
@@ -562,27 +803,53 @@ function ResultItem({
             </div>
           )}
           {/* Vote buttons */}
-          <div className="mt-1.5 flex gap-1">
-            <button
-              onClick={(e) => { e.stopPropagation(); onVote(result.file_path, result.audio_segment_index, 1) }}
-              className={`flex-1 py-0.5 rounded text-xs font-semibold transition ${upvoteCls}`}
-              aria-label="Thumbs up"
-              title={upvoteTitle}
-            >
-              {upvoteLabel}
-            </button>
-            <button
-              onClick={(e) => { e.stopPropagation(); onVote(result.file_path, result.audio_segment_index, -1) }}
-              className={`flex-1 py-0.5 rounded text-xs font-semibold transition ${
-                isDownvoted
-                  ? 'bg-red-900 text-white'
-                  : 'bg-gray-700 text-gray-400 hover:bg-red-900 hover:text-red-300'
-              }`}
-              aria-label="Thumbs down"
-              title="Demote this result"
-            >
-              👎
-            </button>
+          <div className="mt-1.5">
+            {tagOpen ? (
+              <div className="flex gap-1" onClick={e => e.stopPropagation()}>
+                <input
+                  ref={tagInputRef}
+                  value={tagValue}
+                  onChange={e => setTagValue(e.target.value)}
+                  onKeyDown={e => {
+                    e.stopPropagation()
+                    if (e.key === 'Enter') submitTag()
+                    else if (e.key === 'Escape') setTagOpen(false)
+                  }}
+                  className="flex-1 min-w-0 px-2 py-0.5 bg-gray-700 border border-indigo-500 rounded text-xs text-white focus:outline-none"
+                  placeholder="keyword…"
+                />
+                <button onClick={e => { e.stopPropagation(); submitTag() }} className="px-1.5 py-0.5 bg-indigo-600 hover:bg-indigo-500 rounded text-xs text-white">✓</button>
+                <button onClick={e => { e.stopPropagation(); setTagOpen(false) }} className="px-1.5 py-0.5 bg-gray-700 hover:bg-gray-600 rounded text-xs text-gray-400">✕</button>
+              </div>
+            ) : (
+              <div className="flex gap-1">
+                <button
+                  onClick={(e) => { e.stopPropagation(); handleVote(1) }}
+                  className={`flex-1 py-0.5 rounded text-xs font-semibold transition ${upvoteCls}`}
+                  aria-label="Thumbs up"
+                  title={upvoteTitle}
+                >
+                  {upvoteLabel}
+                </button>
+                <button
+                  onClick={(e) => { e.stopPropagation(); handleVote(-1) }}
+                  className={`flex-1 py-0.5 rounded text-xs font-semibold transition ${
+                    isDownvoted ? 'bg-red-900 text-white' : 'bg-gray-700 text-gray-400 hover:bg-red-900 hover:text-red-300'
+                  }`}
+                  aria-label="Thumbs down"
+                  title="Demote this result"
+                >
+                  👎
+                </button>
+                <button
+                  onClick={(e) => { e.stopPropagation(); openTag() }}
+                  className="px-1.5 py-0.5 rounded text-xs font-semibold bg-gray-700 text-gray-400 hover:bg-indigo-900 hover:text-indigo-300 transition"
+                  title="Tag with custom keyword"
+                >
+                  #
+                </button>
+              </div>
+            )}
           </div>
         </div>
       </div>
@@ -591,7 +858,9 @@ function ResultItem({
     return (
       <div
         ref={ref}
-        className="flex gap-4 p-4 bg-gray-800 rounded-lg hover:bg-gray-750 transition cursor-pointer group"
+        className={`flex gap-4 p-4 bg-gray-800 rounded-lg transition cursor-pointer group ring-2 ${
+          isManual ? 'ring-green-500' : isUnlabeled ? 'ring-lime-400' : isCascade ? 'ring-teal-600' : isDownvoted ? 'ring-red-900' : 'ring-transparent hover:ring-blue-500'
+        }`}
         role="listitem"
         onClick={onSelect}
         onKeyDown={(e) => {
@@ -644,7 +913,7 @@ function ResultItem({
           <p className="text-sm text-gray-400 mt-1">{result.file_type.toUpperCase()}</p>
           <p className="text-xs text-gray-500 mt-1">
             {result.file_type === 'video' && result.frame_index !== undefined
-              ? `Frame ${result.frame_index} @ ${(result.timestamp || 0).toFixed(1)}s${segmentDuration(result, clipPadding) ? ` · ${segmentDuration(result, clipPadding)}` : ''}`
+              ? `Frame ${result.frame_index} @ ${(result.timestamp || 0).toFixed(1)}s${segmentDuration(result, clipPadding, sceneBoundsCache) ? ` · ${segmentDuration(result, clipPadding, sceneBoundsCache)}` : ''}`
               : result.file_type === 'video'
               ? 'Video'
               : 'Image'}
@@ -673,7 +942,20 @@ function ResultItem({
               </span>
             </div>
           )}
-
+          {upvoteKeyword && (
+            <div className="mt-1">
+              <span className="inline-block text-xs px-1.5 py-0.5 bg-green-900 text-green-400 rounded truncate max-w-xs" title={upvoteKeyword}>
+                {upvoteKeyword}
+              </span>
+            </div>
+          )}
+          {isUnlabeled && (
+            <div className="mt-1">
+              <span className="inline-block text-xs px-1.5 py-0.5 bg-lime-900 text-lime-400 rounded">
+                no label
+              </span>
+            </div>
+          )}
         </div>
 
         {/* Actions */}
@@ -691,28 +973,51 @@ function ResultItem({
           >
             ≈ Similar
           </button>
-          <div className="flex gap-1">
-            <button
-              onClick={(e) => { e.stopPropagation(); onVote(result.file_path, result.audio_segment_index, 1) }}
-              className={`px-2 py-1 rounded text-xs font-semibold transition ${upvoteCls}`}
-              aria-label="Thumbs up"
-              title={upvoteTitle}
-            >
-              {upvoteLabel}
-            </button>
-            <button
-              onClick={(e) => { e.stopPropagation(); onVote(result.file_path, result.audio_segment_index, -1) }}
-              className={`px-2 py-1 rounded text-xs font-semibold transition ${
-                isDownvoted
-                  ? 'bg-red-900 text-white'
-                  : 'bg-gray-700 text-gray-400 hover:bg-red-900 hover:text-red-300'
-              }`}
-              aria-label="Thumbs down"
-              title="Demote this result"
-            >
-              👎
-            </button>
-          </div>
+          {tagOpen ? (
+            <div className="flex gap-1" onClick={e => e.stopPropagation()}>
+              <input
+                ref={tagInputRef}
+                value={tagValue}
+                onChange={e => setTagValue(e.target.value)}
+                onKeyDown={e => {
+                  if (e.key === 'Enter') submitTag()
+                  else if (e.key === 'Escape') setTagOpen(false)
+                }}
+                className="w-28 px-2 py-1 bg-gray-700 border border-indigo-500 rounded text-xs text-white focus:outline-none"
+                placeholder="keyword…"
+              />
+              <button onClick={e => { e.stopPropagation(); submitTag() }} className="px-2 py-1 bg-indigo-600 hover:bg-indigo-500 rounded text-xs text-white">✓</button>
+              <button onClick={e => { e.stopPropagation(); setTagOpen(false) }} className="px-2 py-1 bg-gray-700 hover:bg-gray-600 rounded text-xs text-gray-400">✕</button>
+            </div>
+          ) : (
+            <div className="flex gap-1">
+              <button
+                onClick={(e) => { e.stopPropagation(); handleVote(1) }}
+                className={`px-2 py-1 rounded text-xs font-semibold transition ${upvoteCls}`}
+                aria-label="Thumbs up"
+                title={upvoteTitle}
+              >
+                {upvoteLabel}
+              </button>
+              <button
+                onClick={(e) => { e.stopPropagation(); handleVote(-1) }}
+                className={`px-2 py-1 rounded text-xs font-semibold transition ${
+                  isDownvoted ? 'bg-red-900 text-white' : 'bg-gray-700 text-gray-400 hover:bg-red-900 hover:text-red-300'
+                }`}
+                aria-label="Thumbs down"
+                title="Demote this result"
+              >
+                👎
+              </button>
+              <button
+                onClick={(e) => { e.stopPropagation(); openTag() }}
+                className="px-2 py-1 rounded text-xs font-semibold bg-gray-700 text-gray-400 hover:bg-indigo-900 hover:text-indigo-300 transition"
+                title="Tag with custom keyword"
+              >
+                #
+              </button>
+            </div>
+          )}
         </div>
       </div>
     )

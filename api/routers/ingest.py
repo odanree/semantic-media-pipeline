@@ -475,6 +475,13 @@ _THUMB_CACHE_MAX = int(os.getenv("THUMBNAIL_CACHE_MAX", "500"))
 _thumb_cache: OrderedDict[tuple, bytes] = OrderedDict()
 _thumb_cache_lock = threading.Lock()
 
+# Semaphore — caps concurrent ffmpeg thumbnail extractions.
+# Without this, a 20-result search fires 20 simultaneous ffmpeg processes
+# which hammer the I/O layer (especially Docker bind mounts on Windows),
+# causing all thumbnails to load slowly. Queuing them is faster overall.
+_THUMB_MAX_CONCURRENT = int(os.getenv("THUMBNAIL_MAX_CONCURRENT", "6"))
+_thumb_sem = asyncio.Semaphore(_THUMB_MAX_CONCURRENT)
+
 
 def _cache_get(key: tuple) -> bytes | None:
     with _thumb_cache_lock:
@@ -578,23 +585,24 @@ async def get_thumbnail(request: Request, path: str, t: float = 0.0):
     ]
 
     stdout = b""
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=15)
-        if proc.returncode != 0 or not stdout:
-            log.warning(
-                "thumbnail: ffmpeg non-zero exit %s for %s: %s",
-                proc.returncode, path,
-                stderr[-300:].decode(errors="replace"),
+    async with _thumb_sem:
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
             )
-    except asyncio.TimeoutError:
-        log.warning("thumbnail: ffmpeg timed out for %s at t=%.1f", path, seek)
-    except Exception as e:
-        log.warning("thumbnail: ffmpeg exec error for %s: %s", path, e)
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=15)
+            if proc.returncode != 0 or not stdout:
+                log.warning(
+                    "thumbnail: ffmpeg non-zero exit %s for %s: %s",
+                    proc.returncode, path,
+                    stderr[-300:].decode(errors="replace"),
+                )
+        except asyncio.TimeoutError:
+            log.warning("thumbnail: ffmpeg timed out for %s at t=%.1f", path, seek)
+        except Exception as e:
+            log.warning("thumbnail: ffmpeg exec error for %s: %s", path, e)
 
     if not stdout:
         return Response(

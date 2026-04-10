@@ -660,3 +660,87 @@ def collection_info():
         }
     finally:
         db.close()
+
+
+# ---------------------------------------------------------------------------
+# /api/stats/training  — re-ranker training readiness dashboard
+# ---------------------------------------------------------------------------
+
+# Thresholds for good / great / best training data quality
+_GOALS = {
+    "queries":   {"good": 50,    "great": 150,   "best": 500},
+    "positives": {"good": 5_000, "great": 25_000, "best": 100_000},
+    "negatives": {"good": 5_000, "great": 25_000, "best": 100_000},
+    "ratio":     {"good": 0.5,   "great": 0.8,   "best": 1.0},   # neg/pos ratio (capped at 1)
+}
+
+
+def _tier(value: float, thresholds: dict) -> str:
+    if value >= thresholds["best"]:
+        return "best"
+    if value >= thresholds["great"]:
+        return "great"
+    if value >= thresholds["good"]:
+        return "good"
+    return "needs_data"
+
+
+@router.get("/stats/training")
+def training_readiness():
+    """Re-ranker training readiness — per-query vote counts and overall goals."""
+    db = _get_session()
+    try:
+        # Per-query vote counts — deduplicated to latest vote per (file_path, search_query)
+        # so re-upvotes don't inflate counts and cleared votes (vote=0) are excluded.
+        rows = db.execute(text("""
+            WITH latest AS (
+                SELECT DISTINCT ON (file_path, search_query)
+                       file_path, search_query, vote
+                FROM vote_events
+                WHERE search_query IS NOT NULL
+                  AND search_query NOT LIKE '>%%'
+                ORDER BY file_path, search_query, timestamp DESC
+            )
+            SELECT search_query,
+                   COUNT(*) FILTER (WHERE vote = 1)  AS positives,
+                   COUNT(*) FILTER (WHERE vote = -1) AS negatives
+            FROM latest
+            WHERE vote != 0
+            GROUP BY search_query
+            ORDER BY positives DESC
+        """)).fetchall()
+
+        queries = [
+            {
+                "query":     r[0],
+                "positives": int(r[1]),
+                "negatives": int(r[2]),
+                "ratio":     round(min(1.0, int(r[2]) / int(r[1])) if int(r[1]) > 0 else 0, 3),
+                "tier":      _tier(int(r[1]), _GOALS["positives"]),
+            }
+            for r in rows
+        ]
+
+        total_positives = sum(q["positives"] for q in queries)
+        total_negatives = sum(q["negatives"] for q in queries)
+        total_queries   = len(queries)
+        overall_ratio   = round(min(1.0, total_negatives / total_positives) if total_positives else 0, 3)
+
+        return {
+            "queries": queries,
+            "totals": {
+                "queries":   total_queries,
+                "positives": total_positives,
+                "negatives": total_negatives,
+                "ratio":     overall_ratio,
+            },
+            "tiers": {
+                "queries":   _tier(total_queries,   _GOALS["queries"]),
+                "positives": _tier(total_positives, _GOALS["positives"]),
+                "negatives": _tier(total_negatives, _GOALS["negatives"]),
+                "ratio":     _tier(overall_ratio,   _GOALS["ratio"]),
+            },
+            "goals": _GOALS,
+        }
+    finally:
+        db.close()

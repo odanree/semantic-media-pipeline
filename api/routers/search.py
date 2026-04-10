@@ -16,7 +16,7 @@ import redis
 import torch
 from celery import Celery
 from fastapi import APIRouter, HTTPException, Request
-from rate_limit import limiter, LIMIT_SEARCH, LIMIT_SEARCH_VEC
+from rate_limit import limiter, LIMIT_SEARCH, LIMIT_SEARCH_VEC, LIMIT_SCENE_BOUNDS
 from pydantic import BaseModel
 from qdrant_client import QdrantClient
 from qdrant_client.models import Filter, FieldCondition, MatchValue, ScrollRequest, Range, PointIdsList
@@ -63,7 +63,7 @@ qdrant_client = QdrantClient(
     port=QDRANT_PORT,
     grpc_port=QDRANT_GRPC_PORT,
     prefer_grpc=QDRANT_PREFER_GRPC,
-    timeout=30,
+    timeout=60,
 )
 
 # ---------------------------------------------------------------------------
@@ -170,6 +170,8 @@ class SearchRequest(BaseModel):
     construction_phase: Optional[str] = None  # e.g. "Phase 3: Rough MEP"
     # --- Custom label filter ---
     label: Optional[str] = None              # e.g. "UNC" — custom drive/collection label
+    # --- Unvoted filter ---
+    exclude_voted: bool = False              # True = only return frames with no user_vote
     # --- Re-ranker ---
     oversample: Optional[int] = None  # override RERANKER_OVERSAMPLE for this request
 
@@ -498,7 +500,17 @@ async def search_media(request: Request, body: SearchRequest):
             filter_conditions.append(
                 FieldCondition(key="label", match=MatchValue(value=body.label))
             )
-        audio_filter = Filter(must=filter_conditions) if filter_conditions else None
+        must_not_conditions = []
+        if body.exclude_voted:
+            # Exclude any point that has user_vote set (1 or -1).
+            # IsNullCondition requires a special index; must_not+range works with the existing integer index.
+            must_not_conditions.append(
+                FieldCondition(key="user_vote", range=Range(gte=-1, lte=1))
+            )
+        audio_filter = Filter(
+            must=filter_conditions if filter_conditions else None,
+            must_not=must_not_conditions if must_not_conditions else None,
+        ) if (filter_conditions or must_not_conditions) else None
 
         filter_only = audio_filter is not None and not body.query.strip()
 
@@ -924,9 +936,12 @@ async def set_vote(request: Request, body: VoteRequest):
             if scroll_result[0].payload:
                 current_label_dict = scroll_result[0].payload.get("vote_label") or {}
             vote_payload: dict = {"user_vote": body.vote}
-            if body.vote == 1 and body.search_query:
+            if body.search_query and not body.search_query.startswith(">"):
                 updated_labels = dict(current_label_dict)
-                updated_labels[body.search_query] = 1.0  # manual vote = perfect match
+                if body.vote in (1, -1):
+                    updated_labels[body.search_query] = float(body.vote)
+                elif body.vote == 0 and body.search_query in updated_labels:
+                    del updated_labels[body.search_query]
                 vote_payload["vote_label"] = updated_labels
             qdrant_client.set_payload(
                 collection_name=QDRANT_COLLECTION_NAME,
@@ -952,6 +967,7 @@ async def set_vote(request: Request, body: VoteRequest):
             celery_app.send_task(
                 "tasks.cascade_votes",
                 args=[body.file_path, batch_id, 0.9, body.search_query],
+                queue="gpu",
             )
 
         return {
@@ -965,6 +981,55 @@ async def set_vote(request: Request, body: VoteRequest):
     except HTTPException:
         raise
     except Exception as e:
+        import grpc
+        if isinstance(e, grpc.RpcError) and e.code() == grpc.StatusCode.DEADLINE_EXCEEDED:
+            # Qdrant segment optimizer held a write lock; retry once after a short wait
+            import asyncio as _aio
+            await _aio.sleep(2)
+            try:
+                scroll_result, _ = qdrant_client.scroll(
+                    collection_name=QDRANT_COLLECTION_NAME,
+                    scroll_filter=Filter(must=conditions),
+                    limit=10000,
+                    with_payload=True,
+                    with_vectors=False,
+                )
+                if scroll_result:
+                    point_ids = [point.id for point in scroll_result]
+                    points_selector = PointIdsList(points=point_ids)
+                    if body.vote == 0:
+                        qdrant_client.delete_payload(
+                            collection_name=QDRANT_COLLECTION_NAME,
+                            keys=["user_vote"],
+                            points=points_selector,
+                        )
+                    else:
+                        current_label_dict = {}
+                        if scroll_result[0].payload:
+                            current_label_dict = scroll_result[0].payload.get("vote_label") or {}
+                        vote_payload: dict = {"user_vote": body.vote}
+                        if body.search_query and not body.search_query.startswith(">"):
+                            updated_labels = dict(current_label_dict)
+                            if body.vote in (1, -1):
+                                updated_labels[body.search_query] = float(body.vote)
+                            elif body.vote == 0 and body.search_query in updated_labels:
+                                del updated_labels[body.search_query]
+                            vote_payload["vote_label"] = updated_labels
+                        qdrant_client.set_payload(
+                            collection_name=QDRANT_COLLECTION_NAME,
+                            payload=vote_payload,
+                            points=points_selector,
+                        )
+                    return {
+                        "patched": len(point_ids),
+                        "file_path": body.file_path,
+                        "audio_segment_index": body.audio_segment_index,
+                        "vote": body.vote,
+                        "batch_id": batch_id,
+                    }
+            except Exception as retry_err:
+                print(f"Vote retry also failed: {retry_err}")
+                raise HTTPException(status_code=503, detail="Qdrant busy — try again in a moment")
         print(f"Vote error: {e}")
         import traceback
         traceback.print_exc()
@@ -1282,3 +1347,207 @@ async def search_by_vector(
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+class SceneBoundsRequest(BaseModel):
+    file_path: str
+    timestamp: float
+    threshold: float = 0.75
+    window_sec: float = 60.0  # max look-ahead/behind from anchor
+
+
+@router.post("/scene-bounds")
+@limiter.limit(LIMIT_SCENE_BOUNDS)
+async def scene_bounds(request: Request, body: SceneBoundsRequest):
+    """
+    Find natural scene boundaries around a keyframe using frame-similarity walk.
+
+    Fetches all stored frame vectors for the file within ±window_sec of the
+    anchor timestamp, then walks outward from the anchor frame computing cosine
+    similarity.  Stops when similarity drops below threshold.
+
+    Returns the timestamp of the last in-bounds frame on each side — giving
+    scene-aware clip bounds instead of a fixed ±N second window.
+    """
+    anchor_filter = Filter(must=[
+        FieldCondition(key="file_path", match=MatchValue(value=body.file_path)),
+        FieldCondition(
+            key="timestamp",
+            range=Range(
+                gte=body.timestamp - body.window_sec,
+                lte=body.timestamp + body.window_sec,
+            ),
+        ),
+    ])
+
+    frames = []
+    offset = None
+    while True:
+        batch, next_offset = qdrant_client.scroll(
+            collection_name=QDRANT_COLLECTION_NAME,
+            scroll_filter=anchor_filter,
+            limit=500,
+            offset=offset,
+            with_vectors=True,
+            with_payload=["timestamp"],
+        )
+        frames.extend(batch)
+        if next_offset is None:
+            break
+        offset = next_offset
+
+    if not frames:
+        raise HTTPException(status_code=404, detail="No frames found near timestamp")
+
+    frames.sort(key=lambda p: (p.payload or {}).get("timestamp", 0))
+    timestamps = [float((p.payload or {}).get("timestamp", 0)) for p in frames]
+    vectors = [np.array(p.vector, dtype=np.float32) for p in frames]
+
+    # Find the frame closest to the requested timestamp
+    anchor_idx = min(range(len(timestamps)), key=lambda i: abs(timestamps[i] - body.timestamp))
+    anchor_vec = vectors[anchor_idx]
+    anchor_norm = np.linalg.norm(anchor_vec)
+    if anchor_norm > 0:
+        anchor_vec = anchor_vec / anchor_norm
+
+    # Walk backward — last frame still above threshold is scene start
+    start_idx = anchor_idx
+    for i in range(anchor_idx - 1, -1, -1):
+        v = vectors[i]
+        norm = np.linalg.norm(v)
+        sim = float(np.dot(anchor_vec, v / norm)) if norm > 0 else 0.0
+        if sim < body.threshold:
+            break
+        start_idx = i
+
+    # Walk forward — last frame still above threshold is scene end
+    end_idx = anchor_idx
+    for i in range(anchor_idx + 1, len(vectors)):
+        v = vectors[i]
+        norm = np.linalg.norm(v)
+        sim = float(np.dot(anchor_vec, v / norm)) if norm > 0 else 0.0
+        if sim < body.threshold:
+            break
+        end_idx = i
+
+    return {
+        "start_sec": timestamps[start_idx],
+        "end_sec": timestamps[end_idx],
+        "anchor_sec": timestamps[anchor_idx],
+        "frames_scanned": len(frames),
+    }
+
+
+class FrameLabelsRequest(BaseModel):
+    file_path: str
+    timestamp: Optional[float] = None
+    top_k: int = 5
+
+
+@router.post("/frame-labels")
+@limiter.limit(LIMIT_SEARCH)
+async def get_frame_labels(request: Request, body: FrameLabelsRequest):
+    """
+    Reverse-lookup the most semantically matching labels for a stored frame.
+
+    Looks up the frame's stored CLIP image vector in Qdrant, then scores it
+    against all distinct search_query values seen in vote_events (the vocabulary).
+    Returns top-K labels ranked by cosine similarity (image vec vs text vec).
+
+    No CLIP inference on the image — reuses the stored vector.
+    Text embeddings are Redis-cached via _get_query_embedding.
+    """
+    # 1. Fetch the frame's stored vector from Qdrant
+    source_conditions = [FieldCondition(key="file_path", match=MatchValue(value=body.file_path))]
+
+    if body.timestamp is not None:
+        windowed_result, _ = qdrant_client.scroll(
+            collection_name=QDRANT_COLLECTION_NAME,
+            scroll_filter=Filter(must=source_conditions + [
+                FieldCondition(
+                    key="timestamp",
+                    range=Range(gte=body.timestamp - 5.0, lte=body.timestamp + 5.0),
+                )
+            ]),
+            limit=10,
+            with_payload=False,
+            with_vectors=True,
+        )
+    else:
+        windowed_result = []
+
+    if windowed_result:
+        scroll_result = windowed_result
+    else:
+        scroll_result, _ = qdrant_client.scroll(
+            collection_name=QDRANT_COLLECTION_NAME,
+            scroll_filter=Filter(must=source_conditions),
+            limit=20,
+            with_payload=False,
+            with_vectors=True,
+        )
+
+    if not scroll_result:
+        raise HTTPException(status_code=404, detail="File not found in index")
+
+    if body.timestamp is not None and len(scroll_result) > 1:
+        source_point = min(
+            scroll_result,
+            key=lambda p: abs(((p.payload or {}).get("timestamp") or 0) - body.timestamp),
+        )
+    else:
+        source_point = scroll_result[0]
+
+    if not source_point.vector:
+        raise HTTPException(status_code=500, detail="Frame has no stored vector")
+
+    image_vec = np.array(source_point.vector, dtype=np.float32)
+    image_norm = np.linalg.norm(image_vec)
+    if image_norm == 0:
+        raise HTTPException(status_code=500, detail="Frame vector is zero")
+    image_vec = image_vec / image_norm
+
+    # 2. Pull vocabulary: distinct non-null search_query values from vote_events
+    try:
+        engine = await get_async_engine()
+        async with engine.begin() as conn:
+            from sqlalchemy import select
+            result = await conn.execute(
+                select(VoteEvent.search_query)
+                .where(VoteEvent.search_query.isnot(None))
+                .where(~VoteEvent.search_query.startswith(">"))
+                .distinct()
+            )
+            vocabulary = [row[0] for row in result.fetchall()]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to load vocabulary: {str(e)}")
+
+    if not vocabulary:
+        return {"labels": [], "vocabulary_size": 0}
+
+    # 3. Encode vocabulary terms via CLIP (Redis-cached per term)
+    model = get_clip_model()
+    text_vecs = np.array(
+        [_get_query_embedding(term, model) for term in vocabulary],
+        dtype=np.float32,
+    )  # shape: (N, D)
+
+    # Row-normalise text vectors
+    norms = np.linalg.norm(text_vecs, axis=1, keepdims=True)
+    norms = np.where(norms == 0, 1.0, norms)
+    text_vecs = text_vecs / norms
+
+    # 4. Cosine similarity: image_vec (D,) · text_vecs (N, D)^T → (N,)
+    scores = text_vecs @ image_vec
+
+    top_k = min(body.top_k, len(vocabulary))
+    top_indices = np.argpartition(scores, -top_k)[-top_k:]
+    top_indices = top_indices[np.argsort(scores[top_indices])[::-1]]
+
+    return {
+        "labels": [
+            {"label": vocabulary[i], "score": round(float(scores[i]), 4)}
+            for i in top_indices
+        ],
+        "vocabulary_size": len(vocabulary),
+    }

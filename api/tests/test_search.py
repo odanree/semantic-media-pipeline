@@ -710,3 +710,92 @@ def test_lookup_picks_closest_timestamp(client, mock_qdrant):
     data = client.post("/api/lookup", json={"file_path": "/mnt/source/clip.mp4", "timestamp": 9.5}).json()
     assert data["results"][0]["timestamp"] == 10.0
     mock_qdrant.scroll.side_effect = None
+
+
+# ---------------------------------------------------------------------------
+# /api/scene-bounds — scene boundary detection via frame-similarity walk
+# ---------------------------------------------------------------------------
+
+def _make_frame(timestamp: float, vector: list) -> MagicMock:
+    """Build a mock Qdrant point with timestamp payload and a vector."""
+    point = MagicMock()
+    point.payload = {"timestamp": timestamp}
+    point.vector = vector
+    return point
+
+
+def test_scene_bounds_missing_file_path_returns_422(client):
+    resp = client.post("/api/scene-bounds", json={"timestamp": 10.0})
+    assert resp.status_code == 422
+
+
+def test_scene_bounds_missing_timestamp_returns_422(client):
+    resp = client.post("/api/scene-bounds", json={"file_path": "video.mp4"})
+    assert resp.status_code == 422
+
+
+def test_scene_bounds_no_frames_returns_404(client, mock_qdrant):
+    mock_qdrant.scroll.return_value = ([], None)
+    resp = client.post("/api/scene-bounds", json={"file_path": "video.mp4", "timestamp": 10.0})
+    assert resp.status_code == 404
+
+
+def test_scene_bounds_returns_required_fields(client, mock_qdrant):
+    v = [1.0, 0.0, 0.0]
+    frames = [_make_frame(8.0, v), _make_frame(10.0, v), _make_frame(12.0, v)]
+    mock_qdrant.scroll.return_value = (frames, None)
+    resp = client.post("/api/scene-bounds", json={"file_path": "video.mp4", "timestamp": 10.0})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "start_sec" in data
+    assert "end_sec" in data
+    assert "anchor_sec" in data
+    assert "frames_scanned" in data
+
+
+def test_scene_bounds_frames_scanned_matches_batch_size(client, mock_qdrant):
+    v = [1.0, 0.0, 0.0]
+    frames = [_make_frame(float(t), v) for t in range(5)]
+    mock_qdrant.scroll.return_value = (frames, None)
+    resp = client.post("/api/scene-bounds", json={"file_path": "video.mp4", "timestamp": 2.0})
+    assert resp.json()["frames_scanned"] == 5
+
+
+def test_scene_bounds_all_similar_spans_full_window(client, mock_qdrant):
+    """All frames with identical vectors → bounds span from first to last frame."""
+    v = [1.0, 0.0, 0.0]
+    frames = [_make_frame(8.0, v), _make_frame(10.0, v), _make_frame(12.0, v)]
+    mock_qdrant.scroll.return_value = (frames, None)
+    data = client.post("/api/scene-bounds", json={"file_path": "video.mp4", "timestamp": 10.0}).json()
+    assert data["start_sec"] == 8.0
+    assert data["end_sec"] == 12.0
+    assert data["anchor_sec"] == 10.0
+
+
+def test_scene_bounds_orthogonal_frame_stops_walk(client, mock_qdrant):
+    """A frame pointing in a different direction stops the similarity walk."""
+    anchor_v = [1.0, 0.0, 0.0]
+    ortho_v = [0.0, 1.0, 0.0]  # cosine similarity = 0 → below any threshold
+    frames = [
+        _make_frame(8.0, ortho_v),    # backward: dissimilar — walk stops at anchor
+        _make_frame(10.0, anchor_v),  # anchor
+        _make_frame(12.0, anchor_v),  # forward: similar — walk continues
+    ]
+    mock_qdrant.scroll.return_value = (frames, None)
+    data = client.post(
+        "/api/scene-bounds",
+        json={"file_path": "video.mp4", "timestamp": 10.0, "threshold": 0.75},
+    ).json()
+    assert data["start_sec"] == 10.0   # backward walk stopped at anchor
+    assert data["end_sec"] == 12.0
+
+
+def test_scene_bounds_paginated_scroll_combines_batches(client, mock_qdrant):
+    """scroll() returning a next_offset triggers a second page fetch."""
+    v = [1.0, 0.0, 0.0]
+    batch1 = [_make_frame(8.0, v), _make_frame(9.0, v)]
+    batch2 = [_make_frame(10.0, v), _make_frame(11.0, v)]
+    mock_qdrant.scroll.side_effect = [(batch1, "cursor"), (batch2, None)]
+    data = client.post("/api/scene-bounds", json={"file_path": "video.mp4", "timestamp": 10.0}).json()
+    assert data["frames_scanned"] == 4
+    mock_qdrant.scroll.side_effect = None

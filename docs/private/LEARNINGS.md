@@ -33,6 +33,8 @@ Quick-reference map from question type to the best entry from this project.
   - [C1. Thumbnail Latency — Dual-Layer Cache (CDN + LRU)](#c1-thumbnail-latency--dual-layer-cache-cdn--lru) `[BQ: The Optimization]`
   - [C2. Qdrant Batch Upsert — Individual Calls Don't Scale](#c2-qdrant-batch-upsert--individual-calls-dont-scale) `[BQ: The Pressure]`
   - [C3. Video Frame Seeking — Memory vs I/O Trade-Off](#c3-video-frame-seeking--memory-vs-io-trade-off)
+  - [C4. Vector DB Bulk Update Pattern — Co-locate Compute with Data](#c4-vector-db-bulk-update-pattern--co-locate-compute-with-data) `[BQ: The Optimization (systems)]`
+  - [C5. Qdrant IsNull Filter — Requires a Payload Index](#c5-qdrant-isnull-filter--requires-a-payload-index)
 - [D — Testing & Production Safety](#d--testing--production-safety)
   - [D1. Mocked Tests Passing, Production Failing — qdrant-client API Mismatch](#d1-mocked-tests-passing-production-failing--qdrant-client-api-mismatch) `[BQ: The Complex Debug]`
   - [D2. Schema Drift — init-db.sql ↔ Migrations Diverge](#d2-schema-drift--init-dbsql--migrations-diverge) `[BQ: The High Bar]`
@@ -308,6 +310,142 @@ YOLO processing: 8 hours → 3.5 hours (2.3× speedup). Seek time dropped from 7
 ### Lesson
 
 **When choosing between compute and memory, measure which is actually saturated.** Streaming and buffering beats repeated seeking when RAM allows.
+
+---
+
+## C4. Vector DB Bulk Update Pattern: Co-locate Compute with Data
+
+**Component:** `scripts/apply_yolo_payload.py`, `scripts/clean_frame_shortcut_labels.py`
+**Severity:** Medium — backfill operations 20× slower than necessary without this pattern
+
+### What Broke
+
+Backfill scripts running on Windows that called Qdrant one point at a time were taking ~55 minutes for 1.88M vectors. The code was correct but the topology was wrong — each call crossed the Docker NAT stack (~2ms round trip) instead of hitting the Qdrant socket directly (~0.1ms).
+
+### Root Cause
+
+Two compounding problems:
+
+1. **Per-call NAT overhead:** Every `set_payload()` call from the Windows host crosses Docker's userspace NAT bridge. At 2ms × 1.88M points = 62 minutes of pure network wait, regardless of what the call does.
+
+2. **One call per point:** The naive loop called `set_payload()` once per point. But Qdrant (like SQL `IN (...)`) accepts a list of point IDs per call. Points sharing the same new payload value can be batched into a single call.
+
+### Fix: Two-phase in-container pattern
+
+**Phase 1 — Compute on Windows, write JSON:**
+```python
+# Scan, compute updates, write to disk
+patches = [{"id": point_id, "label": new_value}, ...]
+json.dump(patches, open("updates.json", "w"))
+```
+
+**Phase 2 — Apply inside container (no NAT):**
+```powershell
+docker cp updates.json lumen2-worker:/tmp/updates.json
+docker exec lumen2-worker python /app/scripts/apply_updates.py /tmp/updates.json
+```
+
+**Inside the apply script — group by payload value:**
+```python
+# Group points that share the same new value → 1 call per group, not 1 per point
+groups = defaultdict(list)
+for r in records:
+    groups[r["label"]].append(r["id"])
+for label, ids in groups.items():
+    client.set_payload(payload={"label": label}, points=ids, wait=False)
+```
+
+### Result
+
+Same 1.88M-vector backfill: **~55 minutes → ~3 minutes** (18× speedup).
+- NAT elimination: 2ms → 0.1ms per call (20×)
+- Grouping: N calls → M calls where M = number of distinct new values (often M << N)
+
+### Generalisation
+
+This is not Qdrant-specific — it's a Docker networking issue that affects any containerised database:
+
+| Technology | Same problem | Mitigation |
+|---|---|---|
+| Pinecone (cloud) | ~100ms per call over internet | Batch upsert (100 vectors/call recommended) |
+| Weaviate | Docker NAT | Batch import API |
+| Milvus | Same | `insert()` takes a list, not a single vector |
+| pgvector / Postgres | Same | `COPY` or bulk `INSERT ... VALUES (...)` |
+| Redis | Same | Pipeline / `MULTI`/`EXEC` |
+| Elasticsearch | Same | Bulk API — one HTTP call for N documents |
+
+The grouping optimisation is just SQL thinking applied to a vector DB:
+```sql
+-- Bad: N round trips
+UPDATE points SET label = 'cat' WHERE id = 1;
+-- Good: 1 round trip
+UPDATE points SET label = 'cat' WHERE id IN (1, 2, ...);
+```
+
+### Lesson
+
+**Co-locate compute with data for bulk writes.** Measure round-trip count × per-call overhead first — it often dominates over the actual work. The two-phase scan-then-apply pattern (compute remotely, apply locally) generalises to any system where the DB is behind a network boundary.
+
+---
+
+### [BQ] Behavioral Question: The Optimization (systems-level)
+
+> **"Tell me about a time you made something significantly faster. Walk me through how you diagnosed it and what you changed."**
+
+**SHORT:** A backfill across 1.88M vectors was going to take 55 minutes. I profiled it, found 95% of the time was network wait from Docker NAT — not the actual DB work. Two changes: moved the apply step inside the container to eliminate NAT, and grouped points by shared payload value so 1.88M points became a few hundred Qdrant calls. Same correctness, 18× faster.
+
+**STAR:**
+
+- **Situation:** Built the Semantic Media Pipeline — 1.88M CLIP-embedded video frames in Qdrant. Needed to backfill a new `vote_label` payload field to fix corrupted labels written by an earlier bug.
+- **Task:** Script needed to touch potentially every point. Estimated runtime was 55 minutes — too slow for an interactive cleanup operation.
+- **Action:** Profiled the per-call latency: 2ms from Windows host (Docker NAT) vs 0.1ms from inside the container. Rewrote the script as two phases: (1) scan and compute updates on Windows, serialize to JSON; (2) `docker cp` the file into the worker container and apply from inside. Additionally, instead of one `set_payload()` per point, grouped all points sharing the same new value and issued one call per group. The Qdrant client accepts a list of point IDs — this is the same principle as SQL's `WHERE id IN (...)`.
+- **Result:** Runtime dropped from ~55 minutes to ~3 minutes — 18× speedup. No code logic changed, only the execution topology and call batching. The pattern is now documented in CLAUDE.md as the required approach for all bulk Qdrant writes.
+
+**What I'd say to generalize it:** "This isn't Qdrant-specific. Any database behind a network boundary — Pinecone, Weaviate, Milvus, Elasticsearch — has the same per-call overhead. Pinecone's own docs recommend batching 100 vectors per upsert call for exactly this reason. The principle is: measure round-trip count times per-call latency first; it often dominates the actual compute cost at scale."
+
+---
+
+## C5. Qdrant "Unvoted" Filter — IsNullCondition Pitfalls
+
+**Component:** `api/routers/search.py`, Qdrant collection schema
+**Severity:** Medium — filter silently returns 0 results with no error
+
+### What Broke
+
+Added an "Unvoted Only" toggle to the search UI. The backend used `IsNullCondition` to filter for points where `user_vote` is absent. The filter returned 0 results every time, even though scrolling the collection confirmed many points had no `user_vote` field.
+
+### Root Cause — Two layers
+
+**Layer 1:** `IsNullCondition` requires a payload index on the field. Without it, the filter silently returns nothing — no error, no warning. Created an integer index via the Qdrant REST API (Python client timed out on 2.7M vectors — REST call is non-blocking):
+
+```bash
+curl -X PUT "http://localhost:6340/collections/media_vectors2/index" \
+  -H "Content-Type: application/json" \
+  -d '{"field_name": "user_vote", "field_schema": "integer"}'
+```
+
+**Layer 2:** Even after the index was built, `IsNullCondition` still returned 0 results. Integer indexes only track non-null values — the null-existence path in Qdrant 1.17 doesn't behave as expected via the Python client.
+
+### Fix
+
+Inverted the logic: use `must_not` with a range filter to exclude points that *have* a vote, leaving only the unvoted ones:
+
+```python
+Filter(
+    must_not=[FieldCondition(key="user_vote", range=Range(gte=-1, lte=1))]
+)
+```
+
+This works correctly with the integer index and is semantically equivalent to "user_vote is null."
+
+### Lesson
+
+**Don't rely on `IsNullCondition` for sparse fields in Qdrant.** The inversion pattern (`must_not` + range/match) is more reliable and works with standard integer/keyword indexes. When filtering for absence of a field, think: *"exclude points that have it"* rather than *"include points missing it."*
+
+Checklist when adding a new filterable field:
+1. Add `create_payload_index` to API startup (see `main.py`) — idempotent, safe on every restart
+2. For large collections (>1M points), use the REST API to create indexes — Python client default timeout is too short
+3. Test filters with a direct `scroll()` call before wiring into search
 
 ---
 

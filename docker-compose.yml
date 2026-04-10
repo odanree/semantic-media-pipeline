@@ -143,7 +143,7 @@ services:
       - proxies_data:/mnt/proxies
       - /usr/lib/wsl/lib:/usr/lib/wsl/lib
       - ${L1_MEDIA_1}:/mnt/source:ro
-      - ${L1_MEDIA_2:-/tmp}:/mnt/i-media:ro
+      # - ${L1_MEDIA_2:-/tmp}:/mnt/i-media:ro  # disabled: I: drive conflict when lumen2 running
       - ${FRAME_CACHE_DIR:-/tmp/lumen_frame_cache}:/mnt/frame_cache
       - ./models:/app/models
       - ${L1_SIDECAR_DIR:-/mnt/lumen1-sidecars}:/mnt/sidecars
@@ -184,14 +184,14 @@ services:
       - PROXY_ROOT=${PROXY_ROOT:-/mnt/proxies}
       - SIDECAR_ROOT=/mnt/sidecars
       - LUMEN_PATH_MAP_0=/mnt/source:J:/lumen-media
-      - LUMEN_PATH_MAP_1=/mnt/i-media:I:/I-media
+      # - LUMEN_PATH_MAP_1=/mnt/i-media:I:/I-media  # disabled: I: drive conflict when lumen2 running
       - LD_LIBRARY_PATH=/usr/lib/wsl/lib
     command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
     volumes:
       - media_data:/data/media
       - proxies_data:/mnt/proxies:ro
       - ${L1_MEDIA_1}:/mnt/source:ro
-      - ${L1_MEDIA_2:-/tmp}:/mnt/i-media:ro
+      # - ${L1_MEDIA_2:-/tmp}:/mnt/i-media:ro  # disabled: I: drive conflict when lumen2 running
       - ./api:/app
       - hf_cache:/root/.cache/huggingface
       - ${L1_SIDECAR_DIR:-/mnt/lumen1-sidecars}:/mnt/sidecars:ro
@@ -232,7 +232,7 @@ services:
     volumes:
       - media_data:/data/media
       - ${L1_MEDIA_1}:/mnt/source:ro
-      - ${L1_MEDIA_2:-/tmp}:/mnt/i-media:ro
+      # - ${L1_MEDIA_2:-/tmp}:/mnt/i-media:ro  # disabled: I: drive conflict when lumen2 running
     depends_on:
       - api
     networks:

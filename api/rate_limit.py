@@ -5,11 +5,12 @@ Limits are per client IP. Redis backend (lumen-redis) persists counters
 across container restarts and is accurate across multiple worker processes.
 
 Per-route limits (override via env vars to tune without rebuild):
-  POST /api/search          RATE_LIMIT_SEARCH      default 30/minute
-  POST /api/search-vector   RATE_LIMIT_SEARCH_VEC  default 60/minute
-  GET  /api/stream          RATE_LIMIT_STREAM       default 60/minute
-  GET  /api/thumbnail       RATE_LIMIT_THUMBNAIL   default 120/minute
-  everything else           RATE_LIMIT_DEFAULT     default 200/minute
+  POST /api/search          RATE_LIMIT_SEARCH        default 30/minute
+  POST /api/search-vector   RATE_LIMIT_SEARCH_VEC    default 60/minute
+  GET  /api/stream          RATE_LIMIT_STREAM        default 60/minute
+  GET  /api/thumbnail       RATE_LIMIT_THUMBNAIL     default 120/minute
+  POST /api/scene-bounds    RATE_LIMIT_SCENE_BOUNDS  default 300/minute (burst: ~20 parallel clips)
+  everything else           RATE_LIMIT_DEFAULT       default 200/minute
 
 429 responses include a Retry-After header automatically via slowapi.
 """
@@ -29,13 +30,14 @@ _storage_uri = (
 )
 
 # Per-route limit strings — configurable without rebuilding the container.
-LIMIT_SEARCH     = os.getenv("RATE_LIMIT_SEARCH",     "30/minute")
-LIMIT_SEARCH_VEC = os.getenv("RATE_LIMIT_SEARCH_VEC", "60/minute")
-LIMIT_STREAM     = os.getenv("RATE_LIMIT_STREAM",     "60/minute")
-LIMIT_THUMBNAIL  = os.getenv("RATE_LIMIT_THUMBNAIL",  "120/minute")
-LIMIT_ASK        = os.getenv("RATE_LIMIT_ASK",        "10/minute")
-LIMIT_PLAYLIST   = os.getenv("RATE_LIMIT_PLAYLIST",   "5/minute")
-LIMIT_DEFAULT    = os.getenv("RATE_LIMIT_DEFAULT",    "200/minute")
+LIMIT_SEARCH        = os.getenv("RATE_LIMIT_SEARCH",        "30/minute")
+LIMIT_SEARCH_VEC    = os.getenv("RATE_LIMIT_SEARCH_VEC",    "60/minute")
+LIMIT_STREAM        = os.getenv("RATE_LIMIT_STREAM",        "60/minute")
+LIMIT_THUMBNAIL     = os.getenv("RATE_LIMIT_THUMBNAIL",     "120/minute")
+LIMIT_ASK           = os.getenv("RATE_LIMIT_ASK",           "10/minute")
+LIMIT_PLAYLIST      = os.getenv("RATE_LIMIT_PLAYLIST",      "5/minute")
+LIMIT_SCENE_BOUNDS  = os.getenv("RATE_LIMIT_SCENE_BOUNDS",  "300/minute")
+LIMIT_DEFAULT       = os.getenv("RATE_LIMIT_DEFAULT",       "200/minute")
 
 limiter = Limiter(
     key_func=get_remote_address,   # rate-key = client IP
