@@ -235,11 +235,14 @@ Only include groups with count > 0. EIO must always be operator_required."""
             llm.complete(
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0,
-                max_tokens=512,
+                max_tokens=2048,
             ),
             timeout=float(os.getenv("RECOVERY_LLM_TIMEOUT", "10")),
         )
         content = raw.strip()
+        # Strip thinking tokens (gemma4, qwen3 extended-thinking models)
+        import re as _re
+        content = _re.sub(r"<think>.*?</think>", "", content, flags=_re.DOTALL).strip()
         # Strip markdown code fences if present
         if content.startswith("```"):
             content = content.split("```")[1]
@@ -331,7 +334,7 @@ async def execute_recovery(state: RecoveryState) -> dict:  # pragma: no cover
                         SET processing_status    = 'pending',
                             error_message        = NULL,
                             embedding_started_at = NULL
-                        WHERE id = ANY(:ids::uuid[])
+                        WHERE id = ANY(CAST(:ids AS uuid[]))
                           AND processing_status IN ('error', 'processing')
                     """),
                     {"ids": file_ids},
@@ -401,14 +404,15 @@ async def audit(state: RecoveryState) -> dict:  # pragma: no cover
                 db.execute(
                     text("""
                         INSERT INTO audit_logs
-                            (id, timestamp, endpoint, method, response_status, response_ms)
+                            (id, timestamp, endpoint, method, response_status, response_ms, details)
                         VALUES
-                            (:id, :ts, :endpoint, 'POST', 200, 0)
+                            (:id, :ts, :endpoint, 'POST', 200, 0, :details)
                     """),
                     {
                         "id": str(uuid.uuid4()),
                         "ts": datetime.now(timezone.utc),
                         "endpoint": f"/api/admin/recovery/scan:{state['scan_id']}",
+                        "details": summary,
                     },
                 )
                 db.commit()

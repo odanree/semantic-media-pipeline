@@ -72,6 +72,7 @@ class AuditLog(Base):
     response_ms = Column(Integer, nullable=False)
     client_ip = Column(String(45), nullable=True)   # IPv4 or IPv6
     user_agent = Column(String(512), nullable=True)
+    details = Column(Text, nullable=True)  # structured summary (e.g. recovery agent output)
 
     def __repr__(self) -> str:
         return (

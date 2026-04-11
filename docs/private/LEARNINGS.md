@@ -19,6 +19,9 @@ Quick-reference map from question type to the best entry from this project.
 | 5 | **The Optimization** — made something significantly faster | [C1](#c1-thumbnail-latency--dual-layer-cache-cdn--lru) | 2.9s → 180ms via CDN + in-process LRU |
 | 6 | **The Pressure** — high-stakes situation, stayed calm | [C2](#c2-qdrant-batch-upsert--individual-calls-dont-scale) | Write throughput cliff at 10K vectors |
 | 7 | **The High Bar** — asked hard questions of your own code | [D2](#d2-schema-drift--init-dbsql--migrations-diverge) | Caught schema sync issue in CI |
+| 8 | **The Complex Debug (external)** — traced silent zero-output to upstream breaking change | [G1](#g1-ffmpeg-80-breaking-changes-dji-d-log-yuv--sub-second-clips) | FFmpeg 8.0 rejecting DJI footage silently |
+| 9 | **The Innovation (ops)** — applied agent framework to automated ops recovery | [E2](#e2-langgraph-ops-agent--automated-pipeline-recovery) | LangGraph state machine for error triage + recovery |
+| ★ | **AI Integration into Existing Workflows** — flagship answer for AI/ML-forward job descriptions | [H1](#h1-agentic-workflow-integration--self-healing-media-pipeline) | Full standalone answer: architecture, trade-offs, production lessons |
 
 ---
 
@@ -38,10 +41,17 @@ Quick-reference map from question type to the best entry from this project.
 - [D — Testing & Production Safety](#d--testing--production-safety)
   - [D1. Mocked Tests Passing, Production Failing — qdrant-client API Mismatch](#d1-mocked-tests-passing-production-failing--qdrant-client-api-mismatch) `[BQ: The Complex Debug]`
   - [D2. Schema Drift — init-db.sql ↔ Migrations Diverge](#d2-schema-drift--init-dbsql--migrations-diverge) `[BQ: The High Bar]`
+  - [D3. SQLAlchemy text() + PostgreSQL Cast — Bind Parameter Collision](#d3-sqlalchemy-text--postgresql-cast--bind-parameter-collision)
 - [E — Architecture & Code Quality](#e--architecture--code-quality)
   - [E1. Voting System — Separation of Concerns for Testability](#e1-voting-system--separation-of-concerns-for-testability) `[BQ: The Innovation]`
+  - [E2. LangGraph Ops Agent — Automated Pipeline Recovery](#e2-langgraph-ops-agent--automated-pipeline-recovery) `[BQ: The Innovation (ops)]`
 - [F — Data Integrity & Defensive Programming](#f--data-integrity--defensive-programming)
   - [F1. Qdrant Dimension Mismatch — Startup Safety](#f1-qdrant-dimension-mismatch--startup-safety) `[BQ: The Failure]`
+- [G — External Tool & Library Compatibility](#g--external-tool--library-compatibility)
+  - [G1. FFmpeg 8.0 Breaking Changes — DJI D-Log YUV + Sub-Second Clips](#g1-ffmpeg-80-breaking-changes-dji-d-log-yuv--sub-second-clips) `[BQ: The Complex Debug (external)]`
+- [H — AI & Agentic Workflow Integration](#h--ai--agentic-workflow-integration) ★
+  - [H1. Agentic Workflow Integration — Self-Healing Media Pipeline](#h1-agentic-workflow-integration--self-healing-media-pipeline) `[BQ: AI Integration — flagship]`
+  - [G1. FFmpeg 8.0 Breaking Changes: DJI D-Log YUV + Sub-Second Clips](#g1-ffmpeg-80-breaking-changes-dji-d-log-yuv--sub-second-clips) `[BQ: The Complex Debug (external)]`
 
 ---
 
@@ -697,6 +707,304 @@ Dimension mismatch caught on startup, not after 500 failed retries. Worker refus
 - **Task:** Identify why tasks were failing and prevent this class of error.
 - **Action:** The worker's retry logic was aggressive — `autoretry_for=(Exception,)` retried all exceptions, including non-transient ones. A 512-dim vector being rejected by a 768-dim collection isn't a transient error; it's a config mismatch that needs immediate attention. But the retry loop obscured this — the error count just grew silently: 2 → 169 → 269 → 502. I added a startup assertion that fires before any task runs: if the embedder's dimension doesn't match the collection's dimension, the worker refuses to start and logs both values prominently. I also split error handling — transient errors (timeouts) retry; permanent errors (config mismatches, parse errors) fail immediately.
 - **Result:** Dimension mismatches now fail on startup instead of after 500+ retries. The lesson: **any cross-system contract (model dims, API versions, schema versions) should be asserted at boot time, not discovered through error counts.**
+
+---
+
+## D3. SQLAlchemy text() + PostgreSQL Cast — Bind Parameter Collision
+
+**Component:** `api/agents/ops/recovery_agent.py` → `execute_recovery`
+**Severity:** High — live recovery run failed with SyntaxError, zero files reset
+
+### What Broke
+
+Clicking "Run Recovery" returned a DB error:
+
+```
+psycopg2.errors.SyntaxError: syntax error at or near ":"
+LINE 6: WHERE id = ANY(:ids::uuid[])
+```
+
+Dry runs passed because they skip the DB update entirely. The bug only surfaced on a live run.
+
+### Root Cause
+
+SQLAlchemy's `text()` uses `:name` as its bind parameter syntax. The expression `:ids::uuid[]` is parsed as bind parameter `:ids:` (with a trailing colon) followed by `uuid[]`, which is invalid SQL. PostgreSQL never sees it — SQLAlchemy's own parser rejects the colon-colon sequence immediately after a parameter name.
+
+### Fix
+
+Replace PostgreSQL's `::` cast shorthand with ANSI `CAST()` on the parameter:
+
+```python
+# Before — SQLAlchemy parser breaks on :ids::uuid[]
+WHERE id = ANY(:ids::uuid[])
+
+# After — unambiguous to SQLAlchemy and PostgreSQL
+WHERE id = ANY(CAST(:ids AS uuid[]))
+```
+
+### Lesson
+
+**Never use `::type` casts directly after SQLAlchemy `text()` bind parameters.** The `::` operator is PostgreSQL shorthand but it collides with SQLAlchemy's `:param:` detection. Always use `CAST(:param AS type)` when passing values into PostgreSQL type-casting expressions via `text()`.
+
+---
+
+## E2. LangGraph Ops Agent — Automated Pipeline Recovery
+
+**Component:** `api/agents/ops/recovery_agent.py`, `api/routers/recovery.py`
+**Severity:** Architecture decision + 3 production bugs uncovered during rollout
+
+### What Was Built
+
+Applied the LangGraph StateGraph pattern (previously used for query agents) to an ops problem: automatically detect and remediate stuck or errored media files. The state machine runs: `scan_errors → investigate → execute_recovery → audit`.
+
+- `scan_errors` — queries DB for EIO errors, stuck tasks (>2h), and retryable errors
+- `investigate` — calls an LLM to classify errors and produce a recovery plan; falls back to rule-based if LLM unavailable
+- `execute_recovery` — resets fixable files to `pending`, re-dispatches Celery tasks
+- `audit` — writes a one-line summary to `audit_logs`
+
+### Three Bugs Found During Rollout
+
+**Bug 1 — LLM timeout (120s → rule-based fallback needed <10s)**
+
+`LLM_PROVIDER=local` pointed to Ollama. When Ollama was unreachable, the `httpx` client inside `LocalLLMProvider` waited 120s before raising. The Next.js proxy timed out first, returning a 500. Fix: wrap `llm.complete()` with `asyncio.wait_for(timeout=RECOVERY_LLM_TIMEOUT)` (default 10s). Fallback fires in under 10s regardless of the underlying client timeout.
+
+**Bug 2 — Thinking model tokens truncate the JSON budget**
+
+`gemma4:e2b` is an extended-thinking model. It outputs `<think>…</think>` tokens before the actual response. With `max_tokens=512`, the thinking tokens consumed most of the budget, leaving the JSON truncated mid-string. Fix: strip `<think>…</think>` with a regex before JSON parsing; raise `max_tokens` to 2048.
+
+```python
+import re as _re
+content = _re.sub(r"<think>.*?</think>", "", content, flags=_re.DOTALL).strip()
+```
+
+**Bug 3 — SQLAlchemy `text()` + `::uuid[]` cast** (see D3 above)
+
+### Lesson
+
+**The same LangGraph state machine pattern that works for query agents works for ops agents** — scan → decide → act → audit. Separating `investigate` (LLM triage) from `execute_recovery` (DB mutation) keeps the dangerous step isolated and auditable.
+
+**Always add an `asyncio.wait_for` guard around any LLM call that feeds into a web endpoint.** The transport-level timeout (httpx, requests) and the application-level timeout (proxy, user-facing request) are independent. If the transport timeout is longer than the proxy timeout, the proxy dies first. Layer your timeouts: `asyncio.wait_for` < proxy timeout < transport client timeout.
+
+**Extended-thinking models require two adjustments:** strip thinking tokens before parsing structured output, and increase `max_tokens` to accommodate the reasoning overhead before the answer.
+
+---
+
+### [BQ] Behavioral Question: The Innovation (ops) — Applying Agent Framework to Self-Healing Pipelines
+
+> **"Tell me about a time you introduced a new approach or technology that solved a problem in an unexpected way."**
+
+**SHORT:** I had a media pipeline accumulating errored files with no automated recovery. Instead of a cron script, I applied the same LangGraph agent pattern I'd built for semantic search — scan, reason, act, audit — giving ops recovery the same structured, observable quality as a query agent.
+
+**STAR:**
+- **Situation:** The pipeline had 13 files stuck in `error` state from FFmpeg failures. Recovery meant manually identifying them, resetting their DB status, and re-dispatching Celery tasks. No automation, no audit trail.
+- **Task:** Build automated recovery without creating a fragile cron script that just blindly resets everything.
+- **Action:** Applied LangGraph (already in use for query routing) to ops. The state machine has four nodes: `scan_errors` queries DB error categories; `investigate` calls an LLM to classify and produce a recovery plan with rationale; `execute_recovery` performs DB resets and task dispatch; `audit` writes a log entry. Added a rule-based fallback so the agent works even when the LLM is unavailable. Built a frontend admin dashboard with dry-run preview before committing any changes. Three production bugs surfaced during rollout — LLM timeout layering, thinking model token truncation, and a SQLAlchemy cast syntax collision — all fixed before any data was mutated.
+- **Result:** 13 errored files recovered and requeued in one click. The agent is reusable for any future error category — add a new SQL query and a new branch in the recovery plan. The dry-run UX means ops can preview exactly what will happen before committing.
+
+---
+
+## G — External Tool & Library Compatibility
+
+---
+
+## G1. FFmpeg 8.0 Breaking Changes: DJI D-Log YUV + Sub-Second Clips
+
+**Component:** `worker/ingest/ffmpeg.py` → `extract_keyframes`
+**Severity:** High — 13 files silently producing zero frames or hard-failing
+
+### What Broke
+
+Two separate classes of files failed after FFmpeg 8.0:
+
+**Class 1 — DJI D-Log HEVC footage (4 files)**
+
+Files encoded in DJI D-Log color profile (H.265 HEVC with limited-range YUV) failed frame extraction with:
+
+```
+[swscaler] deprecated pixel format used, make sure you did choose the correct
+Non full-range YUV is non-standard
+```
+
+FFmpeg 8.0 tightened strict mode: the MJPEG encoder now rejects limited-range YUV sources without an explicit pixel format conversion. Previously these were processed with a warning; now they fail.
+
+**Class 2 — Pixel motion photos / sub-second clips (9 files)**
+
+Short clips (~0.6s, from iPhone Pixel Motion Photos) produced zero output frames at `fps=0.5` (one frame per 2 seconds). The `fps` filter never fires because the clip is shorter than the frame interval. No error, no warning — just an empty output directory.
+
+### Diagnosis
+
+- DJI files: extracted a sample via `ffmpeg -pix_fmt yuvj420p` and confirmed it worked
+- Sub-second files: `ffprobe` showed `duration: 0.600000`, shorter than `1/fps = 2.0s`. The fps filter condition is never satisfied.
+- DJI bad metadata: one file reported `duration: 0.100100` (corrupt container tag); treated as sub-second, midpoint seek extracted a valid frame
+
+### Fix
+
+```python
+_pix_fmt_args = ["-pix_fmt", "yuvj420p"]  # full-range conversion for FFmpeg 8.0
+
+if video_duration is not None and video_duration > 0 and video_duration < (1.0 / fps):
+    # Sub-second clip: seek to midpoint, extract exactly one frame
+    midpoint = video_duration / 2.0
+    cmd = ["ffmpeg", "-ss", str(midpoint), "-i", video_path,
+           "-frames:v", "1", "-vf", scale_filter, *_pix_fmt_args, "-q:v", "2", frame_pattern]
+else:
+    cmd = ["ffmpeg", "-i", video_path, "-vf", f"fps={fps},{scale_filter}",
+           *_pix_fmt_args, "-q:v", "2", frame_pattern]
+```
+
+Also fixed a secondary FFmpeg 8.0 change: single-image output must use the `%04d` pattern filename, not a literal path.
+
+### Lesson
+
+**FFmpeg major versions can silently change what "works" to what "fails".** Limited-range YUV was accepted (with warnings) in FFmpeg 7.x; it's rejected in 8.0. Always test against real-world footage after an FFmpeg version bump — especially camera-specific color profiles (DJI D-Log, Sony S-Log, ARRI LogC).
+
+**Zero output is not always an error.** Sub-second clips produce zero frames at fps=0.5 without any error code. Any pipeline step that can produce empty output needs an explicit check: if `len(frames) == 0` and no exception was raised, the input is pathological — handle it specifically rather than passing an empty list downstream.
+
+---
+
+### [BQ] Behavioral Question: The Complex Debug (external) — Silent Zero Output
+
+> **"Tell me about a time you tracked down a subtle bug that wasn't obvious from the error message."**
+
+**SHORT:** Thirteen files were marked as errors with messages like "no frames extracted" — but no stack trace, no FFmpeg error code. I traced it to two separate root causes: an FFmpeg 8.0 strict-mode change rejecting DJI camera footage, and a frame interval edge case that silently produces zero output for sub-second clips.
+
+**STAR:**
+- **Situation:** After an FFmpeg upgrade, 13 media files were stuck in `error` state. The error messages said "no frames extracted" or "FFmpeg failed" — not enough to diagnose.
+- **Task:** Identify root cause without access to the original FFmpeg invocation, then fix without breaking the existing pipeline for thousands of already-processed files.
+- **Action:** I queried the DB to group errors by message pattern and identified two clusters. For the "FFmpeg failed" cluster (4 files), I ran `ffprobe` on a sample and found DJI D-Log HEVC codec. Running `ffmpeg` manually revealed the pixel format rejection — a FFmpeg 8.0 strict-mode change. Fix: add `-pix_fmt yuvj420p` to force full-range conversion. For the "no frames extracted" cluster (9 files), `ffprobe` showed durations of 0.6s — shorter than the 2s frame interval at `fps=0.5`. The fps filter never fires for sub-second clips, producing zero output with no error. Fix: detect clips shorter than `1/fps` and seek to the midpoint to extract one representative frame. One file had corrupted duration metadata (0.1s in the container header, actual length longer) — the midpoint seek handled it correctly.
+- **Result:** Both fixes are backward-compatible — they only activate on sub-second clips and limited-range YUV sources. The 13 files were recovered and reprocessed successfully. Added the fixes to the worker before requeuing via the recovery agent so they'd process clean on first retry.
+
+---
+
+---
+
+## H — AI & Agentic Workflow Integration
+
+> This section is the flagship answer for any job description that includes phrases like:
+> "integrate AI into existing workflows", "LLM-powered automation", "agentic systems",
+> "AI-augmented processes", "applied ML in production", or "intelligent automation".
+> Use H1 as the base answer and adapt the framing to match the question wording.
+
+---
+
+## H1. Agentic Workflow Integration — Self-Healing Media Pipeline
+
+**Component:** `api/agents/ops/recovery_agent.py`, `api/routers/recovery.py`, `frontend/app/recovery/`
+**Stack:** LangGraph, FastAPI, PostgreSQL, Celery, Next.js
+**Outcome:** Manual error triage replaced by a one-click self-healing agent with dry-run preview and audit trail
+
+---
+
+### Context
+
+The Semantic Media Pipeline indexes a personal media library (photos + videos) into a vector database for semantic search. Processing is async: files move through `pending → processing → done | error`. Errors accumulate silently — FFmpeg failures, stuck workers, SMB disconnects — and the only recovery path was manual: query the DB, identify the files, reset status by hand, re-dispatch Celery tasks.
+
+---
+
+### The Problem with Manual Recovery
+
+Manual triage had three failure modes:
+
+1. **No classification** — all errors looked the same from the outside. EIO errors (SMB mount dropped mid-transfer) require operator action; FFmpeg errors are safe to retry. Without triage, you'd reset everything and create noise.
+2. **No audit trail** — nothing recorded what was reset, when, or why.
+3. **No safety net** — a one-liner SQL `UPDATE ... SET status='pending'` with the wrong `WHERE` clause could reset in-progress files and corrupt work.
+
+---
+
+### The Architecture Decision
+
+The codebase already used **LangGraph** for semantic query routing — a state machine that coordinates multiple search agents (vision, audio, metadata) before synthesizing a final answer. The same pattern — explicit states, typed state object, directed graph of nodes — applied cleanly to ops recovery.
+
+The recovery agent runs four nodes:
+
+```
+scan_errors → investigate → execute_recovery → audit
+```
+
+- **`scan_errors`** — queries PostgreSQL for three error classes: EIO (SMB disconnect), stuck (processing > 2h), retryable (all other errors). Groups and counts them.
+- **`investigate`** — sends the error summary to an LLM. The LLM classifies each group and produces a recovery plan with explicit rationale. Falls back to deterministic rule-based logic if the LLM is unavailable or times out.
+- **`execute_recovery`** — executes the plan: DB reset to `pending`, re-dispatch Celery tasks. EIO files are skipped (operator_required). Dry-run mode previews without mutating anything.
+- **`audit`** — writes a one-line summary to `audit_logs`: scan ID, dry_run flag, recovered/skipped/failed counts, tasks dispatched.
+
+---
+
+### Why LLM in the Middle
+
+The LLM's role is **classification and rationale generation**, not execution. It reads a structured error summary and outputs a structured recovery plan. This is the right scope for an LLM in a production system:
+
+- The LLM can't make a mistake that causes data mutation — `execute_recovery` does the mutation and has its own guards
+- The rationale it produces is logged, making the audit trail human-readable
+- If the LLM hallucinates (wrong action for a group), `execute_recovery` validates against allowed actions before acting
+
+The deterministic fallback is equally important: if Ollama is down or times out, the agent still runs correctly using hardcoded rules (stuck → reset, retryable → reset, EIO → skip). The LLM adds interpretability and adaptability; the rules provide reliability.
+
+---
+
+### Production Engineering Details
+
+Three bugs surfaced between "it works in dry-run" and "it works live":
+
+| Bug | Root Cause | Fix |
+|-----|-----------|-----|
+| 500 on dashboard | `httpx` had a 120s transport timeout; Next.js proxy timed out first | `asyncio.wait_for(10s)` around LLM call; rule-based fallback fires in <10s |
+| JSON truncated | `gemma4:e2b` is a thinking model; reasoning tokens ate the 512-token budget before the JSON started | Strip `<think>…</think>` before parsing; raise `max_tokens` to 2048 |
+| DB SyntaxError on live run | `ANY(:ids::uuid[])` — SQLAlchemy `text()` treats `::` after a bind parameter as a malformed parameter name | Replace with `ANY(CAST(:ids AS uuid[]))` |
+
+Each bug only appeared at a specific stage (live vs dry-run, LLM on vs off), which is why the dry-run UX was essential — it let the full path be tested incrementally before any data was mutated.
+
+---
+
+### Result
+
+- 13 errored files recovered and requeued in one click
+- Every recovery run produces an audit log entry with scan ID, counts, and dry_run flag
+- The agent is **reusable**: add a new SQL query in `scan_errors` and a new branch in `execute_recovery` to handle any future error class
+- The frontend dashboard surfaces the LLM's assessment, the recovery plan with rationale, and execution results — ops visibility that didn't exist before
+
+---
+
+### The Reusable Pattern
+
+This architecture generalises beyond media pipelines. Any workflow that has:
+- Discrete failure states (error, stuck, degraded)
+- Multiple error classes requiring different responses
+- Risk of collateral damage if recovery is applied blindly
+
+...benefits from the same pattern: **scan → reason (LLM) → act (guarded) → audit**, with a deterministic fallback so reliability doesn't depend on the LLM being available.
+
+---
+
+### [BQ] Question Bank — pick the framing that matches the job description
+
+---
+
+> **"Tell me about a time you integrated AI into an existing workflow or system."**
+
+**SHORT:** My media pipeline had manual error recovery — query the DB, identify stuck files, reset by hand. I replaced that with a LangGraph agent that scans for errors, uses an LLM to classify and produce a recovery plan with rationale, then executes it with a dry-run preview and audit trail. The same state machine pattern I'd already built for semantic search query routing — I just applied it to ops.
+
+**STAR:**
+- **Situation:** The pipeline accumulated errors silently — FFmpeg failures, stuck workers, SMB disconnects — with no automated recovery path. Each recovery was a manual DB query and SQL update, no audit trail, no error classification.
+- **Task:** Automate recovery in a way that's safe (don't reset things that shouldn't be reset), observable (know what ran and why), and extensible (handles new error classes without rewriting the agent).
+- **Action:** Applied LangGraph — already in use for query routing — to ops. Four-node state machine: scan errors by class, send summary to LLM for classification and rationale, execute the plan with guards, write an audit log. Added a rule-based fallback so the agent works even when the LLM is down. Built a frontend dashboard with dry-run mode so ops can preview exactly what will happen before committing. Three production bugs surfaced during rollout — LLM timeout layering, thinking model token truncation, SQL cast syntax — all caught in dry-run before any data was touched.
+- **Result:** 13 errored files recovered and requeued in one click. Every run produces a human-readable audit entry with the LLM's rationale. The pattern is reusable: add a new scan query and a new recovery action to handle any future error class.
+
+---
+
+> **"How have you used LLMs to automate a previously manual process?"**
+
+**SHORT:** Error triage in a media processing pipeline. Errors fell into distinct classes — some safe to retry, some requiring operator action — but distinguishing them manually meant querying the DB and reading error messages. I put an LLM in the middle of a state machine: it reads a structured error summary and outputs a structured recovery plan with rationale. The LLM doesn't execute anything — it classifies and explains. Execution has its own guards. A rule-based fallback ensures the system works if the LLM is unavailable.
+
+---
+
+> **"Describe a production system you built that uses AI for decision-making."**
+
+**SHORT:** A self-healing pipeline agent. The LLM's role is classification, not execution — it reads error counts grouped by class and recommends actions (reset + requeue vs. operator required). This is the right scope: the LLM can generate a wrong recommendation, but it can't cause a bad DB write — that's handled by a separate node with explicit guards. The audit log records the LLM's rationale alongside the execution result, so every recovery run is explainable.
+
+---
+
+> **"What's your approach to building reliable AI-powered features in production?"**
+
+**SHORT:** Three principles from this project: (1) **separate reasoning from execution** — the LLM recommends, a deterministic layer acts; (2) **always build a fallback** — rule-based logic runs if the LLM is unavailable, so the feature degrades gracefully instead of breaking; (3) **layer your timeouts** — the LLM transport timeout, the application-level timeout, and the user-facing request timeout are independent; if you don't set all three, the slowest one determines your P99 latency and the user gets a confusing error.
 
 ---
 

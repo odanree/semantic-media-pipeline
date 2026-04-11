@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import Link from 'next/link'
 
 interface RecoveryPlanStep {
@@ -24,6 +24,17 @@ interface RecoveryResult {
   recovery_plan: RecoveryPlanStep[]
   summary: string
   execution_errors: string[]
+}
+
+interface HistoryEntry {
+  id: string
+  timestamp: string
+  scan_id: string
+  dry_run: boolean
+  recovered: number
+  skipped: number
+  failed: number
+  dispatched: number
 }
 
 const GROUP_LABEL: Record<string, string> = {
@@ -76,6 +87,14 @@ export default function RecoveryPage() {
   const [result, setResult] = useState<RecoveryResult | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [history, setHistory] = useState<HistoryEntry[]>([])
+
+  useEffect(() => {
+    fetch('/api/recovery/history')
+      .then(r => r.ok ? r.json() : [])
+      .then(setHistory)
+      .catch(() => {})
+  }, [result]) // refetch after each scan so history stays current
 
   async function runScan(dryRun: boolean) {
     setLoading(true)
@@ -288,6 +307,56 @@ export default function RecoveryPage() {
 
         </div>
       )}
+
+      {/* Recovery history */}
+      <div className="mt-10">
+        <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wide mb-3">
+          Recovery history
+        </h2>
+        {history.length === 0 ? (
+          <p className="text-xs text-gray-500">No live recovery runs recorded yet.</p>
+        ) : (
+          <div className="rounded-lg border border-gray-700 overflow-hidden">
+            <table className="w-full text-sm">
+              <thead className="bg-gray-800 text-gray-400 text-xs uppercase tracking-wide">
+                <tr>
+                  <th className="px-4 py-3 text-left">Timestamp</th>
+                  <th className="px-4 py-3 text-left">Scan ID</th>
+                  <th className="px-4 py-3 text-right">Recovered</th>
+                  <th className="px-4 py-3 text-right">Dispatched</th>
+                  <th className="px-4 py-3 text-right">Skipped</th>
+                  <th className="px-4 py-3 text-right">Failed</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-700">
+                {history.map(entry => (
+                  <tr key={entry.id} className="bg-gray-900 hover:bg-gray-800 transition">
+                    <td className="px-4 py-3 text-gray-400 text-xs font-mono whitespace-nowrap">
+                      {new Date(entry.timestamp).toLocaleString()}
+                    </td>
+                    <td className="px-4 py-3 text-gray-500 text-xs font-mono">
+                      {entry.scan_id}
+                    </td>
+                    <td className="px-4 py-3 text-right font-mono font-semibold text-green-400">
+                      {entry.recovered}
+                    </td>
+                    <td className="px-4 py-3 text-right font-mono font-semibold text-blue-400">
+                      {entry.dispatched}
+                    </td>
+                    <td className="px-4 py-3 text-right font-mono text-gray-400">
+                      {entry.skipped}
+                    </td>
+                    <td className="px-4 py-3 text-right font-mono text-red-400">
+                      {entry.failed}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
     </div>
   )
 }
