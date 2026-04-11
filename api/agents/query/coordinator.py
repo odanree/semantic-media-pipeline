@@ -84,7 +84,7 @@ async def classify_intent(state: AgentState) -> AgentState:
 
 async def run_search_agent(state: AgentState) -> AgentState:
     """SearchAgent: CLIP vector similarity via Qdrant."""
-    from agents.search_agent import search_agent_run
+    from agents.query.search_agent import search_agent_run
     results = await search_agent_run(
         state["query"],
         limit=state.get("limit", 10),
@@ -95,14 +95,14 @@ async def run_search_agent(state: AgentState) -> AgentState:
 
 async def run_metadata_agent(state: AgentState) -> AgentState:
     """MetadataAgent: PostgreSQL temporal/location queries."""
-    from agents.metadata_agent import metadata_agent_run
+    from agents.query.metadata_agent import metadata_agent_run
     results = await metadata_agent_run(state["query"])
     return {"metadata_results": results}
 
 
 async def run_audio_agent(state: AgentState) -> AgentState:
     """AudioAgent: Qdrant audio filter queries (segment type, speech, events)."""
-    from agents.audio_agent import audio_agent_run
+    from agents.query.audio_agent import audio_agent_run
     intent = state.get("intent", "")
     if intent not in ("audio", "mixed"):
         return {"audio_results": []}
@@ -112,14 +112,14 @@ async def run_audio_agent(state: AgentState) -> AgentState:
 
 async def run_vision_agent(state: AgentState) -> AgentState:
     """VisionAgent: deep frame analysis via GPT-4o Vision or LLaVA."""
-    from agents.vision_agent import vision_agent_run
+    from agents.query.vision_agent import vision_agent_run
     results = await vision_agent_run(state["search_results"])
     return {"vision_results": results}
 
 
 async def aggregate_and_answer(state: AgentState) -> AgentState:
     """Fuse results from all agents into a final answer via LLM."""
-    from agents.aggregator import build_final_answer
+    from agents.query.aggregator import build_final_answer
     answer = await build_final_answer(state)
     return {"final_answer": answer}
 

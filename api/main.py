@@ -27,6 +27,7 @@ from qdrant_client import QdrantClient
 from routers import health, ingest, search, updates, stats, ask, admin
 from routers import agent as agent_router
 from routers import detect as detect_router
+from routers import recovery as recovery_router
 from middleware.audit import AuditMiddleware
 from auth import require_api_key
 from rate_limit import limiter, LIMIT_DEFAULT
@@ -80,7 +81,8 @@ app.include_router(updates.router,  prefix="/api", tags=["realtime"])       # WS
 app.include_router(stats.router,    prefix="/api", tags=["observability"], dependencies=[Depends(require_api_key)])
 app.include_router(admin.router,    prefix="/api", tags=["admin"],         dependencies=[Depends(require_api_key)])
 app.include_router(agent_router.router, prefix="/api", tags=["agents"],    dependencies=[Depends(require_api_key)])
-app.include_router(detect_router.router, prefix="/api", tags=["vision"],   dependencies=[Depends(require_api_key)])
+app.include_router(detect_router.router,   prefix="/api", tags=["vision"],   dependencies=[Depends(require_api_key)])
+app.include_router(recovery_router.router, prefix="/api", tags=["admin"],   dependencies=[Depends(require_api_key)])
 
 
 # Instrument all HTTP routes and expose /metrics for Prometheus scraping

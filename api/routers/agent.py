@@ -11,7 +11,7 @@ import time
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
-from agents.coordinator import coordinator
+from agents.query.coordinator import coordinator
 from rate_limit import limiter, LIMIT_ASK  # reuse same rate limit as /ask
 from metrics import METRICS
 

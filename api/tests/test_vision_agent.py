@@ -125,7 +125,7 @@ def webp_file(tmp_path) -> Path:
 
 class TestAnalyzeFrame:
     def test_returns_none_for_nonexistent_file(self):
-        from agents.vision_agent import _analyze_frame
+        from agents.query.vision_agent import _analyze_frame
 
         llm = MagicMock()
         result = asyncio.run(_analyze_frame(llm, "/no/such/path/image.jpg"))
@@ -133,7 +133,7 @@ class TestAnalyzeFrame:
         llm.complete.assert_not_called()
 
     def test_happy_path_jpeg_returns_description(self, jpeg_file):
-        from agents.vision_agent import _analyze_frame
+        from agents.query.vision_agent import _analyze_frame
 
         llm = MagicMock()
         llm.complete = AsyncMock(return_value="A bright white frame.")
@@ -141,7 +141,7 @@ class TestAnalyzeFrame:
         assert result == "A bright white frame."
 
     def test_jpeg_uses_image_jpg_mime_type(self, jpeg_file):
-        from agents.vision_agent import _analyze_frame
+        from agents.query.vision_agent import _analyze_frame
 
         # The implementation uses the raw suffix as the MIME subtype:
         # .jpg → image/jpg, .jpeg → image/jpeg
@@ -153,7 +153,7 @@ class TestAnalyzeFrame:
         assert image_url.startswith("data:image/jpg;base64,")
 
     def test_jpeg_file_content_is_correctly_base64_encoded(self, jpeg_file):
-        from agents.vision_agent import _analyze_frame
+        from agents.query.vision_agent import _analyze_frame
 
         llm = MagicMock()
         llm.complete = AsyncMock(return_value="desc")
@@ -166,7 +166,7 @@ class TestAnalyzeFrame:
         assert decoded == jpeg_file.read_bytes()
 
     def test_png_uses_image_png_mime_type(self, png_file):
-        from agents.vision_agent import _analyze_frame
+        from agents.query.vision_agent import _analyze_frame
 
         llm = MagicMock()
         llm.complete = AsyncMock(return_value="desc")
@@ -176,7 +176,7 @@ class TestAnalyzeFrame:
         assert url.startswith("data:image/png;base64,")
 
     def test_webp_uses_image_webp_mime_type(self, webp_file):
-        from agents.vision_agent import _analyze_frame
+        from agents.query.vision_agent import _analyze_frame
 
         llm = MagicMock()
         llm.complete = AsyncMock(return_value="desc")
@@ -186,7 +186,7 @@ class TestAnalyzeFrame:
         assert url.startswith("data:image/webp;base64,")
 
     def test_unknown_extension_falls_back_to_image_jpeg(self, jpeg_file_no_ext):
-        from agents.vision_agent import _analyze_frame
+        from agents.query.vision_agent import _analyze_frame
 
         llm = MagicMock()
         llm.complete = AsyncMock(return_value="desc")
@@ -196,7 +196,7 @@ class TestAnalyzeFrame:
         assert url.startswith("data:image/jpeg;base64,")
 
     def test_system_prompt_included_in_messages(self, jpeg_file):
-        from agents.vision_agent import _analyze_frame, _VISION_SYSTEM
+        from agents.query.vision_agent import _analyze_frame, _VISION_SYSTEM
 
         llm = MagicMock()
         llm.complete = AsyncMock(return_value="desc")
@@ -206,7 +206,7 @@ class TestAnalyzeFrame:
         assert messages[0]["content"] == _VISION_SYSTEM
 
     def test_user_message_has_text_and_image_parts(self, jpeg_file):
-        from agents.vision_agent import _analyze_frame
+        from agents.query.vision_agent import _analyze_frame
 
         llm = MagicMock()
         llm.complete = AsyncMock(return_value="desc")
@@ -218,7 +218,7 @@ class TestAnalyzeFrame:
         assert "text" in types
 
     def test_max_tokens_passed_as_256(self, jpeg_file):
-        from agents.vision_agent import _analyze_frame
+        from agents.query.vision_agent import _analyze_frame
 
         llm = MagicMock()
         llm.complete = AsyncMock(return_value="desc")
@@ -226,7 +226,7 @@ class TestAnalyzeFrame:
         assert llm.complete.call_args.kwargs["max_tokens"] == 256
 
     def test_llm_exception_returns_none_and_does_not_propagate(self, jpeg_file):
-        from agents.vision_agent import _analyze_frame
+        from agents.query.vision_agent import _analyze_frame
 
         llm = MagicMock()
         llm.complete = AsyncMock(side_effect=RuntimeError("vision model unavailable"))
@@ -240,24 +240,24 @@ class TestAnalyzeFrame:
 
 class TestVisionAgentRun:
     def test_empty_search_results_returns_empty_list(self):
-        from agents.vision_agent import vision_agent_run
+        from agents.query.vision_agent import vision_agent_run
 
         result = asyncio.run(vision_agent_run([]))
         assert result == []
 
     def test_non_image_file_types_filtered_out(self, tmp_path):
-        from agents.vision_agent import vision_agent_run
+        from agents.query.vision_agent import vision_agent_run
 
         results = [
             {"file_path": "clip.mp4", "file_type": "video"},
             {"file_path": "song.mp3", "file_type": "audio"},
         ]
-        with patch("agents.vision_agent.get_llm_provider"):
+        with patch("agents.query.vision_agent.get_llm_provider"):
             result = asyncio.run(vision_agent_run(results))
         assert result == []
 
     def test_only_images_are_passed_to_analyze(self, jpeg_file, tmp_path):
-        from agents.vision_agent import vision_agent_run
+        from agents.query.vision_agent import vision_agent_run
 
         # Mix of image and video — only the image should be analyzed
         video_path = str(tmp_path / "clip.mp4")
@@ -267,14 +267,14 @@ class TestVisionAgentRun:
         ]
         mock_llm = MagicMock()
         mock_llm.complete = AsyncMock(return_value="A white frame.")
-        with patch("agents.vision_agent.get_llm_provider", return_value=mock_llm):
+        with patch("agents.query.vision_agent.get_llm_provider", return_value=mock_llm):
             output = asyncio.run(vision_agent_run(results))
         assert len(output) == 1
         assert output[0]["file_path"] == str(jpeg_file)
         assert output[0]["description"] == "A white frame."
 
     def test_max_frames_limit_respected(self, tmp_path):
-        from agents.vision_agent import vision_agent_run
+        from agents.query.vision_agent import vision_agent_run
 
         # Create 5 real image files but MAX_FRAMES_TO_ANALYZE defaults to 3
         files = []
@@ -285,13 +285,13 @@ class TestVisionAgentRun:
 
         mock_llm = MagicMock()
         mock_llm.complete = AsyncMock(return_value="description")
-        with patch("agents.vision_agent.get_llm_provider", return_value=mock_llm):
-            with patch("agents.vision_agent.MAX_FRAMES_TO_ANALYZE", 3):
+        with patch("agents.query.vision_agent.get_llm_provider", return_value=mock_llm):
+            with patch("agents.query.vision_agent.MAX_FRAMES_TO_ANALYZE", 3):
                 output = asyncio.run(vision_agent_run(files))
         assert len(output) == 3
 
     def test_missing_files_are_omitted_from_output(self, tmp_path):
-        from agents.vision_agent import vision_agent_run
+        from agents.query.vision_agent import vision_agent_run
 
         real_file = tmp_path / "real.jpg"
         real_file.write_bytes(_make_1x1_jpeg())
@@ -301,13 +301,13 @@ class TestVisionAgentRun:
         ]
         mock_llm = MagicMock()
         mock_llm.complete = AsyncMock(return_value="real description")
-        with patch("agents.vision_agent.get_llm_provider", return_value=mock_llm):
+        with patch("agents.query.vision_agent.get_llm_provider", return_value=mock_llm):
             output = asyncio.run(vision_agent_run(results))
         assert len(output) == 1
         assert output[0]["file_path"] == str(real_file)
 
     def test_llm_failure_for_one_frame_does_not_stop_others(self, tmp_path):
-        from agents.vision_agent import vision_agent_run
+        from agents.query.vision_agent import vision_agent_run
 
         f1 = tmp_path / "ok.jpg"
         f1.write_bytes(_make_1x1_jpeg())
@@ -332,8 +332,8 @@ class TestVisionAgentRun:
             {"file_path": str(f2), "file_type": "image"},
             {"file_path": str(f3), "file_type": "image"},
         ]
-        with patch("agents.vision_agent.get_llm_provider", return_value=mock_llm):
-            with patch("agents.vision_agent.MAX_FRAMES_TO_ANALYZE", 3):
+        with patch("agents.query.vision_agent.get_llm_provider", return_value=mock_llm):
+            with patch("agents.query.vision_agent.MAX_FRAMES_TO_ANALYZE", 3):
                 output = asyncio.run(vision_agent_run(results))
         # f2 fails silently — 2 of 3 succeed
         assert len(output) == 2
@@ -341,11 +341,11 @@ class TestVisionAgentRun:
         assert output[1]["file_path"] == str(f3)
 
     def test_output_contains_file_path_and_description_keys(self, jpeg_file):
-        from agents.vision_agent import vision_agent_run
+        from agents.query.vision_agent import vision_agent_run
 
         mock_llm = MagicMock()
         mock_llm.complete = AsyncMock(return_value="A detailed scene.")
-        with patch("agents.vision_agent.get_llm_provider", return_value=mock_llm):
+        with patch("agents.query.vision_agent.get_llm_provider", return_value=mock_llm):
             output = asyncio.run(vision_agent_run(
                 [{"file_path": str(jpeg_file), "file_type": "image"}]
             ))
@@ -353,7 +353,7 @@ class TestVisionAgentRun:
         assert "description" in output[0]
 
     def test_jpeg_extension_variants_recognized(self, tmp_path):
-        from agents.vision_agent import _analyze_frame
+        from agents.query.vision_agent import _analyze_frame
 
         for ext in ("jpg", "jpeg"):
             p = tmp_path / f"img.{ext}"

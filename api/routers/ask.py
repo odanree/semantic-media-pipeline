@@ -35,7 +35,7 @@ from openai import OpenAI, OpenAIError
 
 from rate_limit import limiter, LIMIT_ASK
 from routers.search import _window_deduplicate, SEARCH_GROUP_SIZE, EVENT_WINDOW_SECONDS
-from agents.audio_agent import audio_agent_run, extract_audio_filters
+from agents.query.audio_agent import audio_agent_run, extract_audio_filters
 
 router = APIRouter()
 
