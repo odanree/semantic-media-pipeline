@@ -230,10 +230,14 @@ Reply with ONLY a JSON object — no markdown, no explanation:
 Only include groups with count > 0. EIO must always be operator_required."""
 
     try:
-        raw = await llm.complete(
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0,
-            max_tokens=512,
+        import asyncio as _asyncio
+        raw = await _asyncio.wait_for(
+            llm.complete(
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0,
+                max_tokens=512,
+            ),
+            timeout=float(os.getenv("RECOVERY_LLM_TIMEOUT", "10")),
         )
         content = raw.strip()
         # Strip markdown code fences if present

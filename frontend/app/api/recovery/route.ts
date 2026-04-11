@@ -7,15 +7,19 @@ export async function POST(request: NextRequest) {
   const BACKEND_API_KEY = process.env.BACKEND_API_KEY || ''
   try {
     const body = await request.json()
+    const controller = new AbortController()
+    const timeout = setTimeout(() => controller.abort(), 30_000) // 30s — LLM fallback fires in <10s
     const response = await fetch(`${API_URL}/api/admin/recovery/scan`, {
       method: 'POST',
       cache: 'no-store',
+      signal: controller.signal,
       headers: {
         'Content-Type': 'application/json',
         ...(BACKEND_API_KEY && { 'X-API-Key': BACKEND_API_KEY }),
       },
       body: JSON.stringify(body),
     })
+    clearTimeout(timeout)
 
     if (!response.ok) {
       const err = await response.json().catch(() => ({ detail: 'Unknown error' }))
