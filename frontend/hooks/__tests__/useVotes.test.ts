@@ -140,7 +140,9 @@ describe('useVotes hook', () => {
     expect(mockAPI.persist).toHaveBeenCalledWith('/media/test.mp4', 0, -1, undefined)
   })
 
-  it('resets votes when initialVotes prop changes', async () => {
+  it('merges server votes with optimistic votes when initialVotes prop changes', async () => {
+    // The hook merges server state with local optimistic votes — it keeps any local keys
+    // not yet confirmed by the server so SWR re-fetches don't wipe in-flight optimistic updates.
     const { result, rerender } = renderHook(
       ({ initialVotes }: { initialVotes?: Record<string, 1 | -1> }) =>
         useVotes({ initialVotes, api: mockAPI }),
@@ -152,7 +154,8 @@ describe('useVotes hook', () => {
       rerender({ initialVotes: { '/media/test2.mp4#0': -1 } })
     })
 
-    expect(result.current.votes).toEqual({ '/media/test2.mp4#0': -1 })
+    // Server says test2=-1; test1 is kept as optimistic (server hasn't confirmed removal)
+    expect(result.current.votes).toEqual({ '/media/test1.mp4#0': 1, '/media/test2.mp4#0': -1 })
   })
 
   it('handles API errors gracefully (logs but does not revert state)', async () => {
@@ -173,6 +176,32 @@ describe('useVotes hook', () => {
       expect.any(Error)
     )
 
+    consoleErrorSpy.mockRestore()
+  })
+
+  it('tagVote upvotes with an explicit keyword instead of searchQuery', async () => {
+    const { result } = renderHook(() => useVotes({ api: mockAPI }))
+
+    await act(async () => {
+      await result.current.tagVote('/media/test.mp4', 0, 'deep blowjob')
+    })
+
+    expect(result.current.votes).toEqual({ '/media/test.mp4#0': 1 })
+    expect(mockAPI.persist).toHaveBeenCalledWith('/media/test.mp4', 0, 1, 'deep blowjob')
+  })
+
+  it('tagVote logs error but keeps optimistic state on failure', async () => {
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    mockAPI.persist = vi.fn().mockRejectedValue(new Error('Tag vote failed'))
+
+    const { result } = renderHook(() => useVotes({ api: mockAPI }))
+
+    await act(async () => {
+      await result.current.tagVote('/media/test.mp4', 0, 'yoga')
+    })
+
+    expect(result.current.votes).toEqual({ '/media/test.mp4#0': 1 })
+    expect(consoleErrorSpy).toHaveBeenCalledWith('Tag vote persistence failed:', expect.any(Error))
     consoleErrorSpy.mockRestore()
   })
 

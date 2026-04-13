@@ -96,9 +96,21 @@ export function useVotes(options: UseVotesOptions = {}) {
   // Inject API: use provided mock or default to fetch
   const api = options.api || createDefaultVoteAPI()
 
-  // Reset votes when search query changes (initialVotes prop changes)
+  // Sync server votes when initialVotes changes (new search results / SWR re-fetch).
+  // Merge rather than replace: keep optimistic votes that the server hasn't confirmed yet
+  // so a SWR re-fetch mid-flight doesn't wipe an in-progress optimistic update.
   useEffect(() => {
-    setVotes(options.initialVotes ? { ...options.initialVotes } : {})
+    setVotes(prev => {
+      const server = options.initialVotes ?? {}
+      const merged: Record<string, 1 | -1> = { ...server }
+      for (const [key, val] of Object.entries(prev)) {
+        if (!(key in server)) {
+          // Server doesn't know about this vote yet — keep the optimistic value
+          merged[key] = val
+        }
+      }
+      return merged
+    })
   }, [options.initialVotes])
 
   const vote = useCallback(

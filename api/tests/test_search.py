@@ -149,12 +149,17 @@ def test_search_result_has_similarity(client, mock_qdrant):
 # ---------------------------------------------------------------------------
 
 def test_search_limit_forwarded_to_qdrant(client, mock_qdrant):
-    """limit=5 with oversample=1 must pass limit=5 to qdrant.query_points()."""
+    """limit=5 with oversample=1 must pass limit=5 to the main qdrant.query_points() call.
+    The injection pass may add a second query_points call; we check the first (ANN) call.
+    reset_mock() is required because mock_qdrant is session-scoped and accumulates call
+    history across all tests."""
     mock_qdrant.query_points.return_value = MagicMock(points=[])
+    mock_qdrant.query_points.reset_mock()  # clear session-accumulated call history
     client.post("/api/search", json={"query": "yoga", "limit": 5, "dedup": False, "oversample": 1})
-    call_kwargs = mock_qdrant.query_points.call_args
-    assert call_kwargs is not None
-    args, kwargs = call_kwargs
+    assert mock_qdrant.query_points.call_count >= 1
+    # First call is the main ANN pass (injection may add a second)
+    first_call = mock_qdrant.query_points.call_args_list[0]
+    args, kwargs = first_call
     assert kwargs.get("limit") == 5 or (len(args) >= 3 and args[2] == 5)
 
 
@@ -223,7 +228,7 @@ def test_search_dedup_default_uses_query_points(client, mock_qdrant):
 
     resp = client.post("/api/search", json={"query": "birthday party"})
     assert resp.status_code == 200
-    mock_qdrant.query_points.assert_called_once()
+    assert mock_qdrant.query_points.call_count >= 1
     mock_qdrant.query_points_groups.assert_not_called()
 
 
@@ -235,7 +240,7 @@ def test_search_dedup_false_uses_query_points(client, mock_qdrant):
 
     resp = client.post("/api/search", json={"query": "sunset", "dedup": False})
     assert resp.status_code == 200
-    mock_qdrant.query_points.assert_called_once()
+    assert mock_qdrant.query_points.call_count >= 1
     mock_qdrant.query_points_groups.assert_not_called()
 
 

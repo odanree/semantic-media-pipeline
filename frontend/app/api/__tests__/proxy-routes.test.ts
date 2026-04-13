@@ -535,6 +535,48 @@ describe('POST /api/similar', () => {
 })
 
 // ---------------------------------------------------------------------------
+// POST /api/frame-labels — reverse label lookup proxy
+// ---------------------------------------------------------------------------
+
+describe('POST /api/frame-labels', () => {
+  async function handler(body: unknown) {
+    const { POST } = await import('../frame-labels/route')
+    return POST(
+      new NextRequest('http://localhost/api/frame-labels', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+    )
+  }
+
+  it('returns 400 when file_path is missing', async () => {
+    const res = await handler({})
+    expect(res.status).toBe(400)
+  })
+
+  it('returns 200 with upstream labels data', async () => {
+    vi.mocked(fetch).mockResolvedValue(mockResponse({ labels: [{ label: 'yoga', score: 0.9 }] }))
+    const res = await handler({ file_path: '/media/test.mp4', timestamp: 5.0, top_k: 8 })
+    expect(res.status).toBe(200)
+    const json = await res.json()
+    expect(json.labels).toHaveLength(1)
+  })
+
+  it('forwards upstream error status', async () => {
+    vi.mocked(fetch).mockResolvedValue(mockResponse('upstream error', 503))
+    const res = await handler({ file_path: '/media/test.mp4' })
+    expect(res.status).toBe(503)
+  })
+
+  it('returns 500 when fetch throws', async () => {
+    vi.mocked(fetch).mockRejectedValue(new Error('ECONNREFUSED'))
+    const res = await handler({ file_path: '/media/test.mp4' })
+    expect(res.status).toBe(500)
+  })
+})
+
+// ---------------------------------------------------------------------------
 // Catch branch — fetch throws (network failure) for all proxy routes
 // ---------------------------------------------------------------------------
 
@@ -606,6 +648,17 @@ describe('network failures return 500', () => {
     vi.mocked(fetch).mockRejectedValue(new Error('ECONNREFUSED'))
     const { POST } = await import('../similar/route')
     const res = await POST(new NextRequest('http://localhost/api/similar', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ file_path: '/media/test.mp4' }),
+    }))
+    expect(res.status).toBe(500)
+  })
+
+  it('POST /api/frame-labels — fetch throws', async () => {
+    vi.mocked(fetch).mockRejectedValue(new Error('ECONNREFUSED'))
+    const { POST } = await import('../frame-labels/route')
+    const res = await POST(new NextRequest('http://localhost/api/frame-labels', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ file_path: '/media/test.mp4' }),

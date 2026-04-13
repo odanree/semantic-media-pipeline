@@ -20,9 +20,26 @@ export default function VideoPlayer({ result, onClose }: VideoPlayerProps) {
   const [quality, setQuality] = useState<'proxy' | 'original'>('proxy')
   const [isPaused, setIsPaused] = useState(true)
   const [copied, setCopied] = useState(false)
+  const [vlcState, setVlcState] = useState<'idle' | 'loading' | 'ok' | 'error'>('idle')
   // Saved playback position — restored after src swap so the toggle feels
   // seamless rather than jumping back to 0.
   const savedTimeRef = useRef<number>(0)
+
+  function openInVlc() {
+    if (vlcState === 'loading') return
+    setVlcState('loading')
+    const t = videoRef.current?.currentTime ?? result.timestamp ?? 0
+    const url = `http://localhost:9876/open?path=${encodeURIComponent(result.file_path)}&t=${t.toFixed(3)}&sw=${window.screen.width}&sh=${window.screen.height}&ox=${window.screenX}&oy=${window.screenY}`
+    fetch(url)
+      .then(r => {
+        setVlcState(r.ok ? 'ok' : 'error')
+        setTimeout(() => setVlcState('idle'), r.ok ? 2000 : 3000)
+      })
+      .catch(() => {
+        setVlcState('error')
+        setTimeout(() => setVlcState('idle'), 3000)
+      })
+  }
 
   function copyShortcut() {
     const t = videoRef.current?.currentTime
@@ -109,6 +126,23 @@ export default function VideoPlayer({ result, onClose }: VideoPlayerProps) {
               {quality === 'proxy' ? 'View Original' : 'View 720p'}
             </button>
             <button
+              onClick={openInVlc}
+              title={
+                vlcState === 'error'   ? 'vlc-opener not running — start scripts/vlc-opener.py' :
+                vlcState === 'loading' ? 'Opening…' :
+                vlcState === 'ok'      ? 'Opened in VLC!' :
+                'Open in VLC'
+              }
+              className={`text-xs px-3 py-1 rounded transition whitespace-nowrap ${
+                vlcState === 'error'   ? 'bg-red-900 text-red-300' :
+                vlcState === 'loading' ? 'bg-orange-900 text-orange-300 cursor-wait' :
+                vlcState === 'ok'      ? 'bg-green-900 text-green-300' :
+                'bg-gray-700 hover:bg-orange-700 text-gray-200'
+              }`}
+            >
+              {vlcState === 'loading' ? '⏳ VLC' : vlcState === 'ok' ? '✓ VLC' : vlcState === 'error' ? '✕ VLC' : 'VLC'}
+            </button>
+            <button
               onClick={onClose}
               aria-label="Close video player"
               className="text-gray-400 hover:text-white transition"
@@ -123,7 +157,18 @@ export default function VideoPlayer({ result, onClose }: VideoPlayerProps) {
             <div className="w-full h-full flex items-center justify-center text-red-400 text-center p-4">
               <div>
                 <p className="font-semibold mb-2">Failed to load video</p>
-                <p className="text-sm text-gray-400">{videoError}</p>
+                <p className="text-sm text-gray-400 mb-4">{videoError}</p>
+                <button
+                  onClick={openInVlc}
+                  className={`text-sm px-4 py-2 rounded font-semibold transition ${
+                    vlcState === 'error'   ? 'bg-red-900 text-red-300' :
+                    vlcState === 'loading' ? 'bg-orange-900 text-orange-300 cursor-wait' :
+                    vlcState === 'ok'      ? 'bg-green-900 text-green-300' :
+                    'bg-orange-700 hover:bg-orange-600 text-white'
+                  }`}
+                >
+                  {vlcState === 'loading' ? '⏳ Opening…' : vlcState === 'ok' ? '✓ Opened in VLC' : vlcState === 'error' ? '✕ vlc-opener not running' : 'Open in VLC'}
+                </button>
               </div>
             </div>
           ) : (

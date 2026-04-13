@@ -21,7 +21,7 @@ from typing import List, Optional
 import numpy as np
 from PIL import Image
 from qdrant_client import QdrantClient
-from qdrant_client.models import Distance, FieldCondition, Filter, IsEmptyCondition, MatchText, MatchValue, PayloadField, PointIdsList, PointStruct, VectorParams
+from qdrant_client.models import Distance, FieldCondition, Filter, IsEmptyCondition, MatchText, MatchValue, PayloadField, PointIdsList, PointStruct, SetPayload, SetPayloadOperation, VectorParams
 from sqlalchemy import select, text, update
 
 from celery_app import app
@@ -188,6 +188,16 @@ qdrant_client = QdrantClient(
     port=QDRANT_PORT,
     grpc_port=QDRANT_GRPC_PORT,
     prefer_grpc=QDRANT_PREFER_GRPC,
+)
+
+# Separate REST client for long-running cascade operations.
+# gRPC has a short default deadline that fires on large collections under load;
+# REST + explicit 60s timeout avoids the DEADLINE_EXCEEDED / segment read-lock issues.
+_cascade_qdrant = QdrantClient(
+    host=QDRANT_HOST,
+    port=QDRANT_PORT,
+    prefer_grpc=False,
+    timeout=60,
 )
 
 
@@ -1494,35 +1504,38 @@ def backfill_yolo(self, dry_run: bool = False):
 
 
 @app.task(bind=True, max_retries=3, default_retry_delay=10)
-def cascade_votes(self, file_path: str, batch_id: str, threshold: float = 0.9, search_query: Optional[str] = None):
+def cascade_votes(self, file_path: str, batch_id: str, threshold: float = 0.9, search_query: Optional[str] = None, seed_point_id: Optional[str] = None):
     """
     Auto-cascade an upvote to all visually similar frames (>= threshold similarity).
 
     Steps:
-      1. Find the source Qdrant point for file_path
+      1. Find the source Qdrant point for file_path (or use seed_point_id directly)
       2. Query similar points via server-side vector lookup (no CLIP re-inference)
       3. Set user_vote=1 (+ vote_label=search_query if provided) on all similar points
       4. Log VoteEvent rows + update cascaded_count on the seed vote in Postgres
     """
     try:
-        # 1. Find source point ID
-        scroll_result, _ = qdrant_client.scroll(
-            collection_name=QDRANT_COLLECTION_NAME,
-            scroll_filter=Filter(must=[
-                FieldCondition(key="file_path", match=MatchValue(value=file_path))
-            ]),
-            limit=1,
-            with_payload=False,
-            with_vectors=False,
-        )
-        if not scroll_result:
-            log.warning("[cascade_votes] source not found: %s", file_path)
-            return {"cascaded": 0, "reason": "source not found"}
-
-        source_id = scroll_result[0].id
+        # 1. Resolve source point ID — use seed_point_id if provided (exact frame), else fall back to file_path lookup
+        if seed_point_id:
+            import uuid as _uuid
+            source_id = _uuid.UUID(seed_point_id)
+        else:
+            scroll_result, _ = _cascade_qdrant.scroll(
+                collection_name=QDRANT_COLLECTION_NAME,
+                scroll_filter=Filter(must=[
+                    FieldCondition(key="file_path", match=MatchValue(value=file_path))
+                ]),
+                limit=1,
+                with_payload=False,
+                with_vectors=False,
+            )
+            if not scroll_result:
+                log.warning("[cascade_votes] source not found: %s", file_path)
+                return {"cascaded": 0, "reason": "source not found"}
+            source_id = scroll_result[0].id
 
         # 2. Find similar points via server-side vector lookup
-        similar = qdrant_client.query_points(
+        similar = _cascade_qdrant.query_points(
             collection_name=QDRANT_COLLECTION_NAME,
             query=source_id,
             score_threshold=threshold,
@@ -1549,23 +1562,28 @@ def cascade_votes(self, file_path: str, batch_id: str, threshold: float = 0.9, s
                 db.close()
             return {"cascaded": 0, "batch_id": batch_id}
 
-        # 3. Per-point patch: append query→score to vote_label dict (preserve existing labels)
+        # 3. Patch vote data onto similar points.
+        # Build one batch_update_points request so all writes go in a single HTTP call,
+        # eliminating the per-point write-lock storm while preserving individual scores.
+        ops = []
         for r in similar.points:
-            current_labels: dict = (r.payload or {}).get("vote_label") or {}
             point_payload: dict = {"user_vote": 1}
             if search_query:
+                current_labels: dict = (r.payload or {}).get("vote_label") or {}
                 updated_labels = dict(current_labels)
-                # Keep the highest score if this query has been applied before
                 updated_labels[search_query] = max(
                     float(updated_labels.get(search_query, 0.0)),
                     float(r.score),
                 )
                 point_payload["vote_label"] = updated_labels
-            qdrant_client.set_payload(
-                collection_name=QDRANT_COLLECTION_NAME,
-                payload=point_payload,
-                points=PointIdsList(points=[r.id]),
-            )
+                point_payload["voted_queries"] = sorted(updated_labels.keys())
+            ops.append(SetPayloadOperation(
+                set_payload=SetPayload(payload=point_payload, points=[r.id])
+            ))
+        _cascade_qdrant.batch_update_points(
+            collection_name=QDRANT_COLLECTION_NAME,
+            update_operations=ops,
+        )
 
         # 4. Log VoteEvents + update cascaded_count on seed
         now = datetime.utcnow()

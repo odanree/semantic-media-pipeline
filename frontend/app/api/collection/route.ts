@@ -6,7 +6,7 @@ export async function GET() {
   const BACKEND_API_KEY = process.env.BACKEND_API_KEY || ''
   try {
     const response = await fetch(`${API_URL}/api/stats/collection`, {
-      next: { revalidate: 60 }, // cache for 60s — collection changes slowly
+      cache: 'no-store',
       headers: {
         ...(BACKEND_API_KEY && { 'X-API-Key': BACKEND_API_KEY }),
       },

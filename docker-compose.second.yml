@@ -76,7 +76,7 @@ services:
       # Reduces resident memory significantly at the cost of slightly slower
       # cold-start searches (data is paged in from disk on first access).
       QDRANT__STORAGE__MMAP_THRESHOLD_KB: "20000"
-    mem_limit: 8g
+    mem_limit: 16g
     healthcheck:
       test: ["CMD-SHELL", "bash -c '</dev/tcp/localhost/6333' 2>/dev/null"]
       interval: 10s
@@ -186,22 +186,24 @@ services:
       - LUMEN_PATH_MAP_2=${LUMEN_PATH_MAP_2:-}
       - LUMEN_PATH_MAP_3=${LUMEN_PATH_MAP_3:-}
       - SIDECAR_ROOT=/mnt/sidecars
+      - ON_DEMAND_PROXY_DIR=/mnt/on_demand_proxies
       - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-http://localhost:3000,http://localhost:3001,http://localhost:3002}
       - LLM_PROVIDER=${LLM_PROVIDER:-local}
       - LLM_MODEL=${LLM_MODEL:-qwen3:14b}
       - LLM_BASE_URL=${LLM_BASE_URL:-http://host.docker.internal:11434/v1}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
-    command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+    command: uvicorn main:app --host 0.0.0.0 --port 8000
     volumes:
-      - ./api:/app                    # live reload — changes take effect without rebuild
+      - ./api:/app
       - media2_data:/data/media
       - ${L2_MEDIA_1}:/mnt/source/f-ltv:ro
       - ${L2_MEDIA_2}:/mnt/source/e:ro
       - ${L2_MEDIA_3}:/mnt/source/d-4k-index:ro
       - ${L2_MEDIA_4}:/mnt/source/c-index:ro
       - ${L2_MEDIA_5}:/mnt/source/f-index:ro
-      - hf_cache:/root/.cache/huggingface   # Persist model downloads across rebuilds
+      - hf_cache:/root/.cache/huggingface
       - I:/lumen2-sidecars:/mnt/sidecars:ro
+      - I:/on_demand_proxies:/mnt/on_demand_proxies
     depends_on:
       redis2:
         condition: service_healthy

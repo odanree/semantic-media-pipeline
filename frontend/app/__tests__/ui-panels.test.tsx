@@ -438,9 +438,18 @@ describe('SimilarPanel', () => {
   })
 
   it('fetches playlist and shows reel when Reel button is clicked', async () => {
-    const fetchMock = vi.fn()
-      .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ results: mockResults }) })
-      .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ playlist_url: '/api/playlist/serve/abc/playlist.m3u8', clip_count: 2, total_duration_sec: 12 }) })
+    // SimilarPanel fires /api/similar AND /api/frame-labels on mount, then /api/playlist
+    // on button click — use URL routing to avoid fragile mockResolvedValueOnce ordering.
+    const fetchMock = vi.fn().mockImplementation((url: string) => {
+      if (url.includes('frame-labels')) {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({ labels: [] }) })
+      }
+      if (url.includes('similar')) {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({ results: mockResults }) })
+      }
+      // /api/playlist
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({ playlist_url: '/api/playlist/serve/abc/playlist.m3u8', clip_count: 2, total_duration_sec: 12 }) })
+    })
     vi.stubGlobal('fetch', fetchMock)
     await act(async () => {
       render(<SimilarPanel source={mockSource} onClose={vi.fn()} />)
@@ -450,14 +459,21 @@ describe('SimilarPanel', () => {
       fireEvent.click(screen.getByRole('button', { name: /play highlight reel/i }))
       await new Promise(r => setTimeout(r, 10))
     })
-    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(fetchMock).toHaveBeenCalledTimes(3) // similar + frame-labels + playlist
     expect(screen.getByTestId('highlight-reel')).toBeInTheDocument()
   })
 
   it('shows reel error when playlist fetch fails', async () => {
-    const fetchMock = vi.fn()
-      .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ results: mockResults }) })
-      .mockResolvedValueOnce({ ok: false, json: () => Promise.resolve({ error: 'Playlist failed' }) })
+    const fetchMock = vi.fn().mockImplementation((url: string) => {
+      if (url.includes('frame-labels')) {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({ labels: [] }) })
+      }
+      if (url.includes('similar')) {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({ results: mockResults }) })
+      }
+      // /api/playlist returns an error
+      return Promise.resolve({ ok: false, json: () => Promise.resolve({ error: 'Playlist failed' }) })
+    })
     vi.stubGlobal('fetch', fetchMock)
     await act(async () => {
       render(<SimilarPanel source={mockSource} onClose={vi.fn()} />)
@@ -468,6 +484,38 @@ describe('SimilarPanel', () => {
       await new Promise(r => setTimeout(r, 10))
     })
     expect(screen.getByText('Playlist failed')).toBeInTheDocument()
+  })
+
+  it('renders keyword chips when frame-labels returns labels', async () => {
+    const fetchMock = vi.fn().mockImplementation((url: string) => {
+      if (url.includes('frame-labels')) {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({ labels: [{ label: 'yoga pose', score: 0.91 }, { label: 'meditation', score: 0.85 }] }) })
+      }
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({ results: mockResults }) })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    await act(async () => {
+      render(<SimilarPanel source={mockSource} onClose={vi.fn()} />)
+      await new Promise(r => setTimeout(r, 20))
+    })
+    expect(screen.getByText('yoga pose')).toBeInTheDocument()
+    expect(screen.getByText('meditation')).toBeInTheDocument()
+  })
+
+  it('does not render keyword chips when frame-labels returns empty', async () => {
+    const fetchMock = vi.fn().mockImplementation((url: string) => {
+      if (url.includes('frame-labels')) {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({ labels: [] }) })
+      }
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({ results: mockResults }) })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    await act(async () => {
+      render(<SimilarPanel source={mockSource} onClose={vi.fn()} />)
+      await new Promise(r => setTimeout(r, 20))
+    })
+    // No chip container rendered when labels are empty
+    expect(screen.queryByRole('button', { name: /yoga/i })).not.toBeInTheDocument()
   })
 
   it('renders "Similar to" label with source filename', async () => {

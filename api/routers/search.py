@@ -19,7 +19,7 @@ from fastapi import APIRouter, HTTPException, Request
 from rate_limit import limiter, LIMIT_SEARCH, LIMIT_SEARCH_VEC, LIMIT_SCENE_BOUNDS
 from pydantic import BaseModel
 from qdrant_client import QdrantClient
-from qdrant_client.models import Filter, FieldCondition, MatchValue, ScrollRequest, Range, PointIdsList
+from qdrant_client.models import Filter, FieldCondition, MatchAny, MatchValue, ScrollRequest, Range, PointIdsList
 from sqlalchemy import insert
 
 from db.models import VoteEvent, get_async_engine
@@ -577,6 +577,41 @@ async def search_media(request: Request, body: SearchRequest):
             raw_frame_count = reranker_candidates
 
             # ------------------------------------------------------------------
+            # Voted-frame injection: ANN search restricted to frames voted for
+            # this query (voted_queries filter). Returns the most visually
+            # similar voted frames regardless of how many exist — no scroll
+            # limit problem for popular queries with thousands of labeled frames.
+            # ------------------------------------------------------------------
+            if body.query and not body.exclude_voted:
+                try:
+                    inject_results = qdrant_client.query_points(
+                        collection_name=QDRANT_COLLECTION_NAME,
+                        query=query_vector,
+                        query_filter=Filter(must=[
+                            FieldCondition(key="user_vote", match=MatchValue(value=1)),
+                            FieldCondition(key="voted_queries", match=MatchAny(any=[body.query])),
+                        ]),
+                        limit=max(body.limit * RERANKER_OVERSAMPLE, 200),
+                        with_payload=True,
+                        with_vectors=False,
+                        score_threshold=0.0,
+                    )
+                    existing_ids = {p.id for p in raw_points}
+                    # Also dedup by (file_path, frame_index) to handle duplicate indexed copies
+                    existing_fp_fi = {
+                        ((p.payload or {}).get("file_path"), (p.payload or {}).get("frame_index"))
+                        for p in raw_points
+                    }
+                    for vp in inject_results.points:
+                        fp_fi = ((vp.payload or {}).get("file_path"), (vp.payload or {}).get("frame_index"))
+                        if vp.id not in existing_ids and fp_fi not in existing_fp_fi:
+                            raw_points.append(vp)
+                            existing_ids.add(vp.id)
+                            existing_fp_fi.add(fp_fi)
+                except Exception:
+                    pass  # non-critical — degrade gracefully
+
+            # ------------------------------------------------------------------
             # Pass 2: Exact cosine re-ranking on the candidate pool.
             # Sub-millisecond for ≤500 candidates on CPU (pure numpy matmul).
             # ------------------------------------------------------------------
@@ -752,9 +787,11 @@ class SimilarRequest(BaseModel):
 class VoteRequest(BaseModel):
     file_path: str
     audio_segment_index: Optional[int] = None  # None for images or unsegmented videos
+    frame_index: Optional[int] = None  # If provided, target exactly this frame (not all frames in file)
     vote: int  # 1 (thumbs up), -1 (thumbs down), or 0 (clear)
     search_query: Optional[str] = None  # Context: what query led to this vote
     batch_id: Optional[str] = None  # For bulk votes: inherit from seed vote
+    cascade_threshold: float = 0.9  # Similarity threshold for auto-cascade
 
 
 @router.post("/similar")
@@ -907,6 +944,10 @@ async def set_vote(request: Request, body: VoteRequest):
             conditions.append(
                 FieldCondition(key="audio_segment_index", match=MatchValue(value=body.audio_segment_index))
             )
+        if body.frame_index is not None:
+            conditions.append(
+                FieldCondition(key="frame_index", match=MatchValue(value=body.frame_index))
+            )
 
         # Scroll all points matching the criteria
         scroll_result, _ = qdrant_client.scroll(
@@ -943,6 +984,7 @@ async def set_vote(request: Request, body: VoteRequest):
                 elif body.vote == 0 and body.search_query in updated_labels:
                     del updated_labels[body.search_query]
                 vote_payload["vote_label"] = updated_labels
+                vote_payload["voted_queries"] = sorted(updated_labels.keys())
             qdrant_client.set_payload(
                 collection_name=QDRANT_COLLECTION_NAME,
                 payload=vote_payload,
@@ -962,11 +1004,13 @@ async def set_vote(request: Request, body: VoteRequest):
             )
         )
 
-        # Auto-cascade upvote to visually similar frames (≥90% similarity)
+        # Auto-cascade upvote to visually similar frames
+        # Pass the exact point_id so cascade uses the correct frame vector, not an arbitrary frame from the file.
         if body.vote == 1 and not body.batch_id:
+            seed_point_id = str(point_ids[0]) if point_ids else None
             celery_app.send_task(
                 "tasks.cascade_votes",
-                args=[body.file_path, batch_id, 0.9, body.search_query],
+                args=[body.file_path, batch_id, body.cascade_threshold, body.search_query, seed_point_id],
                 queue="gpu",
             )
 
@@ -1015,6 +1059,7 @@ async def set_vote(request: Request, body: VoteRequest):
                             elif body.vote == 0 and body.search_query in updated_labels:
                                 del updated_labels[body.search_query]
                             vote_payload["vote_label"] = updated_labels
+                            vote_payload["voted_queries"] = sorted(updated_labels.keys())
                         qdrant_client.set_payload(
                             collection_name=QDRANT_COLLECTION_NAME,
                             payload=vote_payload,

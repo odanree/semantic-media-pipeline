@@ -36,6 +36,7 @@ interface ResultGridProps {
 }
 
 type ViewMode = 'grid' | 'list'
+type CardSize = 'small' | 'large'
 type SortKey = 'similarity_desc' | 'similarity_asc' | 'rms_desc' | 'rms_asc'
 
 // Stream directly from FastAPI - bypasses Next.js proxy, no Node.js buffering
@@ -48,6 +49,7 @@ export default function ResultGrid({ results, availableLabels, excludeVoted = fa
   const [similarSource, setSimilarSource] = useState<SearchResult | null>(null)
   const [currentPage, setCurrentPage] = useState(1)
   const [viewMode, setViewMode] = useState<ViewMode>('grid')
+  const [cardSize, setCardSize] = useState<CardSize>('small')
   const [sortKey, setSortKey] = useState<SortKey>('similarity_desc')
   const [reel, setReel] = useState<ReelState | null>(null)
   const [reelOpen, setReelOpen] = useState(false)
@@ -59,7 +61,7 @@ export default function ResultGrid({ results, availableLabels, excludeVoted = fa
   const [sceneBoundsCache, setSceneBoundsCache] = useState<Record<string, { start_sec: number; end_sec: number }>>({})
   const [sceneBoundsLoading, setSceneBoundsLoading] = useState(false)
   const [voteLabelsOverride, setVoteLabelsOverride] = useState<Record<string, Record<string, number>>>({})
-  const itemsPerPage = 40
+  const [itemsPerPage, setItemsPerPage] = useState(25)
 
   // Seed initial votes from results
   const initialVotes = useMemo(() => {
@@ -96,7 +98,7 @@ export default function ResultGrid({ results, availableLabels, excludeVoted = fa
       case 'rms_asc':  return (a.audio_rms_energy ?? Infinity) - (b.audio_rms_energy ?? Infinity)
       default: return b.similarity - a.similarity
     }
-  }), [results, sortKey, votes])
+  }), [results, sortKey, votes, voteLabelsOverride, searchQuery])
 
   const totalPages = Math.ceil(sortedResults.length / itemsPerPage)
 
@@ -283,6 +285,16 @@ export default function ResultGrid({ results, availableLabels, excludeVoted = fa
               {excludeVoted ? '○ Unvoted' : '○ All'}
             </button>
           )}
+          <select
+            value={itemsPerPage}
+            onChange={(e) => { setItemsPerPage(Number(e.target.value)); setCurrentPage(1) }}
+            className="px-2 py-2 rounded text-sm font-semibold bg-gray-700 text-gray-300 border border-gray-600 cursor-pointer"
+            title="Results per page"
+          >
+            <option value={25}>25</option>
+            <option value={50}>50</option>
+            <option value={100}>100</option>
+          </select>
           <button
             onClick={() => setViewMode('grid')}
             className={`px-3 py-2 rounded text-sm font-semibold transition ${
@@ -305,6 +317,32 @@ export default function ResultGrid({ results, availableLabels, excludeVoted = fa
           >
             ☰ List
           </button>
+          {viewMode === 'grid' && (
+            <>
+              <button
+                onClick={() => setCardSize('small')}
+                className={`px-3 py-2 rounded text-sm font-semibold transition ${
+                  cardSize === 'small'
+                    ? 'bg-blue-600 text-white'
+                    : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+                }`}
+                title="Small cards (4 per row)"
+              >
+                S
+              </button>
+              <button
+                onClick={() => setCardSize('large')}
+                className={`px-3 py-2 rounded text-sm font-semibold transition ${
+                  cardSize === 'large'
+                    ? 'bg-blue-600 text-white'
+                    : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+                }`}
+                title="Large cards (2 per row)"
+              >
+                L
+              </button>
+            </>
+          )}
         </div>
         {reelError && (
           <p className="text-xs text-red-400 mt-1">{reelError}</p>
@@ -316,7 +354,9 @@ export default function ResultGrid({ results, availableLabels, excludeVoted = fa
         id="result-grid"
         className={
           viewMode === 'grid'
-            ? 'grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4'
+            ? cardSize === 'large'
+              ? 'grid grid-cols-1 sm:grid-cols-2 gap-4'
+              : 'grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4'
             : 'space-y-3'
         }
         role="list"
@@ -408,7 +448,7 @@ export default function ResultGrid({ results, availableLabels, excludeVoted = fa
 
           {/* Page Size Info */}
           <div className="text-xs text-gray-500">
-            Showing {itemsPerPage} results per page
+            {itemsPerPage} per page
           </div>
         </div>
       )}
@@ -431,6 +471,13 @@ export default function ResultGrid({ results, availableLabels, excludeVoted = fa
           }}
           onClose={() => setSimilarSource(null)}
           availableLabels={availableLabels}
+          onTagVote={(filePath, audioSegmentIndex, keyword) => {
+            const key = getVoteKey(filePath, audioSegmentIndex)
+            setVoteLabelsOverride(prev => ({
+              ...prev,
+              [key]: { ...(prev[key] ?? {}), [keyword]: 1 },
+            }))
+          }}
         />
       )}
 
@@ -543,10 +590,24 @@ function ResultItem({
   const [tagValue, setTagValue] = useState('')
   const [hovered, setHovered] = useState(false)
   const [previewError, setPreviewError] = useState(false)
+  const [proxySource, setProxySource] = useState<'proxy' | 'original' | null>(null)
+  const [videoKey, setVideoKey] = useState(0)
   const [vlcState, setVlcState] = useState<'idle' | 'loading' | 'ok' | 'error'>('idle')
   const tagInputRef = useRef<HTMLInputElement>(null)
   const previewRef = useRef<HTMLVideoElement>(null)
   const hoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const proxyPollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const shouldPollRef = useRef(false)
+
+  // Clear polling intervals when the card unmounts (e.g., new search results render).
+  // onMouseLeave only fires on explicit cursor exit — unmount leaves intervals orphaned.
+  useEffect(() => {
+    return () => {
+      shouldPollRef.current = false
+      if (hoverTimerRef.current) clearTimeout(hoverTimerRef.current)
+      if (proxyPollRef.current) clearInterval(proxyPollRef.current)
+    }
+  }, [])
 
   function openInVlc(e: React.MouseEvent) {
     e.stopPropagation()
@@ -654,8 +715,42 @@ function ResultItem({
       >
         <div
           className="relative aspect-square bg-gray-700 overflow-hidden"
-          onMouseEnter={() => { hoverTimerRef.current = setTimeout(() => setHovered(true), 500) }}
-          onMouseLeave={() => { if (hoverTimerRef.current) { clearTimeout(hoverTimerRef.current); hoverTimerRef.current = null } setHovered(false); if (previewRef.current) previewRef.current.pause() }}
+          onMouseEnter={() => {
+            shouldPollRef.current = true
+            hoverTimerRef.current = setTimeout(() => {
+              setHovered(true)
+              setProxySource('original')
+              const { start_sec, end_sec } = clipBounds(result, clipPadding, sceneBoundsCache)
+              const statusUrl = `${STREAM_BASE}/api/proxy-status?path=${encodeURIComponent(result.file_path)}&start=${start_sec.toFixed(3)}&end=${end_sec.toFixed(3)}`
+              // Initial check — guard against mouse leaving before fetch resolves
+              fetch(statusUrl).then(r => r.json()).then(d => {
+                if (!shouldPollRef.current) return
+                if (d.status === 'proxy') { setProxySource('proxy'); return }
+                // Proxy not ready yet — poll every 5s until it is, then reload the video
+                proxyPollRef.current = setInterval(() => {
+                  if (!shouldPollRef.current) {
+                    clearInterval(proxyPollRef.current!); proxyPollRef.current = null
+                    return
+                  }
+                  fetch(statusUrl).then(r => r.json()).then(d => {
+                    if (!shouldPollRef.current) return
+                    if (d.status === 'proxy') {
+                      clearInterval(proxyPollRef.current!); proxyPollRef.current = null
+                      setProxySource('proxy')
+                      setVideoKey(k => k + 1)
+                    }
+                  }).catch(() => {})
+                }, 5000)
+              }).catch(() => {})
+            }, 750)
+          }}
+          onMouseLeave={() => {
+            shouldPollRef.current = false
+            if (hoverTimerRef.current) { clearTimeout(hoverTimerRef.current); hoverTimerRef.current = null }
+            if (proxyPollRef.current) { clearInterval(proxyPollRef.current); proxyPollRef.current = null }
+            setHovered(false); setProxySource(null)
+            if (previewRef.current) previewRef.current.pause()
+          }}
         >
           <div className="absolute inset-0 bg-gradient-to-b from-transparent to-gray-900 opacity-60 z-10"></div>
 
@@ -672,28 +767,43 @@ function ResultItem({
                   className={`w-full h-full object-cover transition-opacity duration-150 ${hovered ? 'opacity-0' : 'opacity-100'}`}
                   loading="lazy"
                 />
-                {hovered && !previewError && (
-                  <video
-                    ref={previewRef}
-                    src={`${STREAM_BASE}/api/stream?path=${encodeURIComponent(result.file_path)}`}
-                    muted
-                    playsInline
-                    className="absolute inset-0 w-full h-full object-cover"
-                    onLoadedMetadata={() => {
-                      const v = previewRef.current
-                      if (!v) return
-                      v.currentTime = result.timestamp ?? 0
-                      v.play()
-                    }}
-                    onTimeUpdate={() => {
-                      const v = previewRef.current
-                      if (!v) return
-                      const start = result.timestamp ?? 0
-                      if (v.currentTime >= start + 5) v.currentTime = start
-                    }}
-                    onError={() => setPreviewError(true)}
-                  />
-                )}
+                {hovered && !previewError && (() => {
+                  const { start_sec, end_sec } = clipBounds(result, clipPadding, sceneBoundsCache)
+                  // Proxy clips are re-encoded from 0; original files use absolute timestamps.
+                  // Compute the relative playhead position within whatever is served.
+                  const absTs = result.timestamp ?? 0
+                  return (
+                    <video
+                      key={videoKey}
+                      ref={previewRef}
+                      src={`${STREAM_BASE}/api/stream?path=${encodeURIComponent(result.file_path)}&quality=proxy&start=${start_sec.toFixed(3)}&end=${end_sec.toFixed(3)}`}
+                      muted
+                      playsInline
+                      className="absolute inset-0 w-full h-full object-cover"
+                      onLoadedMetadata={() => {
+                        const v = previewRef.current
+                        if (!v) return
+                        // Proxy clips are trimmed segments (duration ≈ end_sec - start_sec),
+                        // so timestamps start at 0 — use relative offset.
+                        // Original files retain full duration — use absolute timestamp.
+                        const clipDur = end_sec - start_sec
+                        const isProxyClip = v.duration <= clipDur + 2
+                        const seekTo = isProxyClip ? Math.max(0, absTs - start_sec) : absTs
+                        v.currentTime = seekTo < v.duration ? seekTo : 0
+                        v.play()
+                      }}
+                      onTimeUpdate={() => {
+                        const v = previewRef.current
+                        if (!v) return
+                        const clipDur = end_sec - start_sec
+                        const isProxyClip = v.duration <= clipDur + 2
+                        const loopFrom = isProxyClip ? Math.max(0, absTs - start_sec) : absTs
+                        if (v.currentTime >= loopFrom + 10) v.currentTime = loopFrom
+                      }}
+                      onError={() => setPreviewError(true)}
+                    />
+                  )
+                })()}
                 {/* Play overlay — hidden while previewing */}
                 {!hovered && (
                   <div className="absolute inset-0 z-20 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
@@ -726,30 +836,38 @@ function ResultItem({
             ≈ Similar
           </button>
 
-          {/* VLC button — top-right, shown when preview fails (e.g. HEVC) */}
-          {previewError && (
-            <button
-              className={`absolute top-2 right-2 z-30 px-2 py-1 rounded text-xs font-semibold transition ${
-                vlcState === 'error'   ? 'bg-red-900 text-red-300' :
-                vlcState === 'loading' ? 'bg-orange-900 text-orange-300 cursor-wait' :
-                vlcState === 'ok'      ? 'bg-green-900 text-green-300' :
-                'bg-black bg-opacity-70 hover:bg-orange-700 text-gray-200'
-              }`}
-              onClick={openInVlc}
-              title={
-                vlcState === 'error'   ? 'vlc-opener not running — start scripts/vlc-opener.py' :
-                vlcState === 'loading' ? 'Opening…' :
-                vlcState === 'ok'      ? 'Opened!' :
-                'Open in VLC (codec unsupported)'
-              }
-            >
-              {vlcState === 'loading' ? '⏳ VLC' : vlcState === 'ok' ? '✓ VLC' : vlcState === 'error' ? '✕ VLC' : 'VLC'}
-            </button>
-          )}
+          {/* VLC button — top-right, always visible on hover */}
+          <button
+            className={`absolute top-2 right-2 z-30 px-2 py-1 rounded text-xs font-semibold transition ${
+              vlcState === 'error'   ? 'bg-red-900 text-red-300' :
+              vlcState === 'loading' ? 'bg-orange-900 text-orange-300 cursor-wait' :
+              vlcState === 'ok'      ? 'bg-green-900 text-green-300' :
+              'bg-black bg-opacity-70 hover:bg-orange-700 text-gray-200 opacity-0 group-hover:opacity-100'
+            }`}
+            onClick={openInVlc}
+            title={
+              vlcState === 'error'   ? 'vlc-opener not running — start scripts/vlc-opener.py' :
+              vlcState === 'loading' ? 'Opening…' :
+              vlcState === 'ok'      ? 'Opened!' :
+              'Open in VLC'
+            }
+          >
+            {vlcState === 'loading' ? '⏳ VLC' : vlcState === 'ok' ? '✓ VLC' : vlcState === 'error' ? '✕ VLC' : 'VLC'}
+          </button>
 
           <div className="absolute bottom-2 right-2 px-2 py-1 bg-black bg-opacity-70 rounded text-xs font-semibold z-20">
             {(result.similarity * 100).toFixed(1)}%
           </div>
+          {/* Proxy/original badge — sibling of sim% so it renders above the video layer */}
+          {hovered && proxySource && (
+            <div className={`absolute bottom-2 left-2 z-30 px-1.5 py-0.5 rounded text-xs font-semibold ${
+              proxySource === 'proxy'
+                ? 'bg-blue-900 bg-opacity-80 text-blue-300'
+                : 'bg-black bg-opacity-70 text-gray-300'
+            }`}>
+              {proxySource === 'proxy' ? 'PROXY' : 'ORIGINAL'}
+            </div>
+          )}
         </div>
 
         <div className="p-3">

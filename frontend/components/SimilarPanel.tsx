@@ -37,9 +37,10 @@ interface SimilarPanelProps {
   source: SourceResult
   onClose: () => void
   availableLabels?: string[]
+  onTagVote?: (filePath: string, audioSegmentIndex: number | undefined, keyword: string) => void
 }
 
-export default function SimilarPanel({ source, onClose, availableLabels }: SimilarPanelProps) {
+export default function SimilarPanel({ source, onClose, availableLabels, onTagVote }: SimilarPanelProps) {
   const [results, setResults] = useState<SimilarResult[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -53,8 +54,31 @@ export default function SimilarPanel({ source, onClose, availableLabels }: Simil
   const [clipPadding, setClipPadding] = useState(3)
   const [labelFilter, setLabelFilter] = useState<string | undefined>(undefined)
   const [initialVotes, setInitialVotes] = useState<Record<string, 1 | -1>>({})
+  const [labelChips, setLabelChips] = useState<{ keyword: string; sim: number }[]>([])
+  const [selectedChip, setSelectedChip] = useState<string | null>(null)
+  // Track which label was applied per key this session — drives ring color and badge
+  const [taggedLabels, setTaggedLabels] = useState<Record<string, string>>({})
   const panelRef = useRef<HTMLDivElement>(null)
-  const { votes, vote, getVoteKey } = useVotes({ initialVotes })
+  // frame_index lookup: file_path+timestamp → frame_index, so votes target exact frame
+  const frameIndexRef = useRef<Record<string, number>>({})
+
+  // Downvotes are ephemeral — only reorder the reel, never persisted to backend.
+  const { votes, vote, tagVote, getVoteKey } = useVotes({
+    initialVotes,
+    api: {
+      persist: async (filePath, audioSegmentIndex, voteValue, searchQuery) => {
+        if (voteValue === -1) return
+        const fkey = audioSegmentIndex !== undefined ? `${filePath}#${audioSegmentIndex}` : filePath
+        const frameIndex = frameIndexRef.current[fkey] ?? null
+        const response = await fetch('/api/vote', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ file_path: filePath, audio_segment_index: audioSegmentIndex, frame_index: frameIndex, vote: voteValue, search_query: searchQuery || null, cascade_threshold: 0.95 }),
+        })
+        if (!response.ok) throw new Error(`Vote API error: ${response.status}`)
+      },
+    },
+  })
 
   useEffect(() => {
     setLoading(true)
@@ -81,15 +105,21 @@ export default function SimilarPanel({ source, onClose, availableLabels }: Simil
       .then((data) => {
         const newResults = data.results ?? []
         setResults(newResults)
-        // Extract votes from results to seed useVotes hook using composite key
+        // Extract votes + frame indexes from results
         const votes: Record<string, 1 | -1> = {}
+        const frameIdx: Record<string, number> = {}
         newResults.forEach((r: SimilarResult) => {
           if (r.user_vote === 1 || r.user_vote === -1) {
             const key = getVoteKey(r.file_path, r.audio_segment_index ?? undefined)
             votes[key] = r.user_vote
           }
+          if (r.best_frame_index != null) {
+            const fkey = getVoteKey(r.file_path, r.audio_segment_index ?? undefined)
+            frameIdx[fkey] = r.best_frame_index
+          }
         })
         setInitialVotes(votes)
+        frameIndexRef.current = frameIdx
       })
       .catch((e) => setError(typeof e === 'string' ? e : 'Could not load similar videos'))
       .finally(() => setLoading(false))
@@ -101,6 +131,19 @@ export default function SimilarPanel({ source, onClose, availableLabels }: Simil
     document.addEventListener('keydown', handler)
     return () => document.removeEventListener('keydown', handler)
   }, [onClose])
+
+  // Fetch top-k semantic label matches for the source frame via reverse lookup.
+  useEffect(() => {
+    setLabelChips([])
+    fetch('/api/frame-labels', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ file_path: source.file_path, timestamp: source.timestamp, top_k: 8 }),
+    })
+      .then(r => r.ok ? r.json() : null)
+      .then(d => { if (d?.labels) setLabelChips(d.labels.map((l: { label: string; score: number }) => ({ keyword: l.label, sim: l.score }))) })
+      .catch(() => {})
+  }, [source.file_path, source.timestamp])
 
   const sortedResults = useMemo(() => [...results].sort((a, b) => {
     const keyA = a.audio_segment_index !== undefined ? `${a.file_path}#${a.audio_segment_index}` : a.file_path
@@ -202,6 +245,29 @@ export default function SimilarPanel({ source, onClose, availableLabels }: Simil
             alt="Source frame"
             className="w-full h-32 object-cover rounded-lg opacity-70"
           />
+          {/* Keyword chips — top vote_label keywords from similar results, click to tag-vote source */}
+          {labelChips.length > 0 && (
+            <div className="mt-2 flex flex-wrap gap-1.5 items-center">
+              {labelChips.map(({ keyword, sim }) => {
+                const isSelected = selectedChip === keyword
+                return (
+                  <button
+                    key={keyword}
+                    onClick={() => setSelectedChip(isSelected ? null : keyword)}
+                    className={`flex items-center gap-1 px-2 py-0.5 rounded-full text-xs transition ${
+                      isSelected
+                        ? 'bg-indigo-600 text-white ring-2 ring-indigo-400'
+                        : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+                    }`}
+                    title={isSelected ? `Deselect "${keyword}"` : `Select "${keyword}" to tag results`}
+                  >
+                    <span className="truncate max-w-[100px]">{keyword}</span>
+                    <span className={`shrink-0 ${isSelected ? 'text-indigo-300' : 'text-gray-500'}`}>{(sim * 100).toFixed(0)}%</span>
+                  </button>
+                )
+              })}
+            </div>
+          )}
         </div>
 
         {/* Results */}
@@ -293,13 +359,16 @@ export default function SimilarPanel({ source, onClose, availableLabels }: Simil
               </div>
               {reelError && <p className="text-xs text-red-400 mb-2">{reelError}</p>}
               <div className="grid grid-cols-2 gap-3">
-                {sortedResults.map((r) => (
+                {sortedResults.map((r) => {
+                  const cardKey = getVoteKey(r.file_path, r.audio_segment_index)
+                  const cardTaggedLabel = taggedLabels[cardKey] ?? null
+                  return (
                   <div
-                    key={r.file_path}
+                    key={cardKey}
                     className={`group relative text-left rounded-lg overflow-hidden transition ring-2 ${
-                      votes[getVoteKey(r.file_path, r.audio_segment_index)] === 1
-                        ? (r.vote_label && Object.values(r.vote_label).every(v => v < 1) ? 'ring-teal-600 bg-gray-800' : 'ring-green-500 bg-gray-800')
-                        : votes[getVoteKey(r.file_path, r.audio_segment_index)] === -1 ? 'ring-red-900 bg-gray-900 opacity-60'
+                      votes[cardKey] === 1
+                        ? (cardKey in taggedLabels || !(r.vote_label && Object.values(r.vote_label).every(v => v < 1)) ? 'ring-green-500 bg-gray-800' : 'ring-teal-600 bg-gray-800')
+                        : votes[cardKey] === -1 ? 'ring-red-900 bg-gray-900 opacity-60'
                         : 'ring-transparent bg-gray-800 hover:ring-blue-500'
                     }`}
                   >
@@ -331,6 +400,11 @@ export default function SimilarPanel({ source, onClose, availableLabels }: Simil
                         <div className="absolute bottom-1 right-1 px-1.5 py-0.5 bg-black bg-opacity-70 rounded text-xs font-semibold text-white">
                           {(r.best_similarity * 100).toFixed(1)}%
                         </div>
+                        {cardTaggedLabel && (
+                          <div className="absolute bottom-1 left-1 px-1.5 py-0.5 bg-green-700 bg-opacity-90 rounded text-xs font-semibold text-white truncate max-w-[80%]">
+                            {cardTaggedLabel}
+                          </div>
+                        )}
                       </div>
                     </button>
                     <div className="p-2">
@@ -353,10 +427,12 @@ export default function SimilarPanel({ source, onClose, availableLabels }: Simil
                       )}
                       {/* Vote buttons */}
                       {(() => {
-                        const isUpvoted = votes[getVoteKey(r.file_path, r.audio_segment_index)] === 1
-                        const isDownvoted = votes[getVoteKey(r.file_path, r.audio_segment_index)] === -1
+                        const key = getVoteKey(r.file_path, r.audio_segment_index)
+                        const isUpvoted = votes[key] === 1
+                        const isDownvoted = votes[key] === -1
+                        const isTagged = key in taggedLabels
                         const labelValues = r.vote_label ? Object.values(r.vote_label) : []
-                        const isCascade = isUpvoted && labelValues.length > 0 && labelValues.every(v => v < 1)
+                        const isCascade = isUpvoted && !isTagged && labelValues.length > 0 && labelValues.every(v => v < 1)
                         const isManual = isUpvoted && !isCascade
                         const topScore = isCascade ? Math.round(Math.max(...labelValues) * 100) : null
                         const upvoteCls = isManual
@@ -367,12 +443,23 @@ export default function SimilarPanel({ source, onClose, availableLabels }: Simil
                         return (
                           <div className="mt-1.5 flex gap-1">
                             <button
-                              onClick={() => onVote(r.file_path, r.audio_segment_index, 1)}
-                              className={`flex-1 py-0.5 rounded text-xs font-semibold transition ${upvoteCls}`}
-                              aria-label="Thumbs up"
-                              title={isManual ? 'Manually upvoted' : isCascade ? `Auto-cascaded (top ${topScore}% similarity)` : 'Promote in reel'}
+                              disabled={!selectedChip}
+                              onClick={() => {
+                                if (!selectedChip) return
+                                const key = getVoteKey(r.file_path, r.audio_segment_index)
+                                tagVote(r.file_path, r.audio_segment_index, selectedChip)
+                                setTaggedLabels(prev => ({ ...prev, [key]: selectedChip }))
+                                onTagVote?.(r.file_path, r.audio_segment_index, selectedChip)
+                                setReel(null)
+                              }}
+                              className={`flex-1 py-0.5 rounded text-xs font-semibold transition ${
+                                selectedChip
+                                  ? 'bg-indigo-700 text-white hover:bg-indigo-600'
+                                  : 'bg-gray-800 text-gray-600 cursor-default'
+                              }`}
+                              title={selectedChip ? `Tag as "${selectedChip}"` : 'Select a label chip first'}
                             >
-                              {isCascade ? `👍 ${topScore}%` : '👍'}
+                              {selectedChip ? `🏷 ${selectedChip}` : '👍'}
                             </button>
                             <button
                               onClick={() => onVote(r.file_path, r.audio_segment_index, -1)}
@@ -391,7 +478,8 @@ export default function SimilarPanel({ source, onClose, availableLabels }: Simil
                       })()}
                     </div>
                   </div>
-                ))}
+                )
+                })}
               </div>
             </>
           )}
