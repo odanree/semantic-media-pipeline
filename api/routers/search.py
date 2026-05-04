@@ -537,15 +537,17 @@ async def search_media(request: Request, body: SearchRequest):
             scroll_result, _ = qdrant_client.scroll(
                 collection_name=QDRANT_COLLECTION_NAME,
                 scroll_filter=audio_filter,
-                limit=body.limit,
+                limit=body.limit * 4 if body.dedup else body.limit,
                 with_payload=True,
             )
-            # Attach a dummy score so downstream code is uniform
-            for point in scroll_result:
-                point.score = 1.0
-            final_hits = scroll_result
-            raw_frame_count = len(final_hits)
-            scenes_collapsed = 0
+            raw_frame_count = len(scroll_result)
+            if body.dedup:
+                deduped = _segment_deduplicate(list(scroll_result))
+                deduped = _dir_cap_images(deduped)
+                final_hits = deduped[:body.limit]
+            else:
+                final_hits = list(scroll_result)[:body.limit]
+            scenes_collapsed = raw_frame_count - len(final_hits)
         else:
             # Embed the text query using CLIP (Redis-cached)
             query_vector = _get_query_embedding(body.query, model)
@@ -622,10 +624,19 @@ async def search_media(request: Request, body: SearchRequest):
             pass2_ms = (time.time() - t_p2) * 1000
 
             if body.dedup:
-                # One frame per audio segment (or per 5 s window for legacy media),
-                # then timelapse dir-cap, then trim to limit.
-                # raw_points is already score-sorted descending from Pass 2.
+                # Pass A: one frame per audio segment (or per 5 s window for
+                # legacy frames with no audio_segment_index).
                 all_hits = _segment_deduplicate(raw_points)
+                # Pass B: window NMS per file across segment representatives.
+                # Catches static shots whose short audio segments (2–5 s) all
+                # look identical — keeps only the highest-scoring frame per
+                # EVENT_WINDOW_SECONDS across all segments of the same file.
+                file_groups: dict[str, list] = defaultdict(list)
+                for hit in all_hits:
+                    file_groups[(hit.payload or {}).get("file_path", "")].append(hit)
+                all_hits = []
+                for hits_in_file in file_groups.values():
+                    all_hits.extend(_window_deduplicate(hits_in_file))
                 all_hits.sort(key=lambda p: p.score, reverse=True)
                 all_hits = _dir_cap_images(all_hits)
                 final_hits = all_hits[:body.limit]
@@ -774,6 +785,133 @@ async def lookup_frame(request: Request, body: LookupRequest):
         "scenes_collapsed": 0,
         "raw_frame_count": 1,
     }
+
+
+class FilenameSearchRequest(BaseModel):
+    query: str
+    limit: int = 50
+
+
+@router.post("/search/filename")
+@limiter.limit(LIMIT_SEARCH)
+async def search_by_filename(request: Request, body: FilenameSearchRequest):
+    """
+    Search by filename substring. Queries PostgreSQL ILIKE then fetches frames
+    from Qdrant. No CLIP embedding required.
+    """
+    start_time = time.time()
+
+    if not body.query.strip():
+        raise HTTPException(status_code=400, detail="Query cannot be empty")
+
+    from sqlalchemy import text as sa_text
+
+    engine = await get_async_engine()
+    async with engine.begin() as conn:
+        result = await conn.execute(
+            sa_text(
+                "SELECT DISTINCT file_path FROM media_files "
+                "WHERE file_path ILIKE :q AND processing_status = 'done' "
+                "ORDER BY file_path LIMIT 20"
+            ),
+            {"q": f"%{body.query.strip()}%"},
+        )
+        file_paths = [row[0] for row in result.fetchall()]
+
+    if not file_paths:
+        return SearchResponse(
+            query=body.query,
+            results=[],
+            count=0,
+            execution_time_ms=(time.time() - start_time) * 1000,
+        )
+
+    # Fetch manual-only votes (vote_source='manual') for matched files.
+    # Keyed by (file_path, audio_segment_index) since that's the granularity
+    # votes are cast at; audio_segment_index=None covers images/unsegmented frames.
+    async with engine.begin() as conn:
+        vote_rows = await conn.execute(
+            sa_text(
+                "SELECT DISTINCT ON (file_path, audio_segment_index) "
+                "file_path, audio_segment_index, vote, search_query "
+                "FROM vote_events "
+                "WHERE file_path = ANY(:fps) AND vote_source = 'manual' AND vote != 0 "
+                "ORDER BY file_path, audio_segment_index, timestamp DESC"
+            ),
+            {"fps": file_paths},
+        )
+        # {(file_path, audio_segment_index): (vote, search_query)}
+        manual_votes: dict[tuple, tuple] = {
+            (row[0], row[1]): (row[2], row[3]) for row in vote_rows.fetchall()
+        }
+
+    frames_per_file = max(5, body.limit // len(file_paths))
+
+    points, _ = qdrant_client.scroll(
+        collection_name=QDRANT_COLLECTION_NAME,
+        scroll_filter=Filter(
+            must=[FieldCondition(key="file_path", match=MatchAny(any=file_paths))]
+        ),
+        limit=min(body.limit * 3, 500),
+        with_payload=True,
+        with_vectors=False,
+    )
+
+    deduped = _segment_deduplicate(list(points))
+
+    grouped: dict[str, list] = defaultdict(list)
+    for point in deduped:
+        fp = (point.payload or {}).get("file_path", "")
+        grouped[fp].append(point)
+
+    results = []
+    for fp in file_paths:
+        frames = sorted(
+            grouped.get(fp, []),
+            key=lambda p: (p.payload or {}).get("timestamp") or 0,
+        )
+        if len(frames) > frames_per_file:
+            step = len(frames) / frames_per_file
+            frames = [frames[int(i * step)] for i in range(frames_per_file)]
+        for point in frames:
+            payload = point.payload or {}
+            ts = payload.get("timestamp")
+            seg_idx = payload.get("audio_segment_index")
+            vote_entry = manual_votes.get((fp, seg_idx))
+            manual_vote = vote_entry[0] if vote_entry else None
+            vote_query = vote_entry[1] if vote_entry else None
+            results.append({
+                "id": str(point.id),
+                "file_path": payload.get("file_path"),
+                "file_type": payload.get("file_type"),
+                "similarity": 1.0,
+                "frame_index": payload.get("frame_index"),
+                "timestamp": ts,
+                "scene_window_start": None,
+                "scene_window_end": None,
+                "updated_at": payload.get("updated_at"),
+                "audio_segment_index": seg_idx,
+                "audio_segment_start_sec": payload.get("audio_segment_start_sec"),
+                "audio_segment_end_sec": payload.get("audio_segment_end_sec"),
+                "audio_rms_energy": payload.get("audio_rms_energy"),
+                "construction_phase": payload.get("construction_phase"),
+                "phase_confidence": payload.get("phase_confidence"),
+                "label": payload.get("label"),
+                "user_vote": manual_vote,
+                "vote_query": vote_query,
+                "vote_label": payload.get("vote_label"),
+            })
+
+    # Sort by manual-only vote (upvoted first, unvoted middle, downvoted last),
+    # then by timestamp within each tier
+    results.sort(key=lambda r: (-(r.get("user_vote") or 0), r.get("timestamp") or 0))
+
+    return SearchResponse(
+        query=body.query,
+        results=results[: body.limit],
+        count=len(results),
+        execution_time_ms=(time.time() - start_time) * 1000,
+    )
 
 
 class SimilarRequest(BaseModel):

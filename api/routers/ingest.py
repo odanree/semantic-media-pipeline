@@ -24,7 +24,7 @@ import boto3
 from botocore.exceptions import ClientError
 from celery import Celery
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import RedirectResponse, Response, StreamingResponse
+from fastapi.responses import FileResponse, RedirectResponse, Response, StreamingResponse
 from rate_limit import limiter, LIMIT_STREAM, LIMIT_THUMBNAIL, LIMIT_PLAYLIST
 from PIL import Image as PILImage
 from pydantic import BaseModel
@@ -1406,16 +1406,12 @@ async def serve_playlist_file(token: str, filename: str):
     else:
         media_type = "application/octet-stream"
 
-    async def sender():
-        async with aiofiles.open(file_path, "rb") as f:
-            while True:
-                chunk = await f.read(STREAM_CHUNK_SIZE)
-                if not chunk:
-                    break
-                yield chunk
-
-    return StreamingResponse(
-        sender(),
+    # FileResponse sets Content-Length from stat() so HLS.js knows the segment
+    # size upfront and can compute download progress / timeout accurately.
+    # StreamingResponse uses chunked transfer with no Content-Length, which
+    # causes HLS.js to timeout on large segments (>50 MB) before they finish.
+    return FileResponse(
+        file_path,
         media_type=media_type,
         headers={
             "Cache-Control": "public, max-age=3600",

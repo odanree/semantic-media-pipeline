@@ -631,19 +631,25 @@ def collection_info():
             )
             seen_labels: set[str] = set()
             offset = None
-            while True:
+            # Sample up to 10K labeled points — enough to discover all distinct
+            # label values without scanning the full collection
+            MAX_LABEL_SCAN = 10_000
+            scanned = 0
+            while scanned < MAX_LABEL_SCAN:
+                batch_size = min(1000, MAX_LABEL_SCAN - scanned)
                 records, offset = qdrant.scroll(
                     collection_name=collection_name,
                     scroll_filter=label_filter,
                     with_payload=["label"],
                     with_vectors=False,
-                    limit=1000,
+                    limit=batch_size,
                     offset=offset,
                 )
                 for r in records:
                     val = r.payload.get("label")
                     if val:
                         seen_labels.add(val)
+                scanned += len(records)
                 if offset is None:
                     break
             labels = sorted(seen_labels)

@@ -21,6 +21,7 @@ Quick-reference map from question type to the best entry from this project.
 | 7 | **The High Bar** — asked hard questions of your own code | [D2](#d2-schema-drift--init-dbsql--migrations-diverge) | Caught schema sync issue in CI |
 | 8 | **The Complex Debug (external)** — traced silent zero-output to upstream breaking change | [G1](#g1-ffmpeg-80-breaking-changes-dji-d-log-yuv--sub-second-clips) | FFmpeg 8.0 rejecting DJI footage silently |
 | 9 | **The Innovation (ops)** — applied agent framework to automated ops recovery | [E2](#e2-langgraph-ops-agent--automated-pipeline-recovery) | LangGraph state machine for error triage + recovery |
+| 10 | **The Complex Debug (frontend)** — traced a minified crash to a bundler TDZ | [D4](#d4-temporal-dead-zone-module-import--hook-destructure-same-name) | React: module import + hook destructure collapsed into one uninitialized binding |
 | ★ | **AI Integration into Existing Workflows** — flagship answer for AI/ML-forward job descriptions | [H1](#h1-agentic-workflow-integration--self-healing-media-pipeline) | Full standalone answer: architecture, trade-offs, production lessons |
 
 ---
@@ -30,6 +31,7 @@ Quick-reference map from question type to the best entry from this project.
 - [A — Trade-Offs & System Design](#a--trade-offs--system-design)
   - [A1. Queue Starvation — Separating Long-Running CPU Work](#a1-queue-starvation-separating-long-running-cpu-work) `[BQ: The Trade-off]`
   - [A2. CUDA + Celery Prefork — Choosing the Right Concurrency Model](#a2-cuda--celery-prefork--choosing-the-right-concurrency-model)
+  - [A3. Dual-Control Redundancy — API Limit vs. Display Pagination](#a3-dual-control-redundancy-api-limit-vs-display-pagination)
 - [B — Idempotency & State Management](#b--idempotency--state-management)
   - [B1. task_acks_late=True Requires Idempotent Task Design](#b1-task_acks_latetrue-requires-idempotent-task-design)
 - [C — Performance Optimization & Bottlenecks](#c--performance-optimization--bottlenecks)
@@ -42,6 +44,8 @@ Quick-reference map from question type to the best entry from this project.
   - [D1. Mocked Tests Passing, Production Failing — qdrant-client API Mismatch](#d1-mocked-tests-passing-production-failing--qdrant-client-api-mismatch) `[BQ: The Complex Debug]`
   - [D2. Schema Drift — init-db.sql ↔ Migrations Diverge](#d2-schema-drift--init-dbsql--migrations-diverge) `[BQ: The High Bar]`
   - [D3. SQLAlchemy text() + PostgreSQL Cast — Bind Parameter Collision](#d3-sqlalchemy-text--postgresql-cast--bind-parameter-collision)
+  - [D4. Temporal Dead Zone — Module Import + Hook Destructure, Same Name](#d4-temporal-dead-zone-module-import--hook-destructure-same-name) `[BQ: The Complex Debug (frontend)]`
+  - [D5. null vs. undefined at API Boundaries — Vote Key Mismatch](#d5-null-vs-undefined-at-api-boundaries--vote-key-mismatch)
 - [E — Architecture & Code Quality](#e--architecture--code-quality)
   - [E1. Voting System — Separation of Concerns for Testability](#e1-voting-system--separation-of-concerns-for-testability) `[BQ: The Innovation]`
   - [E2. LangGraph Ops Agent — Automated Pipeline Recovery](#e2-langgraph-ops-agent--automated-pipeline-recovery) `[BQ: The Innovation (ops)]`
@@ -51,7 +55,6 @@ Quick-reference map from question type to the best entry from this project.
   - [G1. FFmpeg 8.0 Breaking Changes — DJI D-Log YUV + Sub-Second Clips](#g1-ffmpeg-80-breaking-changes-dji-d-log-yuv--sub-second-clips) `[BQ: The Complex Debug (external)]`
 - [H — AI & Agentic Workflow Integration](#h--ai--agentic-workflow-integration) ★
   - [H1. Agentic Workflow Integration — Self-Healing Media Pipeline](#h1-agentic-workflow-integration--self-healing-media-pipeline) `[BQ: AI Integration — flagship]`
-  - [G1. FFmpeg 8.0 Breaking Changes: DJI D-Log YUV + Sub-Second Clips](#g1-ffmpeg-80-breaking-changes-dji-d-log-yuv--sub-second-clips) `[BQ: The Complex Debug (external)]`
 
 ---
 
@@ -131,6 +134,50 @@ command: sh -c "celery -A celery_app worker --pool=solo ..."
 ### Lesson
 
 **Any Celery worker that loads a GPU/ML model must use `--pool=solo` or `--pool=threads`.** Prefork + CUDA is fundamentally incompatible because fork copies the CUDA context to children. Horizontal scaling (multiple containers) provides concurrency without fork complexity.
+
+---
+
+## A3. Dual-Control Redundancy: API Limit vs. Display Pagination
+
+**Component:** `frontend/components/SearchBar.tsx`, `frontend/components/ResultGrid.tsx`, `frontend/app/page.tsx`
+**Severity:** Medium — per-page selector appeared completely broken; users could not get more than 20 results regardless of selection
+
+### What Broke
+
+The "per page" selector in `ResultGrid` (25/50/100) visually changed its value but had no effect on results shown. Results were permanently capped at 20.
+
+### Root Cause
+
+Two separate controls governed related but disconnected concerns:
+
+- `SearchBar` had a hidden "Max Results" filter (20/50/100/200) behind a ⚙️ panel — set the **API limit** (how many results the server returns)
+- `ResultGrid` had a visible "per page" selector (25/50/100) in the toolbar — controlled **client-side pagination** of whatever the API already returned
+
+`SearchBar` defaulted `maxResults: 20`. With only 20 results from the API, the per-page selector was semantically inert — 20 results fit on one page regardless of per-page value. No error, no feedback, just silent irrelevance. A user selecting 50 or 100 per page still saw 20 results because the server never sent more.
+
+The confusion was amplified because the more prominent control (always visible in the result toolbar) did not drive the API call. The actual control (Max Results) was hidden behind a panel most users never open.
+
+### Fix
+
+1. Raised `SearchBar` default `maxResults` from 20 → 50; updated Reset Filters to match
+2. Added `onLimitChange` prop to `ResultGrid` — when per-page changes, calls back to `page.tsx` which updates `appliedFilters.maxResults` and re-searches with the new limit
+3. Aligned `itemsPerPage` default to 50 to match the API default
+
+```tsx
+// ResultGrid per-page selector now drives the API call
+onChange={(e) => {
+  const n = Number(e.target.value)
+  setItemsPerPage(n)
+  setCurrentPage(1)
+  onLimitChange?.(n)   // ← triggers re-fetch in page.tsx
+}}
+```
+
+### Lesson
+
+**When two controls govern the same thing at different abstraction layers (API limit vs. display count), users experience the gap as a bug.** The more prominent control should be the source of truth, and changing it should drive the underlying data fetch — not just re-slice already-fetched data.
+
+The hidden control (behind a collapsed panel) effectively doesn't exist for most users. Design principle: **if a control is always visible, it must actually do something proportional to its visibility**.
 
 ---
 
@@ -745,6 +792,141 @@ WHERE id = ANY(CAST(:ids AS uuid[]))
 ### Lesson
 
 **Never use `::type` casts directly after SQLAlchemy `text()` bind parameters.** The `::` operator is PostgreSQL shorthand but it collides with SQLAlchemy's `:param:` detection. Always use `CAST(:param AS type)` when passing values into PostgreSQL type-casting expressions via `text()`.
+
+---
+
+## D4. Temporal Dead Zone: Module Import + Hook Destructure, Same Name
+
+**Component:** `frontend/components/ResultGrid.tsx`
+**Severity:** High — crashed every vote action with an opaque `ReferenceError`; component rendered correctly but was non-interactive
+
+### What Broke
+
+Every vote button click produced:
+
+```
+Uncaught ReferenceError: Cannot access 'U' before initialization
+```
+
+The upvote state displayed correctly on load, but any interaction crashed the page. The minified variable name `U` was unreadable — the stack trace pointed nowhere useful.
+
+### Root Cause
+
+The component had both a module-level import and a hook destructure for the same identifier:
+
+```typescript
+// Module-level import
+import { getVoteKey } from '@/hooks/useVotes'
+
+// Hook-level destructure in the same component
+const { votes, vote, getVoteKey } = useVotes({ initialVotes })
+```
+
+The bundler (Webpack/Turbopack) saw two references to `getVoteKey` in the same scope and collapsed them into a single binding. The `useMemo` that built `initialVotes` ran during component initialization — before the hook had assigned the binding. The identifier was in the **Temporal Dead Zone**: declared (by the module import) but not yet assigned (waiting for the hook to run). Accessing it threw `ReferenceError`.
+
+The error message used the minified name `U` because the bundler had already renamed `getVoteKey` in the output. The original source name was invisible in the runtime error.
+
+### Fix
+
+Remove the module-level import entirely. Inline the key construction logic directly in the `useMemo`:
+
+```typescript
+// Before — imported function caused TDZ
+import { getVoteKey } from '@/hooks/useVotes'
+const initialVotes = useMemo(() => {
+  ...
+  const key = getVoteKey(r.file_path, r.audio_segment_index)  // TDZ crash
+  ...
+}, [results])
+
+// After — inlined logic, no import dependency
+const initialVotes = useMemo(() => {
+  ...
+  const key = (r.audio_segment_index !== undefined && r.audio_segment_index !== null)
+    ? `${r.file_path}#${r.audio_segment_index}`
+    : r.file_path
+  ...
+}, [results])
+```
+
+### Lesson
+
+**Never import a named export AND destructure the same identifier from a hook in the same component scope.** The bundler merges them into one binding; `useMemo` and `useEffect` callbacks that run during initialization will hit the TDZ if the hook hasn't run yet.
+
+The pattern to avoid:
+```typescript
+import { fn } from '@/hooks/useX'    // module-level
+const { fn } = useX()                 // hook-level — same name!
+const memo = useMemo(() => fn(...), []) // may fire before hook assignment → TDZ crash
+```
+
+If you need a utility function from a hook module, either: (a) import it under a different alias, (b) inline the logic, or (c) ensure the identifier only ever comes from the hook destructure and remove the module-level import.
+
+**Diagnosis shortcut:** Any `ReferenceError: Cannot access 'X' before initialization` in a React component is almost always a TDZ issue. Search for the variable used in a `useMemo`/`useEffect` that also appears in a hook destructure or `useState` initializer below the usage site.
+
+---
+
+### [BQ] Behavioral Question: The Complex Debug (frontend)
+
+> **"Tell me about a frontend bug that was hard to trace. How did you diagnose it?"**
+
+**SHORT:** A `ReferenceError: Cannot access 'U' before initialization` was crashing vote interactions. The minified variable name pointed nowhere useful. Traced it to a bundler collapse of a module-level import and a hook destructure — same identifier, two source locations, one binding, wrong initialization order.
+
+**STAR:**
+- **Situation:** Vote buttons on search results stopped working after a refactor. The component rendered correctly and vote state displayed — but any click produced `Uncaught ReferenceError: Cannot access 'U' before initialization`. The minified name `U` pointed nowhere in the source map.
+- **Task:** Identify the root cause without a readable stack trace in a 1,000-line component file.
+- **Action:** Searched for all usages of any variable named in the error region. Found `getVoteKey` appeared twice: once as a module-level import (`import { getVoteKey } from '@/hooks/useVotes'`) and once in a hook destructure (`const { getVoteKey } = useVotes(...)`). Recognized this as a TDZ pattern — the bundler collapses both references into one variable; the `useMemo` building `initialVotes` accessed it before the hook ran. Confirmed by temporarily removing the module import — crash disappeared. Fixed by inlining the two-line key logic directly into the `useMemo`, removing the dependency on the imported function.
+- **Result:** Crash eliminated. The lesson generalizes: **any `ReferenceError: Cannot access 'X' before initialization` in React is a TDZ issue — look for a variable used in a `useMemo` or `useEffect` that is also assigned by a hook destructure below the usage point.** The root cause is never the hook itself; it's the dual import path that the bundler merges into one binding.
+
+---
+
+## D5. null vs. undefined at API Boundaries: Vote Key Mismatch
+
+**Component:** `frontend/components/ResultGrid.tsx`, `frontend/components/SimilarPanel.tsx`
+**Severity:** Medium — upvoted images showed as unvoted on page load; vote state silently lost despite being in Qdrant
+
+### What Broke
+
+Videos with saved upvotes correctly showed green state on page load. Images (JPEGs) with the same saved `user_vote: 1` appeared unvoted — grey, no ring — despite the API returning the vote. Clicking upvote again worked, but the initial state was always wrong for images.
+
+### Root Cause
+
+Images have no audio segment; the API returns `audio_segment_index: null` for them. TypeScript models "optional field absent" as `undefined`. The vote key builder used a single check:
+
+```typescript
+r.audio_segment_index !== undefined
+  ? `${r.file_path}#${r.audio_segment_index}`
+  : r.file_path
+```
+
+For images, `null !== undefined` evaluates to `true` — the condition fires the first branch. The key was constructed as `"path/to/file.jpg#null"` (the string literal "null"). But `getVoteKey(filePath, undefined)` returns `"path/to/file.jpg"` (no suffix). The `initialVotes` map populated `"path/to/file.jpg#null"`; every vote lookup used `"path/to/file.jpg"` — different strings, no match, perpetually unvoted appearance.
+
+The bug only affected the initial seed from the API response. After clicking upvote in-session, the hook tracked the correct key and the state updated correctly — making the bug appear intermittent.
+
+### Fix
+
+Dual null-check at every API boundary key construction:
+
+```typescript
+// Before — misses null from API
+r.audio_segment_index !== undefined
+
+// After — handles both null (API response) and undefined (TypeScript absent)
+r.audio_segment_index !== undefined && r.audio_segment_index !== null
+```
+
+Applied to `initialVotes` useMemo in both `ResultGrid` and `SimilarPanel`.
+
+### Lesson
+
+**At any API/TypeScript boundary, check for both `null` and `undefined` when the field is an optional number or string.** TypeScript's optional (`?`) only models `undefined`; JSON APIs routinely return `null` for absent fields — especially nullable numeric fields from SQL (`INTEGER NULL` columns serialize to `null` in JSON, not absent). A single `!== undefined` guard is insufficient when the source is an HTTP response body.
+
+The safe boundary pattern: `value !== undefined && value !== null`. The shorthand `value != null` (loose inequality) catches both but can surprise readers unfamiliar with the distinction — prefer the explicit form in key construction logic where correctness is critical.
+
+**Checklist when building keys from API fields:**
+1. Does the field have a SQL nullable type? If yes, JSON will return `null`, not absent.
+2. Does the TypeScript type include `| null`? If yes, the `!== undefined` check is incomplete.
+3. Is the key used in a Map or Record lookup? Key mismatches are silent — no error, just a miss.
 
 ---
 

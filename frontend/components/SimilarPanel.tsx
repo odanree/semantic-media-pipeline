@@ -54,6 +54,7 @@ export default function SimilarPanel({ source, onClose, availableLabels, onTagVo
   const [clipPadding, setClipPadding] = useState(3)
   const [labelFilter, setLabelFilter] = useState<string | undefined>(undefined)
   const [initialVotes, setInitialVotes] = useState<Record<string, 1 | -1>>({})
+  const [filenameFilter, setFilenameFilter] = useState('')
   const [labelChips, setLabelChips] = useState<{ keyword: string; sim: number }[]>([])
   const [selectedChip, setSelectedChip] = useState<string | null>(null)
   // Track which label was applied per key this session — drives ring color and badge
@@ -155,13 +156,19 @@ export default function SimilarPanel({ source, onClose, availableLabels, onTagVo
     return b.best_similarity - a.best_similarity
   }), [results, sortKey, votes])
 
+  const filteredResults = useMemo(() => {
+    if (!filenameFilter.trim()) return sortedResults
+    const q = filenameFilter.trim().toLowerCase()
+    return sortedResults.filter((r) => r.file_path.split('/').pop()!.toLowerCase().includes(q))
+  }, [sortedResults, filenameFilter])
+
   function onVote(filePath: string, audioSegmentIndex: number | undefined, dir: 1 | -1) {
     vote(filePath, audioSegmentIndex, dir)
     setReel(null)
   }
 
   async function playReel() {
-    const videoResults = sortedResults.filter((r) => r.file_type === 'video')
+    const videoResults = filteredResults.filter((r) => r.file_type === 'video')
     if (videoResults.length === 0) return
     if (reel) { setReelOpen(true); return }
 
@@ -197,7 +204,7 @@ export default function SimilarPanel({ source, onClose, availableLabels, onTagVo
   }
 
   const filename = source.file_path.split('/').pop() ?? source.file_path
-  const videoCount = sortedResults.filter((r) => r.file_type === 'video').length
+  const videoCount = filteredResults.filter((r) => r.file_type === 'video').length
 
   return (
     <>
@@ -292,8 +299,16 @@ export default function SimilarPanel({ source, onClose, availableLabels, onTagVo
               {/* Controls row */}
               <div className="flex items-center gap-2 mb-3 flex-wrap">
                 <p className="text-xs text-gray-500 mr-auto">
-                  {results.length} {results.length === 1 ? 'result' : 'results'}
+                  {filteredResults.length}{filteredResults.length !== results.length && ` / ${results.length}`} {filteredResults.length === 1 ? 'result' : 'results'}
                 </p>
+                <input
+                  type="text"
+                  value={filenameFilter}
+                  onChange={(e) => setFilenameFilter(e.target.value)}
+                  placeholder="Filter filename…"
+                  className="px-2 py-1 rounded text-xs bg-gray-700 text-gray-300 border border-gray-600 focus:outline-none focus:border-blue-500 placeholder-gray-500 w-32"
+                  aria-label="Filter by filename"
+                />
                 {/* Sort */}
                 <select
                   value={sortKey}
@@ -359,7 +374,7 @@ export default function SimilarPanel({ source, onClose, availableLabels, onTagVo
               </div>
               {reelError && <p className="text-xs text-red-400 mb-2">{reelError}</p>}
               <div className="grid grid-cols-2 gap-3">
-                {sortedResults.map((r) => {
+                {filteredResults.map((r) => {
                   const cardKey = getVoteKey(r.file_path, r.audio_segment_index)
                   const cardTaggedLabel = taggedLabels[cardKey] ?? null
                   return (

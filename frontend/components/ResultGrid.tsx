@@ -20,6 +20,7 @@ interface SearchResult {
   audio_rms_energy?: number | null
   user_vote?: 1 | -1 | null
   vote_label?: Record<string, number> | null
+  vote_query?: string | null
 }
 
 interface ReelState {
@@ -33,6 +34,7 @@ interface ResultGridProps {
   availableLabels?: string[]
   excludeVoted?: boolean
   onExcludeVotedChange?: (val: boolean) => void
+  onLimitChange?: (n: number) => void
 }
 
 type ViewMode = 'grid' | 'list'
@@ -42,7 +44,7 @@ type SortKey = 'similarity_desc' | 'similarity_asc' | 'rms_desc' | 'rms_asc'
 // Stream directly from FastAPI - bypasses Next.js proxy, no Node.js buffering
 const STREAM_BASE = process.env.NEXT_PUBLIC_STREAM_URL || 'http://localhost:8000'
 
-export default function ResultGrid({ results, availableLabels, excludeVoted = false, onExcludeVotedChange }: ResultGridProps) {
+export default function ResultGrid({ results, availableLabels, excludeVoted = false, onExcludeVotedChange, onLimitChange }: ResultGridProps) {
   const searchQuery = useSearchQuery()
   const [selectedVideo, setSelectedVideo] = useState<SearchResult | null>(null)
   const [selectedImage, setSelectedImage] = useState<SearchResult | null>(null)
@@ -61,7 +63,8 @@ export default function ResultGrid({ results, availableLabels, excludeVoted = fa
   const [sceneBoundsCache, setSceneBoundsCache] = useState<Record<string, { start_sec: number; end_sec: number }>>({})
   const [sceneBoundsLoading, setSceneBoundsLoading] = useState(false)
   const [voteLabelsOverride, setVoteLabelsOverride] = useState<Record<string, Record<string, number>>>({})
-  const [itemsPerPage, setItemsPerPage] = useState(25)
+  const [itemsPerPage, setItemsPerPage] = useState(50)
+  const [filenameFilter, setFilenameFilter] = useState('')
 
   // Seed initial votes from results
   const initialVotes = useMemo(() => {
@@ -100,12 +103,18 @@ export default function ResultGrid({ results, availableLabels, excludeVoted = fa
     }
   }), [results, sortKey, votes, voteLabelsOverride, searchQuery])
 
-  const totalPages = Math.ceil(sortedResults.length / itemsPerPage)
+  const filteredResults = useMemo(() => {
+    if (!filenameFilter.trim()) return sortedResults
+    const q = filenameFilter.trim().toLowerCase()
+    return sortedResults.filter((r) => r.file_path.split('/').pop()!.toLowerCase().includes(q))
+  }, [sortedResults, filenameFilter])
+
+  const totalPages = Math.ceil(filteredResults.length / itemsPerPage)
 
   // Calculate pagination
   const startIndex = (currentPage - 1) * itemsPerPage
   const endIndex = startIndex + itemsPerPage
-  const currentResults = sortedResults.slice(startIndex, endIndex)
+  const currentResults = filteredResults.slice(startIndex, endIndex)
 
   // Reset to page 1 when results change; clear stale reel
   useEffect(() => {
@@ -117,6 +126,7 @@ export default function ResultGrid({ results, availableLabels, excludeVoted = fa
     setClipPadding(3)
     setSceneMode(false)
     setSceneBoundsCache({})
+    setFilenameFilter('')
   }, [results])
 
   const currentVideoResults = currentResults.filter((r) => r.file_type === 'video')
@@ -209,11 +219,20 @@ export default function ResultGrid({ results, availableLabels, excludeVoted = fa
       {/* View Mode Toggle + Pagination Info */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-6">
         <div className="text-sm text-gray-400">
-          Showing {startIndex + 1}-{Math.min(endIndex, sortedResults.length)} of {sortedResults.length} results
+          Showing {startIndex + 1}-{Math.min(endIndex, filteredResults.length)} of {filteredResults.length} results
+          {filenameFilter && filteredResults.length !== sortedResults.length && ` (${sortedResults.length} total)`}
           {totalPages > 1 && ` • Page ${currentPage} of ${totalPages}`}
         </div>
 
         <div className="flex gap-2 flex-wrap items-center">
+          <input
+            type="text"
+            value={filenameFilter}
+            onChange={(e) => { setFilenameFilter(e.target.value); setCurrentPage(1) }}
+            placeholder="Filter by filename…"
+            className="px-2 py-2 rounded text-sm bg-gray-700 text-gray-300 border border-gray-600 hover:border-gray-500 focus:outline-none focus:border-blue-500 placeholder-gray-500 w-40"
+            aria-label="Filter results by filename"
+          />
           <select
             value={sortKey}
             onChange={(e) => { setSortKey(e.target.value as SortKey); setCurrentPage(1) }}
@@ -287,13 +306,18 @@ export default function ResultGrid({ results, availableLabels, excludeVoted = fa
           )}
           <select
             value={itemsPerPage}
-            onChange={(e) => { setItemsPerPage(Number(e.target.value)); setCurrentPage(1) }}
+            onChange={(e) => {
+              setItemsPerPage(Number(e.target.value))
+              setCurrentPage(1)
+            }}
             className="px-2 py-2 rounded text-sm font-semibold bg-gray-700 text-gray-300 border border-gray-600 cursor-pointer"
             title="Results per page"
           >
             <option value={25}>25</option>
             <option value={50}>50</option>
+            <option value={75}>75</option>
             <option value={100}>100</option>
+            <option value={200}>200</option>
           </select>
           <button
             onClick={() => setViewMode('grid')}
@@ -658,7 +682,7 @@ function ResultItem({
   const overrideLabel = voteLabelsOverride[voteKey] ?? {}
   const overrideKeyword = Object.entries(overrideLabel).find(([, v]) => v === 1)?.[0] ?? null
   const upvoteKeyword = isManual
-    ? (overrideKeyword ?? (searchQuery && effectiveVoteLabel[searchQuery] === 1 ? searchQuery : null))
+    ? (overrideKeyword ?? (searchQuery && effectiveVoteLabel[searchQuery] === 1 ? searchQuery : null) ?? result.vote_query ?? null)
     : null
 
   function handleVote(dir: 1 | -1) {

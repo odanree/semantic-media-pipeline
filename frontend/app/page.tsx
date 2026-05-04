@@ -91,10 +91,32 @@ export default function SearchPage() {
       return
     }
 
+    // f: shortcut: filename search — f:Kaede or f:110323_001
+    if (searchQuery.startsWith('f:')) {
+      try {
+        const filenameQuery = searchQuery.slice(2).trim()
+        if (!filenameQuery) throw new Error('Enter a filename to search for')
+        const response = await fetch('/api/search/filename', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ query: filenameQuery, limit: filters.maxResults ?? 50 }),
+        })
+        if (!response.ok) throw new Error('Filename search failed')
+        const data = await response.json()
+        setResults(data.results || [])
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Filename search failed')
+        setResults([])
+      } finally {
+        setLoading(false)
+      }
+      return
+    }
+
     try {
       const payload: Record<string, unknown> = {
         query: searchQuery,
-        limit: filters.maxResults ?? 20,
+        limit: filters.maxResults ?? 50,
       }
 
       // Add filters to request if they differ from defaults

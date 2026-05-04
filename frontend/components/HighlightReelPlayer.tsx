@@ -41,6 +41,11 @@ export default function HighlightReelPlayer({
         manifestLoadingTimeOut: 30000,
         manifestLoadingMaxRetry: 4,
         manifestLoadingRetryDelay: 1000,
+        // Segments can be large (up to 75 MB for 120-second scenes).
+        // Default fragLoadingTimeOut (20s) is too short at Docker/WSL2 speeds.
+        fragLoadingTimeOut: 120000,  // 2 minutes
+        fragLoadingMaxRetry: 2,
+        fragLoadingRetryDelay: 2000,
       })
       hlsManagedRef.current = true
       hls.loadSource(playlistUrl)

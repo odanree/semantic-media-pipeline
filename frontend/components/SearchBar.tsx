@@ -32,7 +32,7 @@ export default function SearchBar({ onSearch, isLoading = false, suggestions, ex
   const [filters, setFilters] = useState<SearchFilters>({
     fileType: 'all',
     minSimilarity: 0.3,
-    maxResults: 20,
+    maxResults: 50,
     dedup: true,
   })
   const { history, addToHistory } = useSearchHistory()
@@ -109,7 +109,7 @@ export default function SearchBar({ onSearch, isLoading = false, suggestions, ex
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               onFocus={() => history.length > 0 && setShowHistory(true)}
-              placeholder={`Search by intent... e.g., '${suggestedQueries[0]}'`}
+              placeholder={`Search by intent… or f:filename to search by name`}
               disabled={isLoading}
               aria-label="Search query"
               className="w-full px-6 py-4 text-lg bg-gray-800 text-white border-2 border-gray-700 rounded-lg focus:outline-none focus:border-blue-500 transition disabled:opacity-50 disabled:cursor-not-allowed"
@@ -443,7 +443,7 @@ export default function SearchBar({ onSearch, isLoading = false, suggestions, ex
               setFilters({
                 fileType: 'all',
                 minSimilarity: 0.3,
-                maxResults: 20,
+                maxResults: 50,
                 dedup: true,
                 audioSegmentType: '',
                 constructionPhase: undefined,
