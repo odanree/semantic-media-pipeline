@@ -310,3 +310,7 @@ prometheus-sd/prod.json
 
 # Local git hooks (solo dev — not committed)
 .githooks/
+
+# Local tooling artifacts
+.lla-*.json
+.claude/

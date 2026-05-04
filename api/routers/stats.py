@@ -519,6 +519,10 @@ def _compute_topic_tags(k: int = 10) -> list[str]:
     return [_TOPIC_VOCABULARY[idx] for idx, _ in counts.most_common(k)]
 
 
+_collection_info_cache: "tuple[dict, float] | None" = None
+_COLLECTION_INFO_TTL = 60  # seconds
+
+
 @router.get("/stats/collection")
 def collection_info():
     """
@@ -526,7 +530,13 @@ def collection_info():
 
     Returns file counts by type/status, caption coverage from Qdrant, and
     topic tags derived from CLIP semantic similarity.
+
+    Result is cached for 60s — the full-collection Qdrant scroll is expensive.
     """
+    global _collection_info_cache
+    now = time.time()
+    if _collection_info_cache is not None and (now - _collection_info_cache[1]) < _COLLECTION_INFO_TTL:
+        return _collection_info_cache[0]
     db = _get_session()
     try:
         rows = db.execute(
@@ -646,7 +656,7 @@ def collection_info():
         except Exception:
             top_topics = []
 
-        return {
+        result = {
             "total": total,
             "indexed": indexed,
             "percent_indexed": round((indexed / total * 100) if total else 0, 1),
@@ -658,6 +668,8 @@ def collection_info():
             "construction_phases": construction_phases,
             "labels": labels,
         }
+        _collection_info_cache = (result, time.time())
+        return result
     finally:
         db.close()
 

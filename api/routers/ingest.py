@@ -328,6 +328,16 @@ _SIDECAR_ROOT = os.getenv("SIDECAR_ROOT", "/mnt/sidecars").strip()
 _ON_DEMAND_PROXY_DIR_DEFAULT = "/mnt/frame_cache/on_demand_proxies"
 _ON_DEMAND_MAX_DURATION = 300  # seconds — skip files longer than 5 minutes
 _proxy_in_progress: set[str] = set()
+_proxy_failed: set[str] = set()  # permanent skip within this process lifetime
+_proxy_sem: asyncio.Semaphore | None = None  # created lazily inside the event loop
+_proxy_tasks: set[asyncio.Task] = set()  # strong refs — prevent GC of fire-and-forget tasks
+
+
+def _get_proxy_sem() -> asyncio.Semaphore:
+    global _proxy_sem
+    if _proxy_sem is None:
+        _proxy_sem = asyncio.Semaphore(1)
+    return _proxy_sem
 
 
 async def _probe_duration(path: str) -> float | None:
@@ -345,44 +355,115 @@ async def _probe_duration(path: str) -> float | None:
         return None
 
 
-async def _generate_proxy_bg(source_path: str, proxy_path: str) -> None:
-    """Fire-and-forget: transcode source to 720p H.264 proxy if under 10 minutes."""
-    if proxy_path in _proxy_in_progress:
-        return
-    _proxy_in_progress.add(proxy_path)
-    tmp_path = proxy_path + ".tmp"
-    proc = None
+async def _probe_video_codec(path: str) -> str | None:
+    """Return the video codec name (e.g. 'hevc', 'h264') via ffprobe, or None on failure."""
     try:
-        duration = await _probe_duration(source_path)
-        if duration is None or duration > _ON_DEMAND_MAX_DURATION:
-            log.info("[Proxy] Skipping on-demand for %s (duration=%s)",
-                     os.path.basename(source_path), duration)
-            return
-        os.makedirs(os.path.dirname(proxy_path), exist_ok=True)
-        log.info("[Proxy] Starting on-demand transcode: %s (%.0fs)",
-                 os.path.basename(source_path), duration)
         proc = await asyncio.create_subprocess_exec(
-            "ffmpeg", "-y", "-i", source_path,
-            "-c:v", "libx264", "-preset", "fast", "-crf", "23",
-            "-vf", "scale=1280:720:force_original_aspect_ratio=decrease"
-                   ",pad=1280:720:(ow-iw)/2:(oh-ih)/2",
-            "-c:a", "aac", "-b:a", "128k", "-ar", "48000",
-            "-movflags", "+faststart",
-            tmp_path,
-            stdout=asyncio.subprocess.DEVNULL,
+            "ffprobe", "-v", "quiet", "-print_format", "json",
+            "-show_entries", "stream=codec_name",
+            "-select_streams", "v:0", path,
+            stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
         )
-        try:
-            await asyncio.wait_for(proc.wait(), timeout=_ON_DEMAND_MAX_DURATION + 120)
-        except asyncio.TimeoutError:
-            proc.kill()
-            log.warning("[Proxy] Transcode timed out: %s", source_path)
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=10)
+        streams = json.loads(stdout).get("streams", [])
+        return streams[0]["codec_name"] if streams else None
+    except Exception:
+        return None
+
+
+async def _generate_proxy_bg(
+    source_path: str,
+    proxy_path: str,
+    start_sec: float | None = None,
+    end_sec: float | None = None,
+) -> None:
+    """Fire-and-forget: transcode source (or a scene segment) to 720p H.264 proxy.
+
+    - Full file: used when duration ≤ _ON_DEMAND_MAX_DURATION
+    - Scene segment (start_sec/end_sec provided): used for long files — only the
+      matched scene is transcoded, keyed by timestamps in the proxy filename.
+
+    At most one transcode runs at a time (_proxy_sem).
+    """
+    if proxy_path not in _proxy_in_progress:
+        return  # was never properly queued (shouldn't happen)
+    tmp_path = proxy_path + ".tmp"
+    is_segment = start_sec is not None and end_sec is not None
+    try:
+        codec = await _probe_video_codec(source_path)
+        if codec != "hevc":
+            log.warning("[Proxy] Skipping non-HEVC file (codec=%s): %s", codec, os.path.basename(source_path))
+            _proxy_failed.add(proxy_path)
             return
-        if proc.returncode == 0 and os.path.isfile(tmp_path):
-            os.replace(tmp_path, proxy_path)
-            log.info("[Proxy] On-demand proxy ready: %s", proxy_path)
-        else:
-            log.warning("[Proxy] Transcode failed (rc=%s): %s", proc.returncode, source_path)
+
+        duration = await _probe_duration(source_path)
+
+        if not is_segment:
+            # Full-file mode: skip files longer than threshold
+            if duration is None or duration > _ON_DEMAND_MAX_DURATION:
+                log.warning("[Proxy] Skipping on-demand for %s (duration=%s)",
+                         os.path.basename(source_path), duration)
+                _proxy_failed.add(proxy_path)
+                return
+
+        async with _get_proxy_sem():
+            # Re-check: another task may have finished while we were waiting
+            if os.path.isfile(proxy_path):
+                return
+
+            os.makedirs(os.path.dirname(proxy_path), exist_ok=True)
+            if is_segment:
+                seg_dur = end_sec - start_sec
+                log.warning("[Proxy] Starting scene-segment transcode: %s [%.1f–%.1fs] (%.0fs)",
+                         os.path.basename(source_path), start_sec, end_sec, seg_dur)
+                # -ss before -i = fast keyframe seek; -to is relative to -ss
+                ffmpeg_input = [
+                    "ffmpeg", "-y",
+                    "-ss", f"{start_sec:.3f}", "-i", source_path,
+                    "-to", f"{seg_dur:.3f}",
+                ]
+                timeout = seg_dur + 120
+            else:
+                log.warning("[Proxy] Starting on-demand transcode: %s (%.0fs)",
+                         os.path.basename(source_path), duration)
+                ffmpeg_input = ["ffmpeg", "-y", "-i", source_path]
+                timeout = _ON_DEMAND_MAX_DURATION + 120
+
+            proc = await asyncio.create_subprocess_exec(
+                *ffmpeg_input,
+                "-c:v", "libx264", "-preset", "fast", "-crf", "23",
+                "-vf", "scale=1280:720:force_original_aspect_ratio=decrease"
+                       ",pad=1280:720:(ow-iw)/2:(oh-ih)/2",
+                "-c:a", "aac", "-b:a", "128k", "-ar", "48000",
+                "-movflags", "+faststart",
+                "-f", "mp4",
+                tmp_path,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            try:
+                _, stderr_bytes = await asyncio.wait_for(
+                    proc.communicate(), timeout=timeout
+                )
+            except asyncio.TimeoutError:
+                proc.kill()
+                await proc.communicate()  # drain pipe
+                log.warning("[Proxy] Transcode timed out: %s", source_path)
+                return
+
+            if proc.returncode == 0 and os.path.isfile(tmp_path):
+                os.replace(tmp_path, proxy_path)
+                log.warning("[Proxy] On-demand proxy ready: %s", proxy_path)
+            else:
+                stderr_tail = (
+                    stderr_bytes.decode(errors="replace")[-600:] if stderr_bytes else ""
+                )
+                log.warning(
+                    "[Proxy] Transcode failed (rc=%s): %s\n  stderr: %s",
+                    proc.returncode, source_path, stderr_tail,
+                )
+                _proxy_failed.add(proxy_path)  # don't retry this session
     except Exception as e:
         log.warning("[Proxy] On-demand proxy error for %s: %s", source_path, e)
     finally:
@@ -394,6 +475,43 @@ async def _generate_proxy_bg(source_path: str, proxy_path: str) -> None:
         _proxy_in_progress.discard(proxy_path)
 
 
+@router.get("/proxy-status")
+@limiter.limit("120/minute")
+async def proxy_status(
+    request: Request,
+    path: str,
+    start: float | None = None,
+    end: float | None = None,
+):
+    """Return whether an on-demand proxy exists for the given path/segment."""
+    try:
+        resolved = os.path.realpath(_translate_path(path))
+        if not resolved.startswith(_SOURCE_ROOT + os.sep):
+            return {"status": "original"}
+
+        rel = resolved[len(_SOURCE_ROOT) + 1:]
+
+        proxy_root = os.getenv("PROXY_ROOT", _PROXY_ROOT_DEFAULT).strip()
+        if proxy_root and os.path.isfile(os.path.join(proxy_root, rel)):
+            return {"status": "proxy"}
+
+        on_demand_dir = os.getenv("ON_DEMAND_PROXY_DIR", _ON_DEMAND_PROXY_DIR_DEFAULT).strip()
+        if on_demand_dir:
+            is_segment = start is not None and end is not None
+            if is_segment:
+                base, ext = os.path.splitext(rel)
+                seg_rel = f"{base}__{start:.3f}-{end:.3f}{ext}"
+                on_demand_path = os.path.join(on_demand_dir, seg_rel)
+            else:
+                on_demand_path = os.path.join(on_demand_dir, rel)
+            if os.path.isfile(on_demand_path):
+                return {"status": "proxy"}
+
+        return {"status": "original"}
+    except Exception:
+        return {"status": "original"}
+
+
 # 4MB chunks = 64x fewer filesystem calls than Starlette's 64KB default.
 # Critical on Docker Desktop/Windows: each 9P volume-mount read has ~200ms
 # latency, so 64KB chunks = 25s to load 8MB.  4MB chunks = <1s.
@@ -402,7 +520,13 @@ STREAM_CHUNK_SIZE = 4 * 1024 * 1024  # 4 MB
 
 @router.get("/stream")
 @limiter.limit(LIMIT_STREAM)
-async def stream_media(request: Request, path: str, quality: str = "proxy"):
+async def stream_media(
+    request: Request,
+    path: str,
+    quality: str = "proxy",
+    start: float | None = None,  # scene segment start (seconds)
+    end: float | None = None,    # scene segment end (seconds)
+):
     """
     Stream a media file with full HTTP Range support.
     Uses 4MB read chunks to minimise 9P round-trips on Docker/Windows.
@@ -452,6 +576,7 @@ async def stream_media(request: Request, path: str, quality: str = "proxy"):
         # tree; that copy has moov-first so the browser can seek instantly.
         # If no pre-generated proxy exists, trigger on-demand transcode for files
         # under 10 minutes and serve the original for this request.
+        proxy_source = "original"
         if quality != "original" and resolved.startswith(_SOURCE_ROOT + os.sep):
             rel = resolved[len(_SOURCE_ROOT) + 1:]
             proxy_found = False
@@ -462,20 +587,42 @@ async def stream_media(request: Request, path: str, quality: str = "proxy"):
                 if os.path.isfile(proxy_candidate):
                     resolved = proxy_candidate
                     proxy_found = True
+                    proxy_source = "proxy"
 
             if not proxy_found:
                 on_demand_dir = os.getenv(
                     "ON_DEMAND_PROXY_DIR", _ON_DEMAND_PROXY_DIR_DEFAULT
                 ).strip()
                 if on_demand_dir:
-                    on_demand_path = os.path.join(on_demand_dir, rel)
-                    if os.path.isfile(on_demand_path):
-                        resolved = on_demand_path
+                    # Scene-segment proxy: embed timestamps in filename so each
+                    # scene gets its own cached clip.
+                    is_segment = start is not None and end is not None
+                    if is_segment:
+                        base, ext = os.path.splitext(rel)
+                        seg_rel = f"{base}__{start:.3f}-{end:.3f}{ext}"
+                        on_demand_path = os.path.join(on_demand_dir, seg_rel)
                     else:
-                        # Kick off background transcode; serve original this request
-                        asyncio.create_task(
-                            _generate_proxy_bg(resolved, on_demand_path)
-                        )
+                        on_demand_path = os.path.join(on_demand_dir, rel)
+
+                    if os.path.isfile(on_demand_path):
+                        log.warning("[Proxy] Serving on-demand proxy: %s", os.path.basename(on_demand_path))
+                        resolved = on_demand_path
+                        proxy_source = "proxy"
+                    else:
+                        # Mark in-progress synchronously before yielding to event loop,
+                        # so concurrent range requests see it and don't queue duplicates.
+                        if on_demand_path not in _proxy_in_progress and on_demand_path not in _proxy_failed:
+                            _proxy_in_progress.add(on_demand_path)
+                            log.warning("[Proxy] queuing task for %s", os.path.basename(on_demand_path))
+                            _task = asyncio.create_task(
+                                _generate_proxy_bg(
+                                    resolved, on_demand_path,
+                                    start_sec=start if is_segment else None,
+                                    end_sec=end if is_segment else None,
+                                )
+                            )
+                            _proxy_tasks.add(_task)
+                            _task.add_done_callback(_proxy_tasks.discard)
 
         if not os.path.isfile(resolved):
             log.warning(f"[Stream] File not found: {path} (resolved: {resolved})")
@@ -495,15 +642,17 @@ async def stream_media(request: Request, path: str, quality: str = "proxy"):
         range_header = request.headers.get("range")
         range_match = re.match(r"bytes=(\d+)-(\d*)", range_header or "")
 
+        extra_headers = {"X-Proxy-Source": proxy_source, "Access-Control-Expose-Headers": "X-Proxy-Source"}
+
         if range_match:
-            start = int(range_match.group(1))
-            end = int(range_match.group(2)) if range_match.group(2) else file_size - 1
-            end = min(end, file_size - 1)
-            content_length = end - start + 1
+            range_start = int(range_match.group(1))
+            range_end = int(range_match.group(2)) if range_match.group(2) else file_size - 1
+            range_end = min(range_end, file_size - 1)
+            content_length = range_end - range_start + 1
 
             async def ranged_sender():
                 async with aiofiles.open(resolved, "rb") as f:
-                    await f.seek(start)
+                    await f.seek(range_start)
                     remaining = content_length
                     while remaining > 0:
                         chunk = await f.read(min(STREAM_CHUNK_SIZE, remaining))
@@ -517,10 +666,11 @@ async def stream_media(request: Request, path: str, quality: str = "proxy"):
                 status_code=206,
                 media_type=media_type,
                 headers={
-                    "Content-Range": f"bytes {start}-{end}/{file_size}",
+                    "Content-Range": f"bytes {range_start}-{range_end}/{file_size}",
                     "Accept-Ranges": "bytes",
                     "Content-Length": str(content_length),
                     "Cache-Control": "public, max-age=3600",
+                    **extra_headers,
                 },
             )
 
@@ -540,6 +690,7 @@ async def stream_media(request: Request, path: str, quality: str = "proxy"):
                 "Accept-Ranges": "bytes",
                 "Content-Length": str(file_size),
                 "Cache-Control": "public, max-age=3600",
+                **extra_headers,
             },
         )
     except Exception as e:

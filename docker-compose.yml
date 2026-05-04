@@ -183,10 +183,11 @@ services:
       - MEDIA_ROOT=${MEDIA_ROOT:-/data/media}
       - PROXY_ROOT=${PROXY_ROOT:-/mnt/proxies}
       - SIDECAR_ROOT=/mnt/sidecars
+      - ON_DEMAND_PROXY_DIR=/mnt/on_demand_proxies
       - LUMEN_PATH_MAP_0=/mnt/source:J:/lumen-media
       # - LUMEN_PATH_MAP_1=/mnt/i-media:I:/I-media  # disabled: I: drive conflict when lumen2 running
       - LD_LIBRARY_PATH=/usr/lib/wsl/lib
-    command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+    command: uvicorn main:app --host 0.0.0.0 --port 8000
     volumes:
       - media_data:/data/media
       - proxies_data:/mnt/proxies:ro
@@ -195,6 +196,8 @@ services:
       - ./api:/app
       - hf_cache:/root/.cache/huggingface
       - ${L1_SIDECAR_DIR:-/mnt/lumen1-sidecars}:/mnt/sidecars:ro
+      - ${FRAME_CACHE_DIR:-/tmp/lumen_frame_cache}:/mnt/frame_cache
+      - J:/on_demand_proxies:/mnt/on_demand_proxies
       - /usr/lib/wsl/lib:/usr/lib/wsl/lib
     depends_on:
       redis:
