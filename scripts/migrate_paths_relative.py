@@ -1,8 +1,8 @@
 """
 Migrate stored file paths from absolute (/mnt/source/...) to mount-relative format.
 
-Before: /mnt/source/c-index/Miyuki Arisu/file.mp4
-After:  c-index/Miyuki Arisu/file.mp4
+Before: /mnt/source/<collection>/<subdir>/file.mp4
+After:  <collection>/<subdir>/file.mp4
 
 Run ONCE after deploying the updated worker + API that understand relative paths.
 Safe to run while the stack is live — updates are idempotent.

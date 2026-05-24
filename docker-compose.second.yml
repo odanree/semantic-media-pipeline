@@ -142,6 +142,7 @@ services:
       - ${L2_MEDIA_3}:/mnt/source/d-4k-index:ro
       - ${L2_MEDIA_4}:/mnt/source/c-index:ro
       - ${L2_MEDIA_5}:/mnt/source/f-index:ro
+      - ${L2_MEDIA_6}:/mnt/source/am-4k:ro
       - I:/lumen2-sidecars:/mnt/sidecars
     depends_on:
       redis2:
@@ -201,6 +202,7 @@ services:
       - ${L2_MEDIA_3}:/mnt/source/d-4k-index:ro
       - ${L2_MEDIA_4}:/mnt/source/c-index:ro
       - ${L2_MEDIA_5}:/mnt/source/f-index:ro
+      - ${L2_MEDIA_6}:/mnt/source/am-4k:ro
       - hf_cache:/root/.cache/huggingface
       - I:/lumen2-sidecars:/mnt/sidecars:ro
       - I:/on_demand_proxies:/mnt/on_demand_proxies
@@ -244,6 +246,7 @@ services:
       - ${L2_MEDIA_3}:/mnt/source/d-4k-index:ro
       - ${L2_MEDIA_4}:/mnt/source/c-index:ro
       - ${L2_MEDIA_5}:/mnt/source/f-index:ro
+      - ${L2_MEDIA_6}:/mnt/source/am-4k:ro
     depends_on:
       - api2
     networks:
