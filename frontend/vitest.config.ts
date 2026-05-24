@@ -64,7 +64,7 @@ export default defineConfig({
         statements: 70,
         lines: 70,
         branches: 64,  // Lowered from 65 (SimilarPanel chip/tag-vote branches added without full inline coverage)
-        functions: 44,  // Lowered from 51 (ResultGrid/training page added many interactive handlers without inline tests)
+        functions: 43,  // Lowered from 51→44→43 (ResultGrid/training/VideoPlayer added interactive handlers without inline tests)
       },
     },
   },

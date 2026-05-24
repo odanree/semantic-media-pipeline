@@ -624,19 +624,12 @@ async def search_media(request: Request, body: SearchRequest):
             pass2_ms = (time.time() - t_p2) * 1000
 
             if body.dedup:
-                # Pass A: one frame per audio segment (or per 5 s window for
-                # legacy frames with no audio_segment_index).
+                # One frame per audio segment; legacy frames with no
+                # audio_segment_index fall back to per-file window NMS inside
+                # _segment_deduplicate. Distinct audio segments are independent
+                # events and are all kept (no cross-segment window NMS), matching
+                # the scroll/filename-search path above.
                 all_hits = _segment_deduplicate(raw_points)
-                # Pass B: window NMS per file across segment representatives.
-                # Catches static shots whose short audio segments (2–5 s) all
-                # look identical — keeps only the highest-scoring frame per
-                # EVENT_WINDOW_SECONDS across all segments of the same file.
-                file_groups: dict[str, list] = defaultdict(list)
-                for hit in all_hits:
-                    file_groups[(hit.payload or {}).get("file_path", "")].append(hit)
-                all_hits = []
-                for hits_in_file in file_groups.values():
-                    all_hits.extend(_window_deduplicate(hits_in_file))
                 all_hits.sort(key=lambda p: p.score, reverse=True)
                 all_hits = _dir_cap_images(all_hits)
                 final_hits = all_hits[:body.limit]
