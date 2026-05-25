@@ -30,6 +30,9 @@ export default defineConfig({
         '**/components/HighlightReelPlayer.tsx',
         // WebSocket UI components — requires real WebSocket APIs, not testable in jsdom
         '**/hooks/useMediaUpdates.tsx',
+        // Recovery dashboard + its proxy routes — polling/fetch admin UI, integration-tested
+        '**/app/recovery/page.tsx',
+        '**/app/api/recovery/**',
       ],
       // CI fails if coverage drops below these thresholds (mirrors backend --cov-fail-under=77)
       thresholds: {
