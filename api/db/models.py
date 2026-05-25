@@ -8,13 +8,15 @@ and are accessed via the repository layer.
 
 from __future__ import annotations
 
+import os
 import uuid
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import JSON, TIMESTAMP, Boolean, Column, Index, Integer, String, Text
+from sqlalchemy import JSON, TIMESTAMP, Boolean, Column, Float, Index, Integer, String, Text, create_engine
 from sqlalchemy.dialects.postgresql import UUID
-from sqlalchemy.orm import declarative_base
+from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+from sqlalchemy.orm import declarative_base, sessionmaker
 
 Base = declarative_base()
 
@@ -70,6 +72,7 @@ class AuditLog(Base):
     response_ms = Column(Integer, nullable=False)
     client_ip = Column(String(45), nullable=True)   # IPv4 or IPv6
     user_agent = Column(String(512), nullable=True)
+    details = Column(Text, nullable=True)  # structured summary (e.g. recovery agent output)
 
     def __repr__(self) -> str:
         return (
@@ -81,3 +84,71 @@ class AuditLog(Base):
 Index("idx_audit_timestamp", AuditLog.timestamp)
 Index("idx_audit_endpoint", AuditLog.endpoint)
 Index("idx_audit_status", AuditLog.response_status)
+
+
+class VoteEvent(Base):
+    """
+    Vote observability and lineage tracking.
+
+    Tracks manual votes and bulk votes, enabling analysis of:
+    - How many frames resulted from one upvote action
+    - Vote lineage (seed → bulk action → cascades)
+    - Statistics on label generation efficiency
+    """
+    __tablename__ = "vote_events"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+
+    # Batch grouping: all votes from same action (manual upvote + bulk cascade)
+    batch_id = Column(UUID(as_uuid=True), nullable=False, index=True)
+
+    # Lineage: which vote triggered this one (NULL for manual votes)
+    triggered_by_batch_id = Column(UUID(as_uuid=True), nullable=True, index=True)
+
+    # Vote details
+    file_path = Column(Text, nullable=False, index=True)
+    audio_segment_index = Column(Integer, nullable=True, index=True)
+    vote = Column(Integer, nullable=False)  # 1, -1, 0
+
+    # Vote source
+    vote_source = Column(
+        String(20),
+        nullable=False,
+        index=True,
+        default="manual"
+    )  # 'manual' | 'bulk_upvote' | 'auto_label'
+
+    # Context: what query triggered the vote
+    search_query = Column(String(512), nullable=True)
+    similarity_score = Column(Float, nullable=True)  # For bulk votes from similar search
+
+    # Metadata
+    timestamp = Column(TIMESTAMP(timezone=True), default=datetime.utcnow, nullable=False, index=True)
+
+    # Stats rollup (set on seed vote, helps queries)
+    # When manual upvote creates bulk votes, seed vote records the cascade
+    cascaded_count = Column(Integer, nullable=False, default=0)  # How many bulk votes resulted
+    cascade_threshold = Column(Float, nullable=True)  # Min similarity for bulk vote
+
+    def __repr__(self) -> str:
+        return (
+            f"<VoteEvent(batch_id={self.batch_id}, file_path={self.file_path!r}, "
+            f"vote={self.vote}, source={self.vote_source}, cascaded={self.cascaded_count})>"
+        )
+
+
+Index("idx_vote_batch_id", VoteEvent.batch_id)
+Index("idx_vote_triggered_by", VoteEvent.triggered_by_batch_id)
+Index("idx_vote_timestamp", VoteEvent.timestamp)
+Index("idx_vote_file_path", VoteEvent.file_path)
+Index("idx_vote_source", VoteEvent.vote_source)
+Index("idx_vote_query", VoteEvent.search_query)
+
+
+async def get_async_engine():
+    """Create async database engine"""
+    database_url = os.getenv(
+        "DATABASE_ASYNC_URL",
+        "postgresql+asyncpg://lumen_user:secure_password_here@postgres:5432/lumen",
+    )
+    return create_async_engine(database_url, echo=False, future=True)

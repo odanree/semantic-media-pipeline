@@ -10,6 +10,7 @@ export interface SearchFilters {
   minSimilarity?: number
   maxResults?: number
   dedup?: boolean
+  excludeVoted?: boolean
   audioSegmentType?: 'speech' | 'non_verbal' | 'music' | 'ambient' | 'event' | 'silence' | ''
   constructionPhase?: string
   label?: string
@@ -31,7 +32,7 @@ export default function SearchBar({ onSearch, isLoading = false, suggestions, ex
   const [filters, setFilters] = useState<SearchFilters>({
     fileType: 'all',
     minSimilarity: 0.3,
-    maxResults: 20,
+    maxResults: 50,
     dedup: true,
   })
   const { history, addToHistory } = useSearchHistory()
@@ -108,7 +109,7 @@ export default function SearchBar({ onSearch, isLoading = false, suggestions, ex
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               onFocus={() => history.length > 0 && setShowHistory(true)}
-              placeholder={`Search by intent... e.g., '${suggestedQueries[0]}'`}
+              placeholder={`Search by intent… or f:filename to search by name`}
               disabled={isLoading}
               aria-label="Search query"
               className="w-full px-6 py-4 text-lg bg-gray-800 text-white border-2 border-gray-700 rounded-lg focus:outline-none focus:border-blue-500 transition disabled:opacity-50 disabled:cursor-not-allowed"
@@ -347,6 +348,31 @@ export default function SearchBar({ onSearch, isLoading = false, suggestions, ex
             </button>
           </div>
 
+          {/* Unvoted filter */}
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm font-semibold text-gray-300">Unvoted Only</p>
+              <p className="text-xs text-gray-500 mt-0.5">
+                Only show frames with no vote yet
+              </p>
+            </div>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={filters.excludeVoted ?? false}
+              onClick={() => setFilters({ ...filters, excludeVoted: !(filters.excludeVoted ?? false) })}
+              className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
+                (filters.excludeVoted ?? false) ? 'bg-blue-600' : 'bg-gray-600'
+              }`}
+            >
+              <span
+                className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                  (filters.excludeVoted ?? false) ? 'translate-x-6' : 'translate-x-1'
+                }`}
+              />
+            </button>
+          </div>
+
           {/* Audio Filters */}
           <div className="flex items-center justify-between">
             <div>
@@ -417,7 +443,7 @@ export default function SearchBar({ onSearch, isLoading = false, suggestions, ex
               setFilters({
                 fileType: 'all',
                 minSimilarity: 0.3,
-                maxResults: 20,
+                maxResults: 50,
                 dedup: true,
                 audioSegmentType: '',
                 constructionPhase: undefined,

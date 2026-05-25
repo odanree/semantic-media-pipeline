@@ -149,12 +149,17 @@ def test_search_result_has_similarity(client, mock_qdrant):
 # ---------------------------------------------------------------------------
 
 def test_search_limit_forwarded_to_qdrant(client, mock_qdrant):
-    """limit=5 with oversample=1 must pass limit=5 to qdrant.query_points()."""
+    """limit=5 with oversample=1 must pass limit=5 to the main qdrant.query_points() call.
+    The injection pass may add a second query_points call; we check the first (ANN) call.
+    reset_mock() is required because mock_qdrant is session-scoped and accumulates call
+    history across all tests."""
     mock_qdrant.query_points.return_value = MagicMock(points=[])
+    mock_qdrant.query_points.reset_mock()  # clear session-accumulated call history
     client.post("/api/search", json={"query": "yoga", "limit": 5, "dedup": False, "oversample": 1})
-    call_kwargs = mock_qdrant.query_points.call_args
-    assert call_kwargs is not None
-    args, kwargs = call_kwargs
+    assert mock_qdrant.query_points.call_count >= 1
+    # First call is the main ANN pass (injection may add a second)
+    first_call = mock_qdrant.query_points.call_args_list[0]
+    args, kwargs = first_call
     assert kwargs.get("limit") == 5 or (len(args) >= 3 and args[2] == 5)
 
 
@@ -223,7 +228,7 @@ def test_search_dedup_default_uses_query_points(client, mock_qdrant):
 
     resp = client.post("/api/search", json={"query": "birthday party"})
     assert resp.status_code == 200
-    mock_qdrant.query_points.assert_called_once()
+    assert mock_qdrant.query_points.call_count >= 1
     mock_qdrant.query_points_groups.assert_not_called()
 
 
@@ -235,7 +240,7 @@ def test_search_dedup_false_uses_query_points(client, mock_qdrant):
 
     resp = client.post("/api/search", json={"query": "sunset", "dedup": False})
     assert resp.status_code == 200
-    mock_qdrant.query_points.assert_called_once()
+    assert mock_qdrant.query_points.call_count >= 1
     mock_qdrant.query_points_groups.assert_not_called()
 
 
@@ -630,3 +635,172 @@ def test_search_audio_event_top_filter_accepted(client, mock_qdrant):
     mock_qdrant.query_points.return_value = MagicMock(points=[])
     resp = client.post("/api/search", json={"query": "scary moment", "audio_event_top": "Scream"})
     assert resp.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# /api/lookup — direct frame lookup by file_path + timestamp
+# ---------------------------------------------------------------------------
+
+def _make_point(file_path, timestamp=None, file_type="video"):
+    p = MagicMock()
+    p.id = "abc123"
+    p.payload = {
+        "file_path": file_path,
+        "file_type": file_type,
+        "timestamp": timestamp,
+        "frame_index": 42,
+        "label": None,
+        "construction_phase": None,
+        "phase_confidence": None,
+        "audio_rms_energy": None,
+        "audio_segment_start_sec": None,
+        "audio_segment_end_sec": None,
+        "updated_at": None,
+    }
+    return p
+
+
+def test_lookup_missing_file_path_returns_422(client):
+    resp = client.post("/api/lookup", json={})
+    assert resp.status_code == 422
+
+
+def test_lookup_file_not_found_returns_404(client, mock_qdrant):
+    mock_qdrant.scroll.return_value = ([], None)
+    resp = client.post("/api/lookup", json={"file_path": "/mnt/source/missing.mp4"})
+    assert resp.status_code == 404
+
+
+def test_lookup_returns_200_when_found(client, mock_qdrant):
+    point = _make_point("/mnt/source/clip.mp4", timestamp=10.0)
+    mock_qdrant.scroll.return_value = ([point], None)
+    resp = client.post("/api/lookup", json={"file_path": "/mnt/source/clip.mp4", "timestamp": 10.0})
+    assert resp.status_code == 200
+
+
+def test_lookup_result_has_correct_file_path(client, mock_qdrant):
+    point = _make_point("/mnt/source/clip.mp4", timestamp=10.0)
+    mock_qdrant.scroll.return_value = ([point], None)
+    data = client.post("/api/lookup", json={"file_path": "/mnt/source/clip.mp4", "timestamp": 10.0}).json()
+    assert data["results"][0]["file_path"] == "/mnt/source/clip.mp4"
+
+
+def test_lookup_similarity_is_1(client, mock_qdrant):
+    point = _make_point("/mnt/source/clip.mp4", timestamp=10.0)
+    mock_qdrant.scroll.return_value = ([point], None)
+    data = client.post("/api/lookup", json={"file_path": "/mnt/source/clip.mp4", "timestamp": 10.0}).json()
+    assert data["results"][0]["similarity"] == 1.0
+
+
+def test_lookup_count_is_1(client, mock_qdrant):
+    point = _make_point("/mnt/source/clip.mp4", timestamp=10.0)
+    mock_qdrant.scroll.return_value = ([point], None)
+    data = client.post("/api/lookup", json={"file_path": "/mnt/source/clip.mp4", "timestamp": 10.0}).json()
+    assert data["count"] == 1
+
+
+def test_lookup_without_timestamp_returns_first_point(client, mock_qdrant):
+    point = _make_point("/mnt/source/photo.jpg", file_type="image")
+    mock_qdrant.scroll.return_value = ([point], None)
+    data = client.post("/api/lookup", json={"file_path": "/mnt/source/photo.jpg"}).json()
+    assert data["results"][0]["file_type"] == "image"
+
+
+def test_lookup_picks_closest_timestamp(client, mock_qdrant):
+    """When multiple candidates exist, pick the one closest to the requested timestamp."""
+    p1 = _make_point("/mnt/source/clip.mp4", timestamp=5.0)
+    p2 = _make_point("/mnt/source/clip.mp4", timestamp=10.0)
+    # windowed scroll returns nothing, fallback scroll returns both
+    mock_qdrant.scroll.side_effect = [([], None), ([p1, p2], None)]
+    data = client.post("/api/lookup", json={"file_path": "/mnt/source/clip.mp4", "timestamp": 9.5}).json()
+    assert data["results"][0]["timestamp"] == 10.0
+    mock_qdrant.scroll.side_effect = None
+
+
+# ---------------------------------------------------------------------------
+# /api/scene-bounds — scene boundary detection via frame-similarity walk
+# ---------------------------------------------------------------------------
+
+def _make_frame(timestamp: float, vector: list) -> MagicMock:
+    """Build a mock Qdrant point with timestamp payload and a vector."""
+    point = MagicMock()
+    point.payload = {"timestamp": timestamp}
+    point.vector = vector
+    return point
+
+
+def test_scene_bounds_missing_file_path_returns_422(client):
+    resp = client.post("/api/scene-bounds", json={"timestamp": 10.0})
+    assert resp.status_code == 422
+
+
+def test_scene_bounds_missing_timestamp_returns_422(client):
+    resp = client.post("/api/scene-bounds", json={"file_path": "video.mp4"})
+    assert resp.status_code == 422
+
+
+def test_scene_bounds_no_frames_returns_404(client, mock_qdrant):
+    mock_qdrant.scroll.return_value = ([], None)
+    resp = client.post("/api/scene-bounds", json={"file_path": "video.mp4", "timestamp": 10.0})
+    assert resp.status_code == 404
+
+
+def test_scene_bounds_returns_required_fields(client, mock_qdrant):
+    v = [1.0, 0.0, 0.0]
+    frames = [_make_frame(8.0, v), _make_frame(10.0, v), _make_frame(12.0, v)]
+    mock_qdrant.scroll.return_value = (frames, None)
+    resp = client.post("/api/scene-bounds", json={"file_path": "video.mp4", "timestamp": 10.0})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "start_sec" in data
+    assert "end_sec" in data
+    assert "anchor_sec" in data
+    assert "frames_scanned" in data
+
+
+def test_scene_bounds_frames_scanned_matches_batch_size(client, mock_qdrant):
+    v = [1.0, 0.0, 0.0]
+    frames = [_make_frame(float(t), v) for t in range(5)]
+    mock_qdrant.scroll.return_value = (frames, None)
+    resp = client.post("/api/scene-bounds", json={"file_path": "video.mp4", "timestamp": 2.0})
+    assert resp.json()["frames_scanned"] == 5
+
+
+def test_scene_bounds_all_similar_spans_full_window(client, mock_qdrant):
+    """All frames with identical vectors → bounds span from first to last frame."""
+    v = [1.0, 0.0, 0.0]
+    frames = [_make_frame(8.0, v), _make_frame(10.0, v), _make_frame(12.0, v)]
+    mock_qdrant.scroll.return_value = (frames, None)
+    data = client.post("/api/scene-bounds", json={"file_path": "video.mp4", "timestamp": 10.0}).json()
+    assert data["start_sec"] == 8.0
+    assert data["end_sec"] == 12.0
+    assert data["anchor_sec"] == 10.0
+
+
+def test_scene_bounds_orthogonal_frame_stops_walk(client, mock_qdrant):
+    """A frame pointing in a different direction stops the similarity walk."""
+    anchor_v = [1.0, 0.0, 0.0]
+    ortho_v = [0.0, 1.0, 0.0]  # cosine similarity = 0 → below any threshold
+    frames = [
+        _make_frame(8.0, ortho_v),    # backward: dissimilar — walk stops at anchor
+        _make_frame(10.0, anchor_v),  # anchor
+        _make_frame(12.0, anchor_v),  # forward: similar — walk continues
+    ]
+    mock_qdrant.scroll.return_value = (frames, None)
+    data = client.post(
+        "/api/scene-bounds",
+        json={"file_path": "video.mp4", "timestamp": 10.0, "threshold": 0.75},
+    ).json()
+    assert data["start_sec"] == 10.0   # backward walk stopped at anchor
+    assert data["end_sec"] == 12.0
+
+
+def test_scene_bounds_paginated_scroll_combines_batches(client, mock_qdrant):
+    """scroll() returning a next_offset triggers a second page fetch."""
+    v = [1.0, 0.0, 0.0]
+    batch1 = [_make_frame(8.0, v), _make_frame(9.0, v)]
+    batch2 = [_make_frame(10.0, v), _make_frame(11.0, v)]
+    mock_qdrant.scroll.side_effect = [(batch1, "cursor"), (batch2, None)]
+    data = client.post("/api/scene-bounds", json={"file_path": "video.mp4", "timestamp": 10.0}).json()
+    assert data["frames_scanned"] == 4
+    mock_qdrant.scroll.side_effect = None
