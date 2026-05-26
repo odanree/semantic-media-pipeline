@@ -5,6 +5,7 @@ import SearchBar, { SearchFilters } from '@/components/SearchBar'
 import ResultGrid from '@/components/ResultGrid'
 import StatusPanel from '@/components/StatusPanel'
 import AskPanel from '@/components/AskPanel'
+import { SearchProvider } from '@/context/SearchContext'
 
 interface CollectionInfo {
   total: number
@@ -28,6 +29,17 @@ export default function SearchPage() {
   const [appliedFilters, setAppliedFilters] = useState<SearchFilters>({})
   const [tagQuery, setTagQuery] = useState<string | undefined>(undefined)
   const [collectionInfo, setCollectionInfo] = useState<CollectionInfo | null>(null)
+
+  // Auto-search when landing with ?q= (e.g. from training page)
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search)
+    const q = params.get('q')
+    if (q) {
+      setTagQuery(q)
+      handleSearch(q, {})
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   useEffect(() => {
     fetch('/api/collection')
@@ -55,10 +67,56 @@ export default function SearchPage() {
     setLoading(true)
     setError(null)
 
+    // > shortcut: direct frame lookup — >/path/to/file.mp4@timestamp
+    if (searchQuery.startsWith('>')) {
+      try {
+        const raw = searchQuery.slice(1).trim()
+        const atIdx = raw.lastIndexOf('@')
+        const file_path = atIdx !== -1 ? raw.slice(0, atIdx) : raw
+        const timestamp = atIdx !== -1 ? parseFloat(raw.slice(atIdx + 1)) : undefined
+        const response = await fetch('/api/lookup', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ file_path, timestamp }),
+        })
+        if (!response.ok) throw new Error('Frame not found in index')
+        const data = await response.json()
+        setResults(data.results || [])
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Lookup failed')
+        setResults([])
+      } finally {
+        setLoading(false)
+      }
+      return
+    }
+
+    // f: shortcut: filename search — f:Kaede or f:110323_001
+    if (searchQuery.startsWith('f:')) {
+      try {
+        const filenameQuery = searchQuery.slice(2).trim()
+        if (!filenameQuery) throw new Error('Enter a filename to search for')
+        const response = await fetch('/api/search/filename', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ query: filenameQuery, limit: filters.maxResults ?? 50 }),
+        })
+        if (!response.ok) throw new Error('Filename search failed')
+        const data = await response.json()
+        setResults(data.results || [])
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Filename search failed')
+        setResults([])
+      } finally {
+        setLoading(false)
+      }
+      return
+    }
+
     try {
       const payload: Record<string, unknown> = {
         query: searchQuery,
-        limit: filters.maxResults ?? 20,
+        limit: filters.maxResults ?? 50,
       }
 
       // Add filters to request if they differ from defaults
@@ -87,6 +145,9 @@ export default function SearchPage() {
       if (filters.label) {
         payload.label = filters.label
       }
+      if (filters.excludeVoted) {
+        payload.exclude_voted = true
+      }
 
       const response = await fetch('/api/search', {
         method: 'POST',
@@ -109,6 +170,7 @@ export default function SearchPage() {
   }
 
   return (
+    <SearchProvider value={query}>
     <div className="max-w-7xl mx-auto px-4 py-8">
       <div className="mb-8">
         <h2 className="text-3xl font-bold mb-2">Find Media by Intent</h2>
@@ -243,7 +305,16 @@ export default function SearchPage() {
               </div>
             )}
           </div>
-          <ResultGrid results={results} />
+          <ResultGrid
+            results={results}
+            availableLabels={collectionInfo?.labels ?? []}
+            excludeVoted={appliedFilters.excludeVoted ?? false}
+            onExcludeVotedChange={(val) => {
+              const updated = { ...appliedFilters, excludeVoted: val }
+              setAppliedFilters(updated)
+              handleSearch(query, updated)
+            }}
+          />
         </div>
       )}
 
@@ -261,5 +332,6 @@ export default function SearchPage() {
         </>
       )}
     </div>
+    </SearchProvider>
   )
 }

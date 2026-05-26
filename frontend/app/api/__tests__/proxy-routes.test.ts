@@ -460,6 +460,48 @@ describe('POST /api/ask', () => {
 })
 
 // ---------------------------------------------------------------------------
+// POST /api/frame-labels — reverse label lookup proxy
+// ---------------------------------------------------------------------------
+
+describe('POST /api/frame-labels', () => {
+  async function handler(body: unknown) {
+    const { POST } = await import('../frame-labels/route')
+    return POST(
+      new NextRequest('http://localhost/api/frame-labels', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+    )
+  }
+
+  it('returns 400 when file_path is missing', async () => {
+    const res = await handler({})
+    expect(res.status).toBe(400)
+  })
+
+  it('returns 200 with upstream labels data', async () => {
+    vi.mocked(fetch).mockResolvedValue(mockResponse({ labels: [{ label: 'yoga', score: 0.9 }] }))
+    const res = await handler({ file_path: '/media/test.mp4', timestamp: 5.0, top_k: 8 })
+    expect(res.status).toBe(200)
+    const json = await res.json()
+    expect(json.labels).toHaveLength(1)
+  })
+
+  it('forwards upstream error status', async () => {
+    vi.mocked(fetch).mockResolvedValue(mockResponse('upstream error', 503))
+    const res = await handler({ file_path: '/media/test.mp4' })
+    expect(res.status).toBe(503)
+  })
+
+  it('returns 500 when fetch throws', async () => {
+    vi.mocked(fetch).mockRejectedValue(new Error('ECONNREFUSED'))
+    const res = await handler({ file_path: '/media/test.mp4' })
+    expect(res.status).toBe(500)
+  })
+})
+
+// ---------------------------------------------------------------------------
 // Catch branch — fetch throws (network failure) for all proxy routes
 // ---------------------------------------------------------------------------
 
@@ -523,6 +565,18 @@ describe('network failures return 500', () => {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ question: 'What do I have?' }),
+    }))
+    expect(res.status).toBe(500)
+  })
+
+
+  it('POST /api/frame-labels — fetch throws', async () => {
+    vi.mocked(fetch).mockRejectedValue(new Error('ECONNREFUSED'))
+    const { POST } = await import('../frame-labels/route')
+    const res = await POST(new NextRequest('http://localhost/api/frame-labels', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ file_path: '/media/test.mp4' }),
     }))
     expect(res.status).toBe(500)
   })
@@ -784,5 +838,59 @@ describe('GET /api/playlist/serve/[...path]', () => {
     const req = new NextRequest('http://localhost/api/playlist/serve/abc/playlist.m3u8')
     const res = await GET(req, { params: Promise.resolve({ path: ['abc', 'playlist.m3u8'] }) })
     expect(res.status).toBe(500)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// POST /api/scene-bounds
+// ---------------------------------------------------------------------------
+
+describe('POST /api/scene-bounds', () => {
+  it('proxies a successful response from the backend', async () => {
+    const payload = { start_sec: 5.0, end_sec: 15.0, anchor_sec: 10.0, frames_scanned: 3 }
+    vi.mocked(fetch).mockResolvedValueOnce(mockResponse(payload, 200))
+    const { POST } = await import('../scene-bounds/route')
+    const req = new NextRequest('http://localhost/api/scene-bounds', {
+      method: 'POST',
+      body: JSON.stringify({ file_path: 'video.mp4', timestamp: 10.0 }),
+    })
+    const res = await POST(req)
+    expect(res.status).toBe(200)
+    const data = await res.json()
+    expect(data.start_sec).toBe(5.0)
+    expect(data.end_sec).toBe(15.0)
+  })
+
+  it('returns 400 for invalid JSON body', async () => {
+    const { POST } = await import('../scene-bounds/route')
+    const req = new NextRequest('http://localhost/api/scene-bounds', {
+      method: 'POST',
+      body: 'not-json',
+      headers: { 'content-type': 'text/plain' },
+    })
+    const res = await POST(req)
+    expect(res.status).toBe(400)
+  })
+
+  it('returns 502 when fetch throws', async () => {
+    vi.mocked(fetch).mockRejectedValueOnce(new Error('ECONNREFUSED'))
+    const { POST } = await import('../scene-bounds/route')
+    const req = new NextRequest('http://localhost/api/scene-bounds', {
+      method: 'POST',
+      body: JSON.stringify({ file_path: 'video.mp4', timestamp: 10.0 }),
+    })
+    const res = await POST(req)
+    expect(res.status).toBe(502)
+  })
+
+  it('forwards upstream error status', async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(mockResponse({ detail: 'Not found' }, 404))
+    const { POST } = await import('../scene-bounds/route')
+    const req = new NextRequest('http://localhost/api/scene-bounds', {
+      method: 'POST',
+      body: JSON.stringify({ file_path: 'missing.mp4', timestamp: 10.0 }),
+    })
+    const res = await POST(req)
+    expect(res.status).toBe(404)
   })
 })

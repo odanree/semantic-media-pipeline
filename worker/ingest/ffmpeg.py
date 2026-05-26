@@ -123,17 +123,44 @@ def extract_keyframes(
             print(f"[FFmpeg] Duration: unknown | Base timeout (default): {timeout}s")
 
     frame_pattern = os.path.join(output_dir, "frame_%04d.jpg")
+    scale_filter = (
+        f"scale={resolution}:{resolution}:force_original_aspect_ratio=decrease,"
+        f"pad={resolution}:{resolution}:(ow-iw)/2:(oh-ih)/2:color=black"
+    )
 
-    cmd = [
-        "ffmpeg",
-        "-i",
-        video_path,
-        "-vf",
-        f"fps={fps},scale={resolution}:{resolution}:force_original_aspect_ratio=decrease,pad={resolution}:{resolution}:(ow-iw)/2:(oh-ih)/2:color=black",
-        "-q:v",
-        "2",  # JPEG quality
-        frame_pattern,
-    ]
+    # Pixel motion photos and other sub-second clips are shorter than the frame
+    # interval (1/fps = 2s at the default 0.5fps). The fps filter never fires for
+    # these, producing zero output frames. Detect this case and seek to the
+    # midpoint to extract exactly one representative frame instead.
+    # FFmpeg 8.0 tightened strict compliance: limited-range YUV sources (e.g. DJI
+    # D-Log HEVC) are rejected by the MJPEG encoder unless the pixel format is
+    # explicitly converted to full-range first.
+    _pix_fmt_args = ["-pix_fmt", "yuvj420p"]
+
+    if video_duration is not None and video_duration > 0 and video_duration < (1.0 / fps):
+        midpoint = video_duration / 2.0
+        cmd = [
+            "ffmpeg",
+            "-ss", str(midpoint),
+            "-i", video_path,
+            "-frames:v", "1",
+            "-vf", scale_filter,
+            *_pix_fmt_args,
+            "-q:v", "2",
+            frame_pattern,  # use pattern (not literal path) — FFmpeg 8.0 requires %Nd or -update 1
+        ]
+    else:
+        cmd = [
+            "ffmpeg",
+            "-i",
+            video_path,
+            "-vf",
+            f"fps={fps},{scale_filter}",
+            *_pix_fmt_args,
+            "-q:v",
+            "2",  # JPEG quality
+            frame_pattern,
+        ]
 
     try:
         result = subprocess.run(

@@ -21,11 +21,11 @@ from typing import List, Optional
 import numpy as np
 from PIL import Image
 from qdrant_client import QdrantClient
-from qdrant_client.models import Distance, FieldCondition, Filter, IsEmptyCondition, MatchText, MatchValue, PayloadField, PointStruct, VectorParams
-from sqlalchemy import select
+from qdrant_client.models import Distance, FieldCondition, Filter, IsEmptyCondition, MatchText, MatchValue, PayloadField, PointIdsList, PointStruct, SetPayload, SetPayloadOperation, VectorParams
+from sqlalchemy import select, text, update
 
 from celery_app import app
-from db.models import MediaFile
+from db.models import MediaFile, VoteEvent
 from db.session import SyncSessionLocal
 from ingest.audio_segmenter import (
     extract_audio_segments,
@@ -188,6 +188,16 @@ qdrant_client = QdrantClient(
     port=QDRANT_PORT,
     grpc_port=QDRANT_GRPC_PORT,
     prefer_grpc=QDRANT_PREFER_GRPC,
+)
+
+# Separate REST client for long-running cascade operations.
+# gRPC has a short default deadline that fires on large collections under load;
+# REST + explicit 60s timeout avoids the DEADLINE_EXCEEDED / segment read-lock issues.
+_cascade_qdrant = QdrantClient(
+    host=QDRANT_HOST,
+    port=QDRANT_PORT,
+    prefer_grpc=False,
+    timeout=60,
 )
 
 
@@ -1493,3 +1503,121 @@ def backfill_yolo(self, dry_run: bool = False):
     return {"total": total, "updated": updated, "skipped": skipped, "dry_run": dry_run}
 
 
+@app.task(bind=True, max_retries=3, default_retry_delay=10)
+def cascade_votes(self, file_path: str, batch_id: str, threshold: float = 0.9, search_query: Optional[str] = None, seed_point_id: Optional[str] = None):
+    """
+    Auto-cascade an upvote to all visually similar frames (>= threshold similarity).
+
+    Steps:
+      1. Find the source Qdrant point for file_path (or use seed_point_id directly)
+      2. Query similar points via server-side vector lookup (no CLIP re-inference)
+      3. Set user_vote=1 (+ vote_label=search_query if provided) on all similar points
+      4. Log VoteEvent rows + update cascaded_count on the seed vote in Postgres
+    """
+    try:
+        # 1. Resolve source point ID — use seed_point_id if provided (exact frame), else fall back to file_path lookup
+        if seed_point_id:
+            import uuid as _uuid
+            source_id = _uuid.UUID(seed_point_id)
+        else:
+            scroll_result, _ = _cascade_qdrant.scroll(
+                collection_name=QDRANT_COLLECTION_NAME,
+                scroll_filter=Filter(must=[
+                    FieldCondition(key="file_path", match=MatchValue(value=file_path))
+                ]),
+                limit=1,
+                with_payload=False,
+                with_vectors=False,
+            )
+            if not scroll_result:
+                log.warning("[cascade_votes] source not found: %s", file_path)
+                return {"cascaded": 0, "reason": "source not found"}
+            source_id = scroll_result[0].id
+
+        # 2. Find similar points via server-side vector lookup
+        similar = _cascade_qdrant.query_points(
+            collection_name=QDRANT_COLLECTION_NAME,
+            query=source_id,
+            score_threshold=threshold,
+            limit=500,
+            with_payload=True,
+            with_vectors=False,
+            query_filter=Filter(must_not=[
+                FieldCondition(key="file_path", match=MatchValue(value=file_path))
+            ]),
+        )
+
+        if not similar.points:
+            log.info("[cascade_votes] no similar frames above %.2f for %s", threshold, file_path)
+            db = SyncSessionLocal()
+            try:
+                db.execute(
+                    update(VoteEvent)
+                    .where(VoteEvent.batch_id == uuid.UUID(batch_id))
+                    .where(VoteEvent.triggered_by_batch_id.is_(None))
+                    .values(cascaded_count=0, cascade_threshold=threshold)
+                )
+                db.commit()
+            finally:
+                db.close()
+            return {"cascaded": 0, "batch_id": batch_id}
+
+        # 3. Patch vote data onto similar points.
+        # Build one batch_update_points request so all writes go in a single HTTP call,
+        # eliminating the per-point write-lock storm while preserving individual scores.
+        ops = []
+        for r in similar.points:
+            point_payload: dict = {"user_vote": 1}
+            if search_query:
+                current_labels: dict = (r.payload or {}).get("vote_label") or {}
+                updated_labels = dict(current_labels)
+                updated_labels[search_query] = max(
+                    float(updated_labels.get(search_query, 0.0)),
+                    float(r.score),
+                )
+                point_payload["vote_label"] = updated_labels
+                point_payload["voted_queries"] = sorted(updated_labels.keys())
+            ops.append(SetPayloadOperation(
+                set_payload=SetPayload(payload=point_payload, points=[r.id])
+            ))
+        _cascade_qdrant.batch_update_points(
+            collection_name=QDRANT_COLLECTION_NAME,
+            update_operations=ops,
+        )
+
+        # 4. Log VoteEvents + update cascaded_count on seed
+        now = datetime.utcnow()
+        batch_uuid = uuid.UUID(batch_id)
+        db = SyncSessionLocal()
+        try:
+            for r in similar.points:
+                db.add(VoteEvent(
+                    id=uuid.uuid4(),
+                    batch_id=batch_uuid,
+                    triggered_by_batch_id=batch_uuid,
+                    file_path=(r.payload or {}).get("file_path", ""),
+                    audio_segment_index=(r.payload or {}).get("audio_segment_index"),
+                    vote=1,
+                    vote_source="cascade",
+                    search_query=search_query,
+                    similarity_score=r.score,
+                    timestamp=now,
+                    cascaded_count=0,
+                    cascade_threshold=threshold,
+                ))
+            db.execute(
+                update(VoteEvent)
+                .where(VoteEvent.batch_id == batch_uuid)
+                .where(VoteEvent.triggered_by_batch_id.is_(None))
+                .values(cascaded_count=len(similar.points), cascade_threshold=threshold)
+            )
+            db.commit()
+        finally:
+            db.close()
+
+        log.info("[cascade_votes] cascaded upvote to %d frames (batch=%s)", len(similar.points), batch_id)
+        return {"cascaded": len(similar.points), "batch_id": batch_id}
+
+    except Exception as exc:
+        log.error("[cascade_votes] error: %s", exc)
+        raise self.retry(exc=exc)

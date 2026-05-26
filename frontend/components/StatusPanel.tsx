@@ -33,9 +33,9 @@ export default function StatusPanel() {
     } catch { /* ignore */ }
   }, [])
 
-  const { status: wsStatus, isConnected, error: wsError } = useStatusUpdates({
+  const { status: wsStatus, isConnected } = useStatusUpdates({
     onUpdate: (newStatus) => {
-      setStatus(prev => {
+      setStatus(() => {
         // Compute sustained avg files/min from when ingest first started producing done files
         const now = Date.now()
         const done = newStatus.by_status.done
