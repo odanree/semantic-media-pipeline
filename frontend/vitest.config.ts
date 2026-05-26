@@ -64,12 +64,14 @@ export default defineConfig({
         // Root layout — no testable logic
         '**/app/layout.tsx',
       ],
-      // CI fails if coverage drops below these thresholds (mirrors backend --cov-fail-under=77)
+      // CI fails if coverage drops below these thresholds. Ratcheted up to current actual
+      // (75.6/65.6/46.3) so the gate can't regress. Full restoration of branches→72 /
+      // functions→54 (public's pre-port values) needs broader ResultGrid voting-UI tests.
       thresholds: {
-        statements: 70,
-        lines: 70,
-        branches: 64,  // Lowered from 65 (SimilarPanel chip/tag-vote branches added without full inline coverage)
-        functions: 43,  // Lowered from 51→44→43 (ResultGrid/training/VideoPlayer added interactive handlers without inline tests)
+        statements: 75,
+        lines: 75,
+        branches: 65,
+        functions: 46,
       },
     },
   },
