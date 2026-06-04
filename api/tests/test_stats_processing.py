@@ -442,20 +442,26 @@ def test_topic_tags_qdrant_empty_falls_back_to_vocab(mock_db_session, mock_qdran
 # ---------------------------------------------------------------------------
 
 def test_stats_training_empty_ok(client, mock_db_session):
-    """No vote_events yet → 200 with zeroed totals and 'needs_data' tiers."""
+    """No vote_events yet → 200 with zeroed totals and 'needs_data' tiers.
+
+    Asserts the core totals are zeroed (the response also carries source-split
+    fields verified in test_stats_training_quality.py)."""
     mock_db_session.execute.return_value.fetchall.return_value = []
     data = client.get("/api/stats/training").json()
-    assert data["totals"] == {"queries": 0, "positives": 0, "negatives": 0, "ratio": 0}
+    for k in ("queries", "positives", "negatives", "ratio"):
+        assert data["totals"][k] == 0, f"{k} should be 0 when empty"
     assert data["tiers"]["queries"] == "needs_data"
     assert "goals" in data and data["queries"] == []
 
 
 def test_stats_training_aggregates_rows(client, mock_db_session):
-    """Per-query rows are summarized into totals + tiers."""
+    """Per-query rows are summarized into totals + tiers.
+
+    Row shape: (query, pos_direct, pos_cascade, neg_direct, neg_cascade)."""
     try:
         mock_db_session.execute.return_value.fetchall.return_value = [
-            ("cat", 60, 30),   # query, positives, negatives
-            ("dog", 10, 0),
+            ("cat", 60, 0, 30, 0),   # all direct
+            ("dog", 10, 0,  0, 0),
         ]
         data = client.get("/api/stats/training").json()
         assert data["totals"]["queries"] == 2

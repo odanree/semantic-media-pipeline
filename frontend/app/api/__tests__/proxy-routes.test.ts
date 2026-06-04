@@ -894,3 +894,80 @@ describe('POST /api/scene-bounds', () => {
     expect(res.status).toBe(404)
   })
 })
+
+// ---------------------------------------------------------------------------
+// POST /api/eval-set — pin to held-out evaluation set
+// ---------------------------------------------------------------------------
+
+describe('POST /api/eval-set', () => {
+  it('proxies a successful pin to the backend', async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(
+      mockResponse({ id: 'abc', search_query: 'cat', file_path: '/m/a.mp4', label: 1, created_at: 'now' }, 201),
+    )
+    const { POST } = await import('../eval-set/route')
+    const req = new NextRequest('http://localhost/api/eval-set', {
+      method: 'POST',
+      body: JSON.stringify({ search_query: 'cat', file_path: '/m/a.mp4', label: 1 }),
+    })
+    const res = await POST(req)
+    expect(res.status).toBe(201)
+    const data = await res.json()
+    expect(data.label).toBe(1)
+  })
+
+  it('returns 400 when search_query is missing', async () => {
+    const { POST } = await import('../eval-set/route')
+    const req = new NextRequest('http://localhost/api/eval-set', {
+      method: 'POST',
+      body: JSON.stringify({ file_path: '/m/a.mp4', label: 1 }),
+    })
+    const res = await POST(req)
+    expect(res.status).toBe(400)
+  })
+
+  it('returns 400 when label is not ±1', async () => {
+    const { POST } = await import('../eval-set/route')
+    const req = new NextRequest('http://localhost/api/eval-set', {
+      method: 'POST',
+      body: JSON.stringify({ search_query: 'cat', file_path: '/m/a.mp4', label: 0 }),
+    })
+    const res = await POST(req)
+    expect(res.status).toBe(400)
+  })
+
+  it('forwards upstream error status', async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(mockResponse({ detail: 'bad' }, 503))
+    const { POST } = await import('../eval-set/route')
+    const req = new NextRequest('http://localhost/api/eval-set', {
+      method: 'POST',
+      body: JSON.stringify({ search_query: 'cat', file_path: '/m/a.mp4', label: 1 }),
+    })
+    const res = await POST(req)
+    expect(res.status).toBe(503)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// GET /api/eval-set/readiness — proxies backend /api/stats/eval-set
+// ---------------------------------------------------------------------------
+
+describe('GET /api/eval-set/readiness', () => {
+  it('returns the upstream readiness payload', async () => {
+    const payload = { totals: { queries: 1, positives: 30, negatives: 10, total: 40 }, queries: [], tiers: {}, goals: {} }
+    vi.mocked(fetch).mockResolvedValueOnce(mockResponse(payload, 200))
+    const { GET } = await import('../eval-set/readiness/route')
+    const res = await GET()
+    expect(res.status).toBe(200)
+    const data = await res.json()
+    expect(data.totals.positives).toBe(30)
+  })
+
+  it('returns 500 when fetch throws', async () => {
+    vi.mocked(fetch).mockRejectedValueOnce(new Error('ECONNREFUSED'))
+    const { GET } = await import('../eval-set/readiness/route')
+    const res = await GET()
+    expect(res.status).toBe(500)
+    const data = await res.json()
+    expect(data.error).toBeTruthy()
+  })
+})

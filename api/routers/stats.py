@@ -703,29 +703,134 @@ def _tier(value: float, thresholds: dict) -> str:
     return "needs_data"
 
 
+# Source labels surfaced in the API. "direct" rolls up every human action
+# (single upvote/downvote + bulk-upvote-from-search). "cascade" is the
+# worker-propagated label — it's the multiplier, but also the lowest-trust
+# signal, so we split it out so the dashboard tells the truth.
+_DIRECT_SOURCES  = ("manual", "bulk_upvote")
+_CASCADE_SOURCES = ("cascade",)
+
+# Eval-set goals — smaller absolute numbers than training vote counts because
+# a held-out set is meant to be curated, not collected en masse. A few hundred
+# clean labels across ~20 queries is enough to detect regressions.
+_EVAL_GOALS = {
+    "queries":   {"good": 5,   "great": 20,  "best": 50},
+    "positives": {"good": 100, "great": 500, "best": 2_000},
+    "negatives": {"good": 100, "great": 500, "best": 2_000},
+}
+
+
 @router.get("/stats/training")
 def training_readiness():
-    """Re-ranker training readiness — per-query vote counts and overall goals."""
+    """Re-ranker training readiness — per-query vote counts and overall goals.
+
+    Splits positives/negatives by source (direct human vote vs cascade-propagated)
+    so 'great' tiers driven mostly by cascade don't mislead about label quality.
+    """
     db = _get_session()
     try:
         # Per-query vote counts — deduplicated to latest vote per (file_path, search_query)
         # so re-upvotes don't inflate counts and cleared votes (vote=0) are excluded.
+        # vote_source from the latest row determines how this label is bucketed.
         rows = db.execute(text("""
             WITH latest AS (
                 SELECT DISTINCT ON (file_path, search_query)
-                       file_path, search_query, vote
+                       file_path, search_query, vote, vote_source
                 FROM vote_events
                 WHERE search_query IS NOT NULL
                   AND search_query NOT LIKE '>%%'
                 ORDER BY file_path, search_query, timestamp DESC
             )
             SELECT search_query,
-                   COUNT(*) FILTER (WHERE vote = 1)  AS positives,
-                   COUNT(*) FILTER (WHERE vote = -1) AS negatives
+                   COUNT(*) FILTER (WHERE vote = 1  AND vote_source IN ('manual', 'bulk_upvote'))  AS positives_direct,
+                   COUNT(*) FILTER (WHERE vote = 1  AND vote_source = 'cascade')                   AS positives_cascade,
+                   COUNT(*) FILTER (WHERE vote = -1 AND vote_source IN ('manual', 'bulk_upvote'))  AS negatives_direct,
+                   COUNT(*) FILTER (WHERE vote = -1 AND vote_source = 'cascade')                   AS negatives_cascade
             FROM latest
             WHERE vote != 0
             GROUP BY search_query
-            ORDER BY positives DESC
+            ORDER BY (positives_direct + positives_cascade) DESC
+        """)).fetchall()
+
+        queries = []
+        for r in rows:
+            pos_direct  = int(r[1])
+            pos_cascade = int(r[2])
+            neg_direct  = int(r[3])
+            neg_cascade = int(r[4])
+            positives = pos_direct + pos_cascade
+            negatives = neg_direct + neg_cascade
+            queries.append({
+                "query":              r[0],
+                "positives":          positives,
+                "positives_direct":   pos_direct,
+                "positives_cascade":  pos_cascade,
+                "negatives":          negatives,
+                "negatives_direct":   neg_direct,
+                "negatives_cascade":  neg_cascade,
+                "ratio":              round(min(1.0, negatives / positives) if positives > 0 else 0, 3),
+                "tier":               _tier(positives, _GOALS["positives"]),
+                # Tier on direct positives only — the more honest "ready to train" signal.
+                "tier_direct":        _tier(pos_direct, _GOALS["positives"]),
+            })
+
+        total_pos_direct  = sum(q["positives_direct"]  for q in queries)
+        total_pos_cascade = sum(q["positives_cascade"] for q in queries)
+        total_neg_direct  = sum(q["negatives_direct"]  for q in queries)
+        total_neg_cascade = sum(q["negatives_cascade"] for q in queries)
+        total_positives   = total_pos_direct + total_pos_cascade
+        total_negatives   = total_neg_direct + total_neg_cascade
+        total_queries     = len(queries)
+        overall_ratio     = round(min(1.0, total_negatives / total_positives) if total_positives else 0, 3)
+        # Direct-only ratio: how the data looks if you throw away cascade noise.
+        direct_ratio      = round(min(1.0, total_neg_direct / total_pos_direct) if total_pos_direct else 0, 3)
+
+        return {
+            "queries": queries,
+            "totals": {
+                "queries":            total_queries,
+                "positives":          total_positives,
+                "positives_direct":   total_pos_direct,
+                "positives_cascade":  total_pos_cascade,
+                "negatives":          total_negatives,
+                "negatives_direct":   total_neg_direct,
+                "negatives_cascade":  total_neg_cascade,
+                "ratio":              overall_ratio,
+                "ratio_direct":       direct_ratio,
+            },
+            "tiers": {
+                "queries":          _tier(total_queries,    _GOALS["queries"]),
+                "positives":        _tier(total_positives,  _GOALS["positives"]),
+                "positives_direct": _tier(total_pos_direct, _GOALS["positives"]),
+                "negatives":        _tier(total_negatives,  _GOALS["negatives"]),
+                "negatives_direct": _tier(total_neg_direct, _GOALS["negatives"]),
+                "ratio":            _tier(overall_ratio,    _GOALS["ratio"]),
+                "ratio_direct":     _tier(direct_ratio,     _GOALS["ratio"]),
+            },
+            "goals": _GOALS,
+        }
+    finally:
+        db.close()
+
+
+@router.get("/stats/eval-set")
+def eval_set_readiness():
+    """Held-out evaluation set readiness — curated labels, separate from votes.
+
+    Returns per-query positive/negative counts plus overall tiers. The goals
+    here are intentionally smaller than the training thresholds: a few hundred
+    clean labels across ~20 queries is enough to detect regressions, and the
+    set is meant to be curated by hand, not collected en masse.
+    """
+    db = _get_session()
+    try:
+        rows = db.execute(text("""
+            SELECT search_query,
+                   COUNT(*) FILTER (WHERE label = 1)  AS positives,
+                   COUNT(*) FILTER (WHERE label = -1) AS negatives
+            FROM eval_set
+            GROUP BY search_query
+            ORDER BY (COUNT(*)) DESC
         """)).fetchall()
 
         queries = [
@@ -733,8 +838,7 @@ def training_readiness():
                 "query":     r[0],
                 "positives": int(r[1]),
                 "negatives": int(r[2]),
-                "ratio":     round(min(1.0, int(r[2]) / int(r[1])) if int(r[1]) > 0 else 0, 3),
-                "tier":      _tier(int(r[1]), _GOALS["positives"]),
+                "total":     int(r[1]) + int(r[2]),
             }
             for r in rows
         ]
@@ -742,7 +846,6 @@ def training_readiness():
         total_positives = sum(q["positives"] for q in queries)
         total_negatives = sum(q["negatives"] for q in queries)
         total_queries   = len(queries)
-        overall_ratio   = round(min(1.0, total_negatives / total_positives) if total_positives else 0, 3)
 
         return {
             "queries": queries,
@@ -750,15 +853,14 @@ def training_readiness():
                 "queries":   total_queries,
                 "positives": total_positives,
                 "negatives": total_negatives,
-                "ratio":     overall_ratio,
+                "total":     total_positives + total_negatives,
             },
             "tiers": {
-                "queries":   _tier(total_queries,   _GOALS["queries"]),
-                "positives": _tier(total_positives, _GOALS["positives"]),
-                "negatives": _tier(total_negatives, _GOALS["negatives"]),
-                "ratio":     _tier(overall_ratio,   _GOALS["ratio"]),
+                "queries":   _tier(total_queries,   _EVAL_GOALS["queries"]),
+                "positives": _tier(total_positives, _EVAL_GOALS["positives"]),
+                "negatives": _tier(total_negatives, _EVAL_GOALS["negatives"]),
             },
-            "goals": _GOALS,
+            "goals": _EVAL_GOALS,
         }
     finally:
         db.close()

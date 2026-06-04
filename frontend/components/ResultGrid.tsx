@@ -589,6 +589,8 @@ function ResultItem({
   const [isVisible, setIsVisible] = useState(false)
   const [tagOpen, setTagOpen] = useState(false)
   const [tagValue, setTagValue] = useState('')
+  const [pinOpen, setPinOpen] = useState(false)
+  const [pinState, setPinState] = useState<'idle' | 'sending' | 'ok' | 'error'>('idle')
   const [hovered, setHovered] = useState(false)
   const [previewError, setPreviewError] = useState(false)
   const [proxySource, setProxySource] = useState<'proxy' | 'original' | null>(null)
@@ -668,6 +670,43 @@ function ResultItem({
     }
     onVote(result.file_path, result.audio_segment_index, dir)
   }
+
+  async function pinToEval(label: 1 | -1) {
+    // Held-out eval entries require a query — pinning without one is meaningless.
+    if (!searchQuery) return
+    setPinState('sending')
+    try {
+      const r = await fetch('/api/eval-set', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          search_query: searchQuery,
+          file_path: result.file_path,
+          audio_segment_index: result.audio_segment_index ?? null,
+          label,
+        }),
+      })
+      setPinState(r.ok ? 'ok' : 'error')
+      setPinOpen(false)
+      setTimeout(() => setPinState('idle'), r.ok ? 2000 : 3000)
+    } catch {
+      setPinState('error')
+      setPinOpen(false)
+      setTimeout(() => setPinState('idle'), 3000)
+    }
+  }
+
+  const pinTitle = !searchQuery
+    ? 'Search first — pinning needs a query'
+    : pinState === 'ok'    ? 'Pinned to eval set'
+    : pinState === 'error' ? 'Pin failed'
+    : 'Pin to held-out eval set'
+  const pinIcon = pinState === 'sending' ? '⏳' : pinState === 'ok' ? '✓' : pinState === 'error' ? '✕' : '📌'
+  const pinCls = pinState === 'ok'
+    ? 'bg-amber-700 text-amber-100'
+    : pinState === 'error'
+    ? 'bg-red-900 text-red-200'
+    : 'bg-gray-700 text-gray-400 hover:bg-amber-900 hover:text-amber-300'
   const cascadePct = isCascade ? Math.round(labelScore * 100) : null
 
   const upvoteCls = isManual
@@ -931,6 +970,13 @@ function ResultItem({
                 <button onClick={e => { e.stopPropagation(); submitTag() }} className="px-1.5 py-0.5 bg-indigo-600 hover:bg-indigo-500 rounded text-xs text-white">✓</button>
                 <button onClick={e => { e.stopPropagation(); setTagOpen(false) }} className="px-1.5 py-0.5 bg-gray-700 hover:bg-gray-600 rounded text-xs text-gray-400">✕</button>
               </div>
+            ) : pinOpen ? (
+              <div className="flex gap-1" onClick={e => e.stopPropagation()} data-testid="pin-choice">
+                <span className="px-1.5 py-0.5 text-xs text-amber-400">Pin as:</span>
+                <button onClick={e => { e.stopPropagation(); pinToEval(1) }} className="flex-1 py-0.5 rounded text-xs font-semibold bg-green-800 hover:bg-green-700 text-green-100" title="Pin as positive" data-testid="pin-positive">👍</button>
+                <button onClick={e => { e.stopPropagation(); pinToEval(-1) }} className="flex-1 py-0.5 rounded text-xs font-semibold bg-red-800 hover:bg-red-700 text-red-100" title="Pin as negative" data-testid="pin-negative">👎</button>
+                <button onClick={e => { e.stopPropagation(); setPinOpen(false) }} className="px-1.5 py-0.5 bg-gray-700 hover:bg-gray-600 rounded text-xs text-gray-400" title="Cancel">✕</button>
+              </div>
             ) : (
               <div className="flex gap-1">
                 <button
@@ -957,6 +1003,16 @@ function ResultItem({
                   title="Tag with custom keyword"
                 >
                   #
+                </button>
+                <button
+                  onClick={(e) => { e.stopPropagation(); if (searchQuery) setPinOpen(true) }}
+                  disabled={!searchQuery || pinState === 'sending'}
+                  className={`px-1.5 py-0.5 rounded text-xs font-semibold transition ${pinCls} disabled:opacity-40 disabled:cursor-not-allowed`}
+                  title={pinTitle}
+                  aria-label="Pin to eval set"
+                  data-testid="pin-button"
+                >
+                  {pinIcon}
                 </button>
               </div>
             )}
@@ -1091,6 +1147,13 @@ function ResultItem({
               <button onClick={e => { e.stopPropagation(); submitTag() }} className="px-2 py-1 bg-indigo-600 hover:bg-indigo-500 rounded text-xs text-white">✓</button>
               <button onClick={e => { e.stopPropagation(); setTagOpen(false) }} className="px-2 py-1 bg-gray-700 hover:bg-gray-600 rounded text-xs text-gray-400">✕</button>
             </div>
+          ) : pinOpen ? (
+            <div className="flex gap-1" onClick={e => e.stopPropagation()} data-testid="pin-choice-list">
+              <span className="px-1 py-1 text-xs text-amber-400">Pin:</span>
+              <button onClick={e => { e.stopPropagation(); pinToEval(1) }} className="px-2 py-1 rounded text-xs font-semibold bg-green-800 hover:bg-green-700 text-green-100" title="Pin as positive">👍</button>
+              <button onClick={e => { e.stopPropagation(); pinToEval(-1) }} className="px-2 py-1 rounded text-xs font-semibold bg-red-800 hover:bg-red-700 text-red-100" title="Pin as negative">👎</button>
+              <button onClick={e => { e.stopPropagation(); setPinOpen(false) }} className="px-2 py-1 bg-gray-700 hover:bg-gray-600 rounded text-xs text-gray-400" title="Cancel">✕</button>
+            </div>
           ) : (
             <div className="flex gap-1">
               <button
@@ -1117,6 +1180,15 @@ function ResultItem({
                 title="Tag with custom keyword"
               >
                 #
+              </button>
+              <button
+                onClick={(e) => { e.stopPropagation(); if (searchQuery) setPinOpen(true) }}
+                disabled={!searchQuery || pinState === 'sending'}
+                className={`px-2 py-1 rounded text-xs font-semibold transition ${pinCls} disabled:opacity-40 disabled:cursor-not-allowed`}
+                title={pinTitle}
+                aria-label="Pin to eval set"
+              >
+                {pinIcon}
               </button>
             </div>
           )}
