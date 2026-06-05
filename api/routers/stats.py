@@ -749,7 +749,9 @@ def training_readiness():
             FROM latest
             WHERE vote != 0
             GROUP BY search_query
-            ORDER BY (positives_direct + positives_cascade) DESC
+            -- Postgres rejects select-list aliases inside ORDER BY expressions
+            -- (only bare alias refs are allowed). Sort by raw positive count.
+            ORDER BY COUNT(*) FILTER (WHERE vote = 1) DESC
         """)).fetchall()
 
         queries = []
