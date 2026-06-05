@@ -948,6 +948,70 @@ describe('POST /api/eval-set', () => {
 })
 
 // ---------------------------------------------------------------------------
+// GET /api/eval-set — list entries
+// ---------------------------------------------------------------------------
+
+describe('GET /api/eval-set', () => {
+  it('returns the upstream list payload', async () => {
+    const payload = { total: 1, entries: [{ id: 'x', search_query: 'cat', file_path: '/m/a.mp4', label: 1 }] }
+    vi.mocked(fetch).mockResolvedValueOnce(mockResponse(payload, 200))
+    const { GET } = await import('../eval-set/route')
+    const req = new NextRequest('http://localhost/api/eval-set?query=cat&limit=10')
+    const res = await GET(req)
+    expect(res.status).toBe(200)
+    const data = await res.json()
+    expect(data.total).toBe(1)
+    // Forwards the filter params upstream.
+    const upstreamUrl = (fetch as ReturnType<typeof vi.fn>).mock.calls.at(-1)![0] as string
+    expect(upstreamUrl).toContain('query=cat')
+    expect(upstreamUrl).toContain('limit=10')
+  })
+
+  it('forwards upstream error status', async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(mockResponse({ detail: 'bad' }, 503))
+    const { GET } = await import('../eval-set/route')
+    const req = new NextRequest('http://localhost/api/eval-set')
+    const res = await GET(req)
+    expect(res.status).toBe(503)
+  })
+
+  it('returns 500 when fetch throws', async () => {
+    vi.mocked(fetch).mockRejectedValueOnce(new Error('ECONNREFUSED'))
+    const { GET } = await import('../eval-set/route')
+    const req = new NextRequest('http://localhost/api/eval-set')
+    const res = await GET(req)
+    expect(res.status).toBe(500)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// DELETE /api/eval-set/[id]
+// ---------------------------------------------------------------------------
+
+describe('DELETE /api/eval-set/[id]', () => {
+  it('returns 204 when the backend succeeds', async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(new Response(null, { status: 204 }))
+    const { DELETE } = await import('../eval-set/[id]/route')
+    const res = await DELETE(new Request('http://localhost/api/eval-set/abc'), { params: Promise.resolve({ id: 'abc' }) })
+    expect(res.status).toBe(204)
+  })
+
+  it('forwards upstream 404 with error body', async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(mockResponse({ detail: 'not found' }, 404))
+    const { DELETE } = await import('../eval-set/[id]/route')
+    const res = await DELETE(new Request('http://localhost/api/eval-set/abc'), { params: Promise.resolve({ id: 'abc' }) })
+    expect(res.status).toBe(404)
+  })
+
+  it('returns 500 when fetch throws', async () => {
+    vi.mocked(fetch).mockRejectedValueOnce(new Error('ECONNREFUSED'))
+    const { DELETE } = await import('../eval-set/[id]/route')
+    const res = await DELETE(new Request('http://localhost/api/eval-set/abc'), { params: Promise.resolve({ id: 'abc' }) })
+    expect(res.status).toBe(500)
+  })
+})
+
+// ---------------------------------------------------------------------------
 // GET /api/eval-set/readiness — proxies backend /api/stats/eval-set
 // ---------------------------------------------------------------------------
 
