@@ -6,10 +6,11 @@
 
 import React from 'react'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, fireEvent, cleanup } from '@testing-library/react'
+import { render, screen, fireEvent, cleanup, waitFor } from '@testing-library/react'
 import '@testing-library/jest-dom'
 import { makeResult } from '@/test/factories'
 import ResultGrid from '@/components/ResultGrid'
+import { SearchProvider } from '@/context/SearchContext'
 
 // ── Mock heavy child components ────────────────────────────────────────────────
 // ResultGrid renders one ResultCard per item. ResultCard may have its own hooks,
@@ -127,5 +128,66 @@ describe('ResultGrid', () => {
     render(<ResultGrid results={results} />)
     expect(screen.getByText(/reel:/)).toBeInTheDocument()
     expect(screen.queryByText(/seg/)).not.toBeInTheDocument()
+  })
+})
+
+// ── Pin to eval set ──────────────────────────────────────────────────────────
+
+describe('ResultGrid — Pin to eval', () => {
+  afterEach(() => { cleanup(); vi.clearAllMocks(); vi.unstubAllGlobals() })
+
+  function renderWithQuery(query: string, results: ReturnType<typeof makeResult>[]) {
+    return render(
+      <SearchProvider value={query}>
+        <ResultGrid results={results} />
+      </SearchProvider>
+    )
+  }
+
+  it('disables the pin button when there is no active search query', () => {
+    renderWithQuery('', [makeResult({ file_path: '/m/clip.mp4', file_type: 'video', timestamp: 1 })])
+    const pin = screen.getByTestId('pin-button')
+    expect(pin).toBeDisabled()
+  })
+
+  it('opens a positive/negative chooser on click and POSTs the chosen label', async () => {
+    const fetchMock = vi.fn(() => Promise.resolve({ ok: true })) as unknown as typeof fetch
+    vi.stubGlobal('fetch', fetchMock)
+    renderWithQuery('cat', [makeResult({ file_path: '/m/clip.mp4', file_type: 'video', timestamp: 1 })])
+
+    // 1. Click pin → chooser appears, no POST yet.
+    fireEvent.click(screen.getByTestId('pin-button'))
+    expect(screen.getByTestId('pin-choice')).toBeInTheDocument()
+    expect((fetchMock as ReturnType<typeof vi.fn>).mock.calls.length).toBe(0)
+
+    // 2. Click 👍 → POST with label=1 and the active search query.
+    fireEvent.click(screen.getByTestId('pin-positive'))
+    await waitFor(() => expect((fetchMock as ReturnType<typeof vi.fn>).mock.calls.length).toBe(1))
+    const call = (fetchMock as ReturnType<typeof vi.fn>).mock.calls[0]
+    expect(call[0]).toBe('/api/eval-set')
+    const body = JSON.parse((call[1] as RequestInit).body as string)
+    expect(body).toMatchObject({ search_query: 'cat', file_path: '/m/clip.mp4', label: 1 })
+  })
+
+  it('sends label=-1 when the user picks the negative option', async () => {
+    const fetchMock = vi.fn(() => Promise.resolve({ ok: true })) as unknown as typeof fetch
+    vi.stubGlobal('fetch', fetchMock)
+    renderWithQuery('dog', [makeResult({ file_path: '/m/clip.mp4', file_type: 'video', timestamp: 1 })])
+    fireEvent.click(screen.getByTestId('pin-button'))
+    fireEvent.click(screen.getByTestId('pin-negative'))
+    await waitFor(() => expect((fetchMock as ReturnType<typeof vi.fn>).mock.calls.length).toBe(1))
+    const body = JSON.parse(((fetchMock as ReturnType<typeof vi.fn>).mock.calls[0][1] as RequestInit).body as string)
+    expect(body.label).toBe(-1)
+    expect(body.search_query).toBe('dog')
+  })
+
+  it('shows error state when the pin POST fails', async () => {
+    const fetchMock = vi.fn(() => Promise.resolve({ ok: false })) as unknown as typeof fetch
+    vi.stubGlobal('fetch', fetchMock)
+    renderWithQuery('cat', [makeResult({ file_path: '/m/clip.mp4', file_type: 'video', timestamp: 1 })])
+    fireEvent.click(screen.getByTestId('pin-button'))
+    fireEvent.click(screen.getByTestId('pin-positive'))
+    // Title flips to "Pin failed" once the request resolves.
+    await waitFor(() => expect(screen.getByTitle(/Pin failed/)).toBeInTheDocument())
   })
 })

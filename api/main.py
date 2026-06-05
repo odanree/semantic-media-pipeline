@@ -28,6 +28,7 @@ from routers import health, ingest, search, updates, stats, ask, admin
 from routers import agent as agent_router
 from routers import detect as detect_router
 from routers import recovery as recovery_router
+from routers import eval_set as eval_set_router
 from middleware.audit import AuditMiddleware
 from auth import require_api_key
 from rate_limit import limiter, LIMIT_DEFAULT
@@ -83,6 +84,7 @@ app.include_router(admin.router,    prefix="/api", tags=["admin"],         depen
 app.include_router(agent_router.router, prefix="/api", tags=["agents"],    dependencies=[Depends(require_api_key)])
 app.include_router(detect_router.router, prefix="/api", tags=["vision"],   dependencies=[Depends(require_api_key)])
 app.include_router(recovery_router.router, prefix="/api", tags=["admin"],  dependencies=[Depends(require_api_key)])
+app.include_router(eval_set_router.router, prefix="/api", tags=["eval"],   dependencies=[Depends(require_api_key)])
 
 
 # Instrument all HTTP routes and expose /metrics for Prometheus scraping

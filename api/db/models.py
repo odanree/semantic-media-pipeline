@@ -145,6 +145,37 @@ Index("idx_vote_source", VoteEvent.vote_source)
 Index("idx_vote_query", VoteEvent.search_query)
 
 
+class EvalSetEntry(Base):
+    """
+    Manually-curated held-out evaluation set.
+
+    Decoupled from `vote_events` on purpose: vote-driven training data and
+    evaluation labels must not contaminate each other. A row pins one
+    (search_query, file_path[, audio_segment_index]) tuple with a binary
+    label and an optional curator note. The unique index treats NULL
+    audio_segment_index as a single slot per (query, file_path).
+    """
+
+    __tablename__ = "eval_set"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    search_query = Column(String(512), nullable=False, index=True)
+    file_path = Column(Text, nullable=False)
+    audio_segment_index = Column(Integer, nullable=True)
+    label = Column(Integer, nullable=False)  # 1 or -1
+    qdrant_point_id = Column(UUID(as_uuid=True), nullable=True)
+    note = Column(Text, nullable=True)
+    created_at = Column(
+        TIMESTAMP(timezone=True), default=datetime.utcnow, nullable=False, index=True
+    )
+
+    def __repr__(self) -> str:
+        return (
+            f"<EvalSetEntry(query={self.search_query!r}, file_path={self.file_path!r}, "
+            f"seg={self.audio_segment_index}, label={self.label})>"
+        )
+
+
 async def get_async_engine():
     """Create async database engine"""
     database_url = os.getenv(
