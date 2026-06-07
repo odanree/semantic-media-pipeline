@@ -742,8 +742,14 @@ function ResultItem({
     return (
       <div
         ref={ref}
-        className={`group cursor-pointer bg-gray-800 rounded-lg overflow-hidden transition ring-2 ${
-          isManual ? 'ring-green-500' : isUnlabeled ? 'ring-lime-400' : isCascade ? 'ring-teal-600' : isDownvoted ? 'ring-red-900' : 'ring-transparent hover:ring-blue-500'
+        className={`group cursor-pointer bg-gray-800 rounded-lg overflow-hidden transition ${
+          // Manual = thick bright emerald ring (confirmed-by-human signal).
+          // Cascade = dashed teal outline so the difference reads at a glance.
+          isManual ? 'ring-4 ring-emerald-400'
+          : isUnlabeled ? 'ring-2 ring-lime-400'
+          : isCascade ? 'ring-2 ring-transparent outline outline-2 outline-dashed outline-teal-300 outline-offset-[-2px]'
+          : isDownvoted ? 'ring-2 ring-red-900'
+          : 'ring-2 ring-transparent hover:ring-blue-500'
         }`}
         role="listitem"
         onClick={onSelect}
@@ -1024,8 +1030,12 @@ function ResultItem({
     return (
       <div
         ref={ref}
-        className={`flex gap-4 p-4 bg-gray-800 rounded-lg transition cursor-pointer group ring-2 ${
-          isManual ? 'ring-green-500' : isUnlabeled ? 'ring-lime-400' : isCascade ? 'ring-teal-600' : isDownvoted ? 'ring-red-900' : 'ring-transparent hover:ring-blue-500'
+        className={`flex gap-4 p-4 bg-gray-800 rounded-lg transition cursor-pointer group ${
+          isManual ? 'ring-4 ring-emerald-400'
+          : isUnlabeled ? 'ring-2 ring-lime-400'
+          : isCascade ? 'ring-2 ring-transparent outline outline-2 outline-dashed outline-teal-300 outline-offset-[-2px]'
+          : isDownvoted ? 'ring-2 ring-red-900'
+          : 'ring-2 ring-transparent hover:ring-blue-500'
         }`}
         role="listitem"
         onClick={onSelect}
