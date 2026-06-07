@@ -65,13 +65,23 @@ def test_training_query_sql_uses_direct_precedence(client, mock_db_session):
     endpoint executes, since the response-level test mocks out fetchall.
     """
     mock_db_session.execute.return_value.fetchall.return_value = []
+    # mock_db_session is session-scoped, so call_args_list carries history from
+    # earlier tests. Reset so we only see this request's executes.
+    mock_db_session.execute.reset_mock()
     client.get("/api/stats/training")
-    # The query is the first positional arg to the first execute() call.
-    sql = str(mock_db_session.execute.call_args_list[0].args[0])
-    # The precedence rule lives in the `sources` CTE: any manual/bulk row
-    # flips has_direct true, then the classified CTE uses that to label.
-    assert "bool_or(vote_source IN ('manual', 'bulk_upvote'))" in sql
-    assert "CASE WHEN s.has_direct THEN 'direct' ELSE 'cascade' END" in sql
+
+    # Find the training query among any SQLs the endpoint executed.
+    sqls = [str(c.args[0]) for c in mock_db_session.execute.call_args_list]
+    precedence_sql = next(
+        (s for s in sqls if "bool_or(vote_source IN ('manual', 'bulk_upvote'))" in s),
+        None,
+    )
+    assert precedence_sql is not None, (
+        "no executed SQL used the direct-precedence CTE; "
+        f"saw {len(sqls)} statement(s): "
+        + " | ".join(s[:60] for s in sqls)
+    )
+    assert "CASE WHEN s.has_direct THEN 'direct' ELSE 'cascade' END" in precedence_sql
 
 
 # ── /api/stats/eval-set ─────────────────────────────────────────────────────
