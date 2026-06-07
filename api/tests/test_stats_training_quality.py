@@ -55,6 +55,35 @@ def test_training_tier_direct_reflects_only_human_labels(client, mock_db_session
     assert body["tiers"]["positives_direct"] == "needs_data"
 
 
+def test_training_query_sql_uses_direct_precedence(client, mock_db_session):
+    """The SQL must classify a (file, query) row as 'direct' if ANY manual or
+    bulk_upvote event exists for it, even if a later cascade row was appended.
+    The previous implementation took the latest row's source, which
+    misclassified manually-upvoted-then-cascade-touched frames as cascade.
+
+    We assert this at the SQL level by inspecting the actual query that the
+    endpoint executes, since the response-level test mocks out fetchall.
+    """
+    mock_db_session.execute.return_value.fetchall.return_value = []
+    # mock_db_session is session-scoped, so call_args_list carries history from
+    # earlier tests. Reset so we only see this request's executes.
+    mock_db_session.execute.reset_mock()
+    client.get("/api/stats/training")
+
+    # Find the training query among any SQLs the endpoint executed.
+    sqls = [str(c.args[0]) for c in mock_db_session.execute.call_args_list]
+    precedence_sql = next(
+        (s for s in sqls if "bool_or(vote_source IN ('manual', 'bulk_upvote'))" in s),
+        None,
+    )
+    assert precedence_sql is not None, (
+        "no executed SQL used the direct-precedence CTE; "
+        f"saw {len(sqls)} statement(s): "
+        + " | ".join(s[:60] for s in sqls)
+    )
+    assert "CASE WHEN s.has_direct THEN 'direct' ELSE 'cascade' END" in precedence_sql
+
+
 # ── /api/stats/eval-set ─────────────────────────────────────────────────────
 
 def test_eval_set_readiness_empty(client, mock_db_session):
