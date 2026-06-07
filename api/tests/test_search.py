@@ -804,3 +804,28 @@ def test_scene_bounds_paginated_scroll_combines_batches(client, mock_qdrant):
     data = client.post("/api/scene-bounds", json={"file_path": "video.mp4", "timestamp": 10.0}).json()
     assert data["frames_scanned"] == 4
     mock_qdrant.scroll.side_effect = None
+
+
+# ---------------------------------------------------------------------------
+# _window_deduplicate tolerates scroll Records (which lack .score)
+# ---------------------------------------------------------------------------
+
+def test_window_deduplicate_tolerates_missing_score():
+    """qdrant_client.scroll() returns Record objects with no .score attribute.
+
+    Filename search uses scroll() and pipes the results through
+    _segment_deduplicate -> _window_deduplicate. Before the fix, accessing
+    h.score on a Record raised AttributeError and the search silently
+    returned empty results. The dedup must treat Records as score=0 and
+    still return all distinct frames within the window."""
+    from routers.search import _window_deduplicate
+
+    # Simulate Qdrant Record objects: payload but no .score attribute.
+    class _Record:
+        def __init__(self, ts):
+            self.payload = {"timestamp": ts}
+    # `getattr(record, 'score', 0.0)` must NOT raise.
+    hits = [_Record(0.0), _Record(5.0), _Record(10.0)]
+    result = _window_deduplicate(hits, window_s=2.0)
+    # All 3 are >= 2s apart, so all should be kept.
+    assert len(result) == 3

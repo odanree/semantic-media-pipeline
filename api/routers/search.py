@@ -213,8 +213,13 @@ def _window_deduplicate(hits: list, window_s: float = EVENT_WINDOW_SECONDS) -> l
 
     Greedy NMS: keep the highest-scoring frame, suppress any frame within
     window_s seconds of an already-kept frame. Images (timestamp=None) always pass.
+
+    Hits come from either a similarity query (ScoredPoint, has .score) or
+    a scroll/retrieve (Record, no .score). Filename search uses scroll, so
+    we fall back to 0.0 — the window suppression still does the right thing,
+    ordering is just arbitrary inside the kept set.
     """
-    hits = sorted(hits, key=lambda h: h.score, reverse=True)
+    hits = sorted(hits, key=lambda h: getattr(h, "score", 0.0) or 0.0, reverse=True)
 
     kept_timestamps: list[float] = []
     results = []
