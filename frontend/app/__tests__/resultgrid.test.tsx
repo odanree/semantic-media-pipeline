@@ -191,3 +191,56 @@ describe('ResultGrid — Pin to eval', () => {
     await waitFor(() => expect(screen.getByTitle(/Pin failed/)).toBeInTheDocument())
   })
 })
+
+// ── Vote classification (manual vs cascade vs labeled-elsewhere) ─────────────
+
+describe('ResultGrid — vote classification', () => {
+  afterEach(() => { cleanup(); vi.clearAllMocks() })
+
+  function renderWithQuery(query: string, results: ReturnType<typeof makeResult>[]) {
+    return render(
+      <SearchProvider value={query}>
+        <ResultGrid results={results} />
+      </SearchProvider>
+    )
+  }
+
+  it('classifies a current-query upvote with vote_label[query]===1 as manual', () => {
+    renderWithQuery('cat', [makeResult({
+      file_type: 'video', timestamp: 1,
+      user_vote: 1, vote_label: { cat: 1.0 },
+    })])
+    // Manual gets the "Manually upvoted" title via the upvote button.
+    expect(screen.getByTitle(/Manually upvoted for this query/)).toBeInTheDocument()
+  })
+
+  it('classifies a current-query upvote with vote_label[query]<1 as cascade', () => {
+    renderWithQuery('cat', [makeResult({
+      file_type: 'video', timestamp: 1,
+      user_vote: 1, vote_label: { cat: 0.87 },
+    })])
+    expect(screen.getByTitle(/Auto-cascaded at 87% visual similarity/)).toBeInTheDocument()
+  })
+
+  it('classifies a cross-query upvote as labeled-elsewhere (NOT manual)', () => {
+    // The point was upvoted for "dog" but the user is now searching "cat".
+    // Before the fix this rendered as manual (solid bright ring), hiding the
+    // fact that no human ever confirmed this frame for "cat".
+    renderWithQuery('cat', [makeResult({
+      file_type: 'video', timestamp: 1,
+      user_vote: 1, vote_label: { dog: 1.0 },
+    })])
+    const node = screen.getByTitle(/Upvoted under "dog" — not this query/)
+    expect(node).toBeInTheDocument()
+    // Must NOT pretend it was manually upvoted for the current query.
+    expect(screen.queryByTitle(/Manually upvoted for this query/)).not.toBeInTheDocument()
+  })
+
+  it('classifies upvote with no labels as unlabeled', () => {
+    renderWithQuery('cat', [makeResult({
+      file_type: 'video', timestamp: 1,
+      user_vote: 1, vote_label: {},
+    })])
+    expect(screen.getByTitle(/Upvoted — no label attached/)).toBeInTheDocument()
+  })
+})

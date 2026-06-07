@@ -650,9 +650,19 @@ function ResultItem({
   const isDownvoted = votes[voteKey] === -1
   const effectiveVoteLabel = { ...(result.vote_label ?? {}), ...(voteLabelsOverride[voteKey] ?? {}) }
   const labelScore = searchQuery ? (effectiveVoteLabel[searchQuery] ?? null) : null
+  // Classification for THIS query:
+  //   isManual           — vote_label[currentQuery] === 1 (human confirmed for THIS query)
+  //   isCascade          — vote_label[currentQuery] in (0, 1) (auto-propagated for THIS query)
+  //   isUnlabeled        — upvoted but no labels at all
+  //   isLabeledElsewhere — upvoted, has labels, but none for the current query
+  //                        (i.e. user labeled it under a different search term)
+  // Previously isManual silently absorbed the last case, so cross-query upvotes
+  // got the same ring as confirmed-for-this-query — misleading. They now get
+  // their own neutral ring so the difference reads at a glance.
   const isCascade = isUpvoted && labelScore != null && labelScore < 1
   const isUnlabeled = isUpvoted && !isCascade && Object.keys(effectiveVoteLabel).length === 0
-  const isManual = isUpvoted && !isCascade && !isUnlabeled
+  const isManual = isUpvoted && labelScore === 1
+  const isLabeledElsewhere = isUpvoted && !isCascade && !isUnlabeled && !isManual
 
   // Badge priority:
   // 1. Any keyword set THIS session via voteLabelsOverride (includes # tags + upvotes)
@@ -715,9 +725,17 @@ function ResultItem({
     ? 'bg-lime-700 text-white'
     : isCascade
     ? 'bg-teal-900 text-teal-300 border border-teal-700'
+    : isLabeledElsewhere
+    ? 'bg-slate-700 text-slate-300 border border-slate-500'
     : 'bg-gray-700 text-gray-400 hover:bg-green-900 hover:text-green-300'
   const upvoteLabel = isCascade ? `👍 ${cascadePct}%` : '👍'
-  const upvoteTitle = isManual ? 'Manually upvoted' : isUnlabeled ? 'Upvoted — no label attached' : isCascade ? `Auto-cascaded at ${cascadePct}% visual similarity` : 'Promote this result'
+  const otherQueryLabel = isLabeledElsewhere ? Object.keys(effectiveVoteLabel)[0] : null
+  const upvoteTitle =
+      isManual           ? 'Manually upvoted for this query'
+    : isUnlabeled        ? 'Upvoted — no label attached'
+    : isCascade          ? `Auto-cascaded at ${cascadePct}% visual similarity`
+    : isLabeledElsewhere ? `Upvoted under "${otherQueryLabel}" — not this query`
+    : 'Promote this result'
   const ref = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -742,8 +760,16 @@ function ResultItem({
     return (
       <div
         ref={ref}
-        className={`group cursor-pointer bg-gray-800 rounded-lg overflow-hidden transition ring-2 ${
-          isManual ? 'ring-green-500' : isUnlabeled ? 'ring-lime-400' : isCascade ? 'ring-teal-600' : isDownvoted ? 'ring-red-900' : 'ring-transparent hover:ring-blue-500'
+        className={`group cursor-pointer bg-gray-800 rounded-lg overflow-hidden transition ${
+          // Manual = thick bright emerald (confirmed human label for THIS query).
+          // Cascade = dashed teal outline (auto-propagated for this query).
+          // LabeledElsewhere = neutral slate ring (upvoted but for a different query).
+          isManual           ? 'ring-4 ring-emerald-400'
+          : isUnlabeled        ? 'ring-2 ring-lime-400'
+          : isCascade          ? 'ring-2 ring-transparent outline outline-2 outline-dashed outline-teal-300 outline-offset-[-2px]'
+          : isLabeledElsewhere ? 'ring-2 ring-slate-500'
+          : isDownvoted        ? 'ring-2 ring-red-900'
+          :                      'ring-2 ring-transparent hover:ring-blue-500'
         }`}
         role="listitem"
         onClick={onSelect}
@@ -1024,8 +1050,16 @@ function ResultItem({
     return (
       <div
         ref={ref}
-        className={`flex gap-4 p-4 bg-gray-800 rounded-lg transition cursor-pointer group ring-2 ${
-          isManual ? 'ring-green-500' : isUnlabeled ? 'ring-lime-400' : isCascade ? 'ring-teal-600' : isDownvoted ? 'ring-red-900' : 'ring-transparent hover:ring-blue-500'
+        className={`flex gap-4 p-4 bg-gray-800 rounded-lg transition cursor-pointer group ${
+          // Manual = thick bright emerald (confirmed human label for THIS query).
+          // Cascade = dashed teal outline (auto-propagated for this query).
+          // LabeledElsewhere = neutral slate ring (upvoted but for a different query).
+          isManual           ? 'ring-4 ring-emerald-400'
+          : isUnlabeled        ? 'ring-2 ring-lime-400'
+          : isCascade          ? 'ring-2 ring-transparent outline outline-2 outline-dashed outline-teal-300 outline-offset-[-2px]'
+          : isLabeledElsewhere ? 'ring-2 ring-slate-500'
+          : isDownvoted        ? 'ring-2 ring-red-900'
+          :                      'ring-2 ring-transparent hover:ring-blue-500'
         }`}
         role="listitem"
         onClick={onSelect}

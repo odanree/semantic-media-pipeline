@@ -13,7 +13,9 @@ export function makeResult(overrides?: Partial<{
   audio_segment_start_sec: number | null
   audio_segment_end_sec: number | null
   audio_rms_energy: number | null
-  user_vote?: 1 | -1 | null
+  user_vote: 1 | -1 | null
+  vote_label: Record<string, number> | null
+  vote_query: string | null
 }>) {
   return {
     id: 'test-id',

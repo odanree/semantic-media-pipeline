@@ -729,24 +729,49 @@ def training_readiness():
     """
     db = _get_session()
     try:
-        # Per-query vote counts — deduplicated to latest vote per (file_path, search_query)
-        # so re-upvotes don't inflate counts and cleared votes (vote=0) are excluded.
-        # vote_source from the latest row determines how this label is bucketed.
+        # Per-query vote counts — one row per distinct (file_path, search_query).
+        #
+        # Source precedence: if ANY manual/bulk_upvote event exists for the
+        # (file, query) pair, the row is classified as 'direct'. Otherwise
+        # 'cascade'. This matches what vote_label stores in Qdrant (manual
+        # always wins because the worker uses MAX() and manual writes 1.0),
+        # and prevents a later cascade event from silently re-classifying a
+        # frame the human explicitly labeled.
+        #
+        # Vote value: latest non-cleared vote wins. If the latest event is a
+        # vote=0 clear, the (file, query) row is excluded from totals.
         rows = db.execute(text("""
             WITH latest AS (
                 SELECT DISTINCT ON (file_path, search_query)
-                       file_path, search_query, vote, vote_source
+                       file_path, search_query, vote
                 FROM vote_events
                 WHERE search_query IS NOT NULL
                   AND search_query NOT LIKE '>%%'
                 ORDER BY file_path, search_query, timestamp DESC
+            ),
+            sources AS (
+                -- For each (file, query): direct if any manual/bulk row exists,
+                -- else cascade. Aggregating with bool_or sidesteps the DISTINCT ON
+                -- ordering subtleties.
+                SELECT file_path, search_query,
+                       bool_or(vote_source IN ('manual', 'bulk_upvote')) AS has_direct
+                FROM vote_events
+                WHERE search_query IS NOT NULL
+                  AND search_query NOT LIKE '>%%'
+                GROUP BY file_path, search_query
+            ),
+            classified AS (
+                SELECT l.file_path, l.search_query, l.vote,
+                       CASE WHEN s.has_direct THEN 'direct' ELSE 'cascade' END AS source_class
+                FROM latest l
+                JOIN sources s USING (file_path, search_query)
             )
             SELECT search_query,
-                   COUNT(*) FILTER (WHERE vote = 1  AND vote_source IN ('manual', 'bulk_upvote'))  AS positives_direct,
-                   COUNT(*) FILTER (WHERE vote = 1  AND vote_source = 'cascade')                   AS positives_cascade,
-                   COUNT(*) FILTER (WHERE vote = -1 AND vote_source IN ('manual', 'bulk_upvote'))  AS negatives_direct,
-                   COUNT(*) FILTER (WHERE vote = -1 AND vote_source = 'cascade')                   AS negatives_cascade
-            FROM latest
+                   COUNT(*) FILTER (WHERE vote = 1  AND source_class = 'direct')  AS positives_direct,
+                   COUNT(*) FILTER (WHERE vote = 1  AND source_class = 'cascade') AS positives_cascade,
+                   COUNT(*) FILTER (WHERE vote = -1 AND source_class = 'direct')  AS negatives_direct,
+                   COUNT(*) FILTER (WHERE vote = -1 AND source_class = 'cascade') AS negatives_cascade
+            FROM classified
             WHERE vote != 0
             GROUP BY search_query
             -- Postgres rejects select-list aliases inside ORDER BY expressions
