@@ -16,6 +16,7 @@ export function makeResult(overrides?: Partial<{
   user_vote: 1 | -1 | null
   vote_label: Record<string, number> | null
   vote_query: string | null
+  processed_at: string | null
 }>) {
   return {
     id: 'test-id',

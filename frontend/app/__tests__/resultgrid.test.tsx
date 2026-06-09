@@ -129,6 +129,29 @@ describe('ResultGrid', () => {
     expect(screen.getByText(/reel:/)).toBeInTheDocument()
     expect(screen.queryByText(/seg/)).not.toBeInTheDocument()
   })
+
+  it('exposes "Recently indexed" sort options', () => {
+    const results = [makeResult({ file_path: '/m/a.mp4' })]
+    render(<ResultGrid results={results} />)
+    const sort = screen.getByLabelText('Sort results') as HTMLSelectElement
+    const labels = Array.from(sort.querySelectorAll('option')).map(o => o.textContent)
+    expect(labels).toContain('Recently indexed ↑')
+    expect(labels).toContain('Recently indexed ↓')
+  })
+
+  it('reorders results when sort=processed_desc using processed_at', () => {
+    const older  = makeResult({ id: 'older',  file_path: '/m/older.mp4',  processed_at: '2026-06-01T00:00:00Z' })
+    const newer  = makeResult({ id: 'newer',  file_path: '/m/newer.mp4',  processed_at: '2026-06-09T00:00:00Z' })
+    const middle = makeResult({ id: 'middle', file_path: '/m/middle.mp4', processed_at: '2026-06-05T00:00:00Z' })
+    render(<ResultGrid results={[older, newer, middle]} />)
+    fireEvent.change(screen.getByLabelText('Sort results'), { target: { value: 'processed_desc' } })
+    // Newest first
+    const cards = Array.from(document.querySelectorAll('[role="listitem"]'))
+    const order = cards.map(c => (c.getAttribute('aria-label') || '') + ' ' + (c.textContent || ''))
+    const idx = (needle: string) => order.findIndex(s => s.includes(needle))
+    expect(idx('newer.mp4')).toBeLessThan(idx('middle.mp4'))
+    expect(idx('middle.mp4')).toBeLessThan(idx('older.mp4'))
+  })
 })
 
 // ── Pin to eval set ──────────────────────────────────────────────────────────

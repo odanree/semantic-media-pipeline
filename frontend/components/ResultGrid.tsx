@@ -20,6 +20,7 @@ interface SearchResult {
   user_vote?: 1 | -1 | null
   vote_label?: Record<string, number> | null
   vote_query?: string | null
+  processed_at?: string | null  // ISO timestamp, when the file finished indexing
 }
 
 interface ReelState {
@@ -38,7 +39,7 @@ interface ResultGridProps {
 
 type ViewMode = 'grid' | 'list'
 type CardSize = 'small' | 'large'
-type SortKey = 'similarity_desc' | 'similarity_asc' | 'rms_desc' | 'rms_asc'
+type SortKey = 'similarity_desc' | 'similarity_asc' | 'rms_desc' | 'rms_asc' | 'processed_desc' | 'processed_asc'
 
 // Stream directly from FastAPI - bypasses Next.js proxy, no Node.js buffering
 const STREAM_BASE = process.env.NEXT_PUBLIC_STREAM_URL || 'http://localhost:8000'
@@ -97,6 +98,10 @@ export default function ResultGrid({ results, excludeVoted = false, onExcludeVot
       // ↑ = highest first, ↓ = lowest first
       case 'rms_desc': return (b.audio_rms_energy ?? -1) - (a.audio_rms_energy ?? -1)
       case 'rms_asc':  return (a.audio_rms_energy ?? Infinity) - (b.audio_rms_energy ?? Infinity)
+      // processed_at is an ISO string; lexicographic compare is the same as
+      // chronological for ISO-8601. Files without it sink to the bottom.
+      case 'processed_desc': return (b.processed_at ?? '').localeCompare(a.processed_at ?? '')
+      case 'processed_asc':  return (a.processed_at ?? '~').localeCompare(b.processed_at ?? '~')
       default: return b.similarity - a.similarity
     }
   }), [results, sortKey, votes, voteLabelsOverride, searchQuery])
@@ -241,6 +246,8 @@ export default function ResultGrid({ results, excludeVoted = false, onExcludeVot
             <option value="similarity_asc">Similarity ↓</option>
             <option value="rms_desc">Energy ↑</option>
             <option value="rms_asc">Energy ↓</option>
+            <option value="processed_desc">Recently indexed ↑</option>
+            <option value="processed_asc">Recently indexed ↓</option>
           </select>
           {currentVideoResults.length > 0 && (
             <>
