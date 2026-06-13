@@ -144,6 +144,75 @@ The system is built on a "Producer-Consumer" architecture to ensure that process
 
 ---
 
+## ⚡ Performance Benchmarks
+
+### Qdrant payload index: 18.5s → 1.75ms on a filtered count over 1.88M vectors
+
+The dashboard runs filtered `count()` operations across the index (e.g. "how many segments with speech were ingested today"). Without payload indexes, Qdrant scans every point in the collection to evaluate the filter predicate — an O(N) traversal that becomes unusable at scale.
+
+After adding KEYWORD/DATETIME/FLOAT payload indexes on five filterable fields, the same query path drops by **~10,500×** on the 1.88M-vector collection. Methodology, raw Grafana percentiles, and reproduction steps follow.
+
+#### Setup
+
+| Collection | Vectors | Stack |
+|---|---:|---|
+| dev | 83,134 | FastAPI + Qdrant `v1.17.0` + Celery, local Docker |
+| prod | 1,784,698 | same |
+
+Monitoring: Prometheus scraping Qdrant's `rest_responses_avg_duration_seconds`, visualized in Grafana with a continuous line that pre-dates the index change.
+
+#### Indexes applied
+
+Five payload-index fields, total memory cost **~740MB** (collection went 2.2GiB → 2.94GiB on a 16GiB limit):
+
+| Field | Type |
+|---|---|
+| `file_type` | KEYWORD |
+| `audio_segment_type` | KEYWORD |
+| `created_at` | DATETIME |
+| `timestamp` | FLOAT |
+| `audio_has_speech` | KEYWORD |
+
+#### Results — filtered `count()` median, sustained over 1+ hour
+
+| Collection | Vectors | Pre-index | Post-index | Speedup |
+|---|---:|---:|---:|---:|
+| dev | 83K | 729ms | 0.38ms | **~1,900×** |
+| prod | 1.88M | 18,500ms | 1.75ms | **~10,500×** |
+
+#### Grafana percentiles, `exact: true` (1.88M vectors, 1+ hour pre/post)
+
+| Percentile | Pre-index | Post-index | Speedup |
+|---|---:|---:|---:|
+| p50 | 28.2s | 300ms | ~94× |
+| p95 | 48.0s | 480ms | ~100× |
+| p99 | 49.6s | 496ms | ~100× |
+| lifetime avg | 13.8s | 283ms | ~49× (still falling) |
+
+`exact: true` forces Qdrant to verify every matching point individually even with indexes; this is the conservative number. With `exact: false` (approximate count, which is what the dashboard actually uses) the same operation goes from 18.5s to 1.75ms — **the headline ~10,500× number.**
+
+#### Reproduction
+
+```bash
+# Create indexes on the running collection (no data migration, fully reversible)
+curl -X PUT "$QDRANT_URL/collections/media/index" \
+  -H 'Content-Type: application/json' \
+  -d '{ "field_name": "file_type", "field_schema": "keyword" }'
+# ... repeat for the other four fields
+
+# Benchmark the filtered count
+curl -X POST "$QDRANT_URL/collections/media/points/count" \
+  -H 'Content-Type: application/json' \
+  -d '{ "filter": { "must": [{ "key": "audio_has_speech", "match": { "value": true } }] }, "exact": false }'
+```
+
+Reversal is `DELETE /collections/media/index/{field_name}` — no data loss, no downtime.
+
+#### Why this works
+Without indexes, Qdrant evaluates filter predicates by scanning every point — same problem as a database table scan. A KEYWORD payload index is a hashmap from value → list of point IDs; the engine jumps directly to matching points instead of walking the collection. The trade-off is the +740MB memory cost on a collection that was already 2.2GiB.
+
+---
+
 ## � Lumen Internal Architecture
 
 To maintain senior-level code organization, this project uses **Lumen** as the internal codename and applies it consistently across infrastructure components:
