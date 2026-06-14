@@ -144,6 +144,43 @@ def test_search_result_has_similarity(client, mock_qdrant):
     assert 0.0 <= result["similarity"] <= 1.0
 
 
+def test_search_result_carries_processed_at_when_db_provides_it(client, mock_qdrant):
+    """processed_at from media_files must be attached to each search result
+    so the frontend can offer a 'Recently indexed' sort. The async engine is
+    patched to return one row mapping the file to a known timestamp."""
+    from datetime import datetime, timezone
+    from unittest.mock import AsyncMock, patch
+
+    mock_qdrant.query_points.return_value = MagicMock(points=[
+        _make_hit("/media/recent.mp4", "video", 0.9),
+    ])
+
+    indexed = datetime(2026, 6, 9, 12, 0, tzinfo=timezone.utc)
+    # Mock the chained call get_async_engine() -> engine.begin() -> conn.execute().fetchall().
+    conn = AsyncMock()
+    conn.execute.return_value = MagicMock(fetchall=lambda: [("/media/recent.mp4", indexed)])
+    engine = MagicMock()
+    engine.begin.return_value.__aenter__ = AsyncMock(return_value=conn)
+    engine.begin.return_value.__aexit__ = AsyncMock(return_value=None)
+
+    with patch("routers.search.get_async_engine", AsyncMock(return_value=engine)):
+        result = client.post("/api/search", json={"query": "x", "dedup": False}).json()["results"][0]
+
+    assert result["processed_at"] == indexed.isoformat()
+
+
+def test_search_processed_at_is_null_when_db_query_fails(client, mock_qdrant):
+    """DB enrichment failure must not break the search — processed_at falls back to None."""
+    mock_qdrant.query_points.return_value = MagicMock(points=[
+        _make_hit("/media/clip.mp4", "video", 0.9),
+    ])
+    # Default (no patch): get_async_engine() will raise in the test env;
+    # the search should still return 200 with processed_at=None.
+    result = client.post("/api/search", json={"query": "x", "dedup": False}).json()["results"][0]
+    assert "processed_at" in result
+    assert result["processed_at"] is None
+
+
 # ---------------------------------------------------------------------------
 # /api/search — parameter forwarding
 # ---------------------------------------------------------------------------

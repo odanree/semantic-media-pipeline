@@ -644,6 +644,30 @@ async def search_media(request: Request, body: SearchRequest):
                 final_hits = raw_points[:body.limit]
                 scenes_collapsed = 0
 
+        # Enrich with processed_at from media_files (= when the file finished
+        # indexing). One batched query keyed on file_path. Failures are
+        # non-fatal — results still ship without the field.
+        processed_at_by_path: dict = {}
+        file_paths_for_enrichment = list({
+            h.payload.get("file_path") for h in final_hits if h.payload.get("file_path")
+        })
+        if file_paths_for_enrichment:
+            try:
+                from sqlalchemy import text as sa_text
+                engine = await get_async_engine()
+                async with engine.begin() as conn:
+                    rows = await conn.execute(
+                        sa_text(
+                            "SELECT file_path, processed_at FROM media_files "
+                            "WHERE file_path = ANY(:fps)"
+                        ),
+                        {"fps": file_paths_for_enrichment},
+                    )
+                    for fp, pa in rows.fetchall():
+                        processed_at_by_path[fp] = pa.isoformat() if pa else None
+            except Exception as exc:
+                print(f"processed_at enrichment failed: {exc}")
+
         # Build response dicts from whichever path was taken
         results = []
         for point in final_hits:
@@ -654,9 +678,10 @@ async def search_media(request: Request, body: SearchRequest):
                 if ts is not None and body.dedup else None
             )
             window_end = (window_start + EVENT_WINDOW_SECONDS) if window_start is not None else None
+            fp = payload.get("file_path")
             results.append({
                 "id": point.id,
-                "file_path": payload.get("file_path"),
+                "file_path": fp,
                 "file_type": payload.get("file_type"),
                 "similarity": float(point.score),
                 "frame_index": payload.get("frame_index"),
@@ -664,6 +689,9 @@ async def search_media(request: Request, body: SearchRequest):
                 "scene_window_start": window_start,
                 "scene_window_end": window_end,
                 "updated_at": payload.get("updated_at"),
+                # When the file finished indexing. Drives the "Recently indexed"
+                # sort option in the UI; None for files still in flight.
+                "processed_at": processed_at_by_path.get(fp),
                 # Clip boundary fields — None for legacy media ingested before audio analysis
                 "audio_segment_index": payload.get("audio_segment_index"),
                 "audio_segment_start_sec": payload.get("audio_segment_start_sec"),
