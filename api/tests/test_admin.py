@@ -132,6 +132,88 @@ def test_get_task_failure_state(client):
 
 
 # ---------------------------------------------------------------------------
+# GET /api/admin/recent
+# ---------------------------------------------------------------------------
+
+def _patch_recent_rows(rows: list):
+    """Patch the async engine used by /admin/recent to return the given rows."""
+    from unittest.mock import AsyncMock, MagicMock, patch
+    conn = AsyncMock()
+    conn.execute.return_value = MagicMock(fetchall=lambda: rows)
+    engine = MagicMock()
+    engine.begin.return_value.__aenter__ = AsyncMock(return_value=conn)
+    engine.begin.return_value.__aexit__ = AsyncMock(return_value=None)
+    return patch("routers.admin.get_async_engine", AsyncMock(return_value=engine)), conn
+
+
+def test_recent_returns_200_with_items(client):
+    from datetime import datetime, timezone
+    ts = datetime(2026, 6, 9, 12, 0, tzinfo=timezone.utc)
+    rows = [
+        ("/m/a.mp4", "video", "1024", "60", "1920", "1080", ts, "done",
+         "clip-ViT-L-14", 850, "uuid-1"),
+        ("/m/b.jpg", "image", "2048", None, "800", "600", ts, "done",
+         "clip-ViT-L-14", 120, None),
+    ]
+    patcher, _ = _patch_recent_rows(rows)
+    with patcher:
+        resp = client.get("/api/admin/recent")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["limit"] == 50
+    assert len(data["items"]) == 2
+    assert data["items"][0]["file_path"] == "/m/a.mp4"
+    assert data["items"][0]["processed_at"] == ts.isoformat()
+    assert data["items"][0]["has_vector"] is True
+    assert data["items"][1]["has_vector"] is False
+
+
+def test_recent_passes_limit_to_query(client):
+    patcher, conn = _patch_recent_rows([])
+    with patcher:
+        resp = client.get("/api/admin/recent?limit=10")
+    assert resp.status_code == 200
+    # SQL parameters are the second positional arg to execute()
+    args, _ = conn.execute.call_args
+    assert args[1]["lim"] == 10
+
+
+def test_recent_filters_by_status(client):
+    patcher, conn = _patch_recent_rows([])
+    with patcher:
+        resp = client.get("/api/admin/recent?status=error")
+    assert resp.status_code == 200
+    args, _ = conn.execute.call_args
+    assert args[1].get("status") == "error"
+    # The status filter is injected as a WHERE clause; check SQL contains it
+    assert "processing_status" in str(args[0])
+
+
+def test_recent_rejects_out_of_range_limit(client):
+    """ge=1, le=500 → 0 should fail validation."""
+    resp = client.get("/api/admin/recent?limit=0")
+    assert resp.status_code == 422
+
+
+def test_recent_db_failure_returns_503(client):
+    from unittest.mock import AsyncMock, patch
+    with patch("routers.admin.get_async_engine", AsyncMock(side_effect=RuntimeError("db down"))):
+        resp = client.get("/api/admin/recent")
+    assert resp.status_code == 503
+
+
+def test_recent_handles_null_processed_at(client):
+    """A row whose processed_at is None must serialize as JSON null, not crash."""
+    rows = [("/m/queued.mp4", "video", None, None, None, None, None, "pending",
+             None, None, None)]
+    patcher, _ = _patch_recent_rows(rows)
+    with patcher:
+        data = client.get("/api/admin/recent").json()
+    assert data["items"][0]["processed_at"] is None
+    assert data["items"][0]["has_vector"] is False
+
+
+# ---------------------------------------------------------------------------
 # POST /api/agent/query — multi-agent coordinator endpoint
 # ---------------------------------------------------------------------------
 
