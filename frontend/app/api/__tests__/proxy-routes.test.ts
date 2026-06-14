@@ -1015,6 +1015,47 @@ describe('DELETE /api/eval-set/[id]', () => {
 // GET /api/eval-set/readiness — proxies backend /api/stats/eval-set
 // ---------------------------------------------------------------------------
 
+describe('GET /api/admin/recent', () => {
+  async function handler(url = 'http://localhost/api/admin/recent') {
+    const { GET } = await import('../admin/recent/route')
+    return GET(new NextRequest(url))
+  }
+
+  it('forwards the API key to FastAPI', async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(mockResponse({ items: [], limit: 50 }, 200))
+    await handler()
+    expect(capturedApiKey()).toBe('test-secret')
+  })
+
+  it('forwards query string verbatim', async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(mockResponse({ items: [], limit: 100 }, 200))
+    await handler('http://localhost/api/admin/recent?limit=100&status=done')
+    const [calledUrl] = vi.mocked(fetch).mock.calls[0]
+    expect(calledUrl).toBe('http://api:8000/api/admin/recent?limit=100&status=done')
+  })
+
+  it('returns the upstream payload on success', async () => {
+    const payload = { items: [{ file_path: '/m/a.mp4', has_vector: true }], limit: 50 }
+    vi.mocked(fetch).mockResolvedValueOnce(mockResponse(payload, 200))
+    const res = await handler()
+    expect(res.status).toBe(200)
+    const data = await res.json()
+    expect(data.items[0].file_path).toBe('/m/a.mp4')
+  })
+
+  it('forwards upstream non-200 status', async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(mockResponse({ detail: 'bad limit' }, 422))
+    const res = await handler('http://localhost/api/admin/recent?limit=0')
+    expect(res.status).toBe(422)
+  })
+
+  it('returns 500 when fetch throws', async () => {
+    vi.mocked(fetch).mockRejectedValueOnce(new Error('ECONNREFUSED'))
+    const res = await handler()
+    expect(res.status).toBe(500)
+  })
+})
+
 describe('GET /api/eval-set/readiness', () => {
   it('returns the upstream readiness payload', async () => {
     const payload = { totals: { queries: 1, positives: 30, negatives: 10, total: 40 }, queries: [], tiers: {}, goals: {} }

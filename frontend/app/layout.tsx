@@ -24,6 +24,7 @@ export default function RootLayout({
               <p className="text-sm text-gray-400 mt-1">Semantic Media Pipeline</p>
             </div>
             <div className="flex items-center gap-4 text-sm">
+              <Link href="/recent"    className="text-gray-400 hover:text-white transition">Recent</Link>
               <Link href="/training"  className="text-gray-400 hover:text-white transition">Training</Link>
               <Link href="/recovery"  className="text-gray-400 hover:text-white transition">Recovery</Link>
             </div>
