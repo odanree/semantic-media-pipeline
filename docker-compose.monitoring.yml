@@ -40,6 +40,8 @@ services:
       - "127.0.0.1:3004:3000"
     environment:
       - GF_SECURITY_ADMIN_PASSWORD=${GF_SECURITY_ADMIN_PASSWORD:?GF_SECURITY_ADMIN_PASSWORD must be set}
+      - GF_SERVER_ROOT_URL=${LUMEN_GRAFANA_ROOT_URL:-https://grafana-lumen.danhle.net}
+      - GF_SERVER_DOMAIN=${LUMEN_GRAFANA_DOMAIN:-grafana-lumen.danhle.net}
     volumes:
       - grafana_monitoring_data:/var/lib/grafana
       - ./grafana/monitoring/provisioning:/etc/grafana/provisioning:ro
@@ -47,6 +49,7 @@ services:
       - prometheus-monitoring
     networks:
       - monitoring-net
+      - portfolio-net
     restart: unless-stopped
 
 volumes:
@@ -61,4 +64,7 @@ networks:
     external: true
   lumen2-net:
     name: lumen2_lumen2-net
+    external: true
+  portfolio-net:
+    name: ${PORTFOLIO_NET_NAME:-portfolio-infra_portfolio-net}
     external: true
