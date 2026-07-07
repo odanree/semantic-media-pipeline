@@ -188,6 +188,7 @@ qdrant_client = QdrantClient(
     port=QDRANT_PORT,
     grpc_port=QDRANT_GRPC_PORT,
     prefer_grpc=QDRANT_PREFER_GRPC,
+    timeout=120,
 )
 
 # Separate REST client for long-running cascade operations.
@@ -766,10 +767,14 @@ def process_video(self, file_path: str, media_record_id: str):
                     )
                 )
 
-            # Upsert to Qdrant
+            # Upsert to Qdrant in chunks — large batches (4K+ points on long 4K videos)
+            # exceed the gRPC deadline as a single call.
             with _step("qdrant_upsert"):
                 log.warning("Upserting %d vectors to Qdrant", len(points))
-                qdrant_client.upsert(collection_name=QDRANT_COLLECTION_NAME, points=points)
+                QDRANT_UPSERT_CHUNK = 512
+                for i in range(0, len(points), QDRANT_UPSERT_CHUNK):
+                    chunk = points[i:i + QDRANT_UPSERT_CHUNK]
+                    qdrant_client.upsert(collection_name=QDRANT_COLLECTION_NAME, points=chunk)
 
             # Dispatch YOLO enrichment for construction footage
             if "Construction Timeline" in file_path:
