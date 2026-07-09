@@ -3,6 +3,13 @@ Celery Task Definitions
 Main orchestration for media ingestion pipeline
 """
 
+# Import ml.embedder (which imports torch) BEFORE any other native-extension
+# module. On Windows some libs shipped by our deps (langgraph/mlflow/etc.)
+# initialize their own CUDA/native state at import time and, if they load
+# before torch, corrupt the CUDA runtime — the worker then segfaults when
+# CLIP tries to load. Pinning torch's import first wins that race.
+from ml import embedder as _embedder_first_import  # noqa: F401
+
 import errno as _errno
 import hashlib
 import logging
