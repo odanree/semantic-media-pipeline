@@ -147,6 +147,41 @@ async def startup_event():
     except Exception as exc:
         print(f"WARNING: could not create audit_logs table: {exc}")
 
+    # Ensure required Qdrant payload indexes exist (idempotent — safe on every
+    # restart). Without these, filter conditions become full-payload scans and
+    # blow up as the collection grows:
+    #   user_vote (integer)         — Range filter used by exclude_voted mode
+    #   voted_queries (keyword)     — MatchAny filter in voted-frame injection.
+    #                                 Missing this turned text search into a
+    #                                 full-payload scan over voted points and
+    #                                 caused 50s+ latency at 3M+ points.
+    try:
+        from qdrant_client import QdrantClient
+        from qdrant_client.models import PayloadSchemaType
+        _qhost = os.getenv("QDRANT_HOST", "qdrant")
+        _qport = int(os.getenv("QDRANT_PORT", 6333))
+        _qcoll = os.getenv("QDRANT_COLLECTION_NAME", "media_vectors")
+        _qc = QdrantClient(host=_qhost, port=_qport, timeout=5)
+        info = _qc.get_collection(_qcoll)
+        existing = set((info.payload_schema or {}).keys())
+        required_indexes = [
+            ("user_vote", PayloadSchemaType.INTEGER),
+            ("voted_queries", PayloadSchemaType.KEYWORD),
+        ]
+        for field, schema in required_indexes:
+            if field not in existing:
+                _qc.create_payload_index(
+                    collection_name=_qcoll,
+                    field_name=field,
+                    field_schema=schema,
+                    wait=False,
+                )
+                print(f"[Startup] Created Qdrant payload index: {field}")
+            else:
+                print(f"[Startup] Qdrant payload index already exists: {field}")
+    except Exception as exc:
+        print(f"WARNING: could not ensure Qdrant payload indexes: {exc}")
+
     # Preload CLIP model so first search request is instant
     import asyncio
     from routers.search import get_clip_model
